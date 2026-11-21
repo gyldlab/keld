@@ -1,0 +1,85 @@
+{
+  "schema": "keld.isolated-adversarial-review/v1",
+  "reviewer": "w4_current_client_review",
+  "lens": "shared-client contract/reuse and fixture truthfulness",
+  "result": "no actionable finding in the assigned scope",
+  "review_head": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "base": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "source_binding": "source-binding.json",
+  "source_binding_description": "All nine assigned implementation/test/proposal files and two accompanying documents were hashed from the worktree and matched exact review-head Git blobs. EVIDENCE.md had a parent-owned uncommitted update and is excluded from this source binding.",
+  "instructions_read": [
+    "AGENTS.md",
+    ".agents/index.md",
+    ".agents/review.md",
+    ".agents/testing.md",
+    ".agents/research.md",
+    ".agents/coordination.md",
+    "docs/agents/workflow.md",
+    "docs/agents/learnings.md (bounded relevant lifecycle, IPC, fixture and Windows entries)"
+  ],
+  "reviewed_paths": [
+    "tools/windows_desktop_facts/native_adapter.ts",
+    "tools/windows_desktop_facts/native_adapter.test.ts",
+    "tools/windows_desktop_facts/subscribe_contract.test.ts",
+    "tools/windows_desktop_facts/subscribe_support/host.ts",
+    "tools/windows_desktop_facts/subscribe_support/role.ts",
+    "tools/windows_desktop_facts/verify_native.test.ts",
+    "tools/windows_desktop_facts/prepare_shared.py",
+    "tools/windows_desktop_facts/shared-pin.json",
+    "tools/windows_desktop_facts/integration.patch"
+  ],
+  "supporting_inspection": [
+    "README.md and integration-notes.md claim-to-source checks",
+    "run_native.py shared-pin verification and receipt integration boundary",
+    "pinned S1 LifecycleLink.connect, attachMirror, WindowSource decode/apply, desktop codec validation and transitive imports"
+  ],
+  "dependency_verification": {
+    "root": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\shared-s1",
+    "declared_commit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+    "pinned_blobs": 11,
+    "all_exact": true,
+    "package_junction": "node_modules/@keld/kipc resolves to the same export's packages/@keld/kipc",
+    "method": "git hash-object --no-filters independently matched every shared-pin.json blob; exact source import closure inspected",
+    "qualification": "Verified exported bytes against the committed pin manifest; did not independently reconstruct the missing owner commit object on Ramani."
+  },
+  "executed": [
+    {
+      "command": "python -B tools/workspace.py run gh-1186-windows-desktop-feasibility-20261105 --session chatgpt-w4-desktop-20261105 -- bun test tools/windows_desktop_facts/native_adapter.test.ts tools/windows_desktop_facts/subscribe_contract.test.ts",
+      "environment": {
+        "W4_SHARED_ROOT": "verified immutable S1 export",
+        "W4_RUN_NATIVE": "absent",
+        "W4_NATIVE_EVIDENCE": "absent"
+      },
+      "runtime": "Bun 1.4.4 (38afee6c8), Windows",
+      "result": {
+        "pass": 26,
+        "skip": 1,
+        "fail": 0,
+        "expect_calls": 82,
+        "exit_code": 0,
+        "runner_exit_code": 0,
+        "managed_elapsed_seconds": 5.9048675000085495
+      },
+      "skipped": "native first-sample case intentionally excluded",
+      "evidence": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\evidence\\run-89390330897c416886934f4c47cb1294",
+      "local_evidence_copies": "work-run-result.json, work-run-stdout.log, work-run-stderr.log"
+    }
+  ],
+  "observations": [
+    "The adapter defines conversion and a bounded native-identity association; the codec and desktop/window mirror remain the pinned shared owner's implementation.",
+    "The child imports the actual LifecycleLink and WorkerLink. Named-pipe frames, correlated acceptance, Ready gating, state application and retirement are observed through that implementation.",
+    "Actual non-GUI tests passed for held Subscribe, early raw Ready, typed unavailable error, original 5000-ms timeout, stale epoch failure, ordered update, fresh-role replay, retired source refusal, unselected-role denial and wrong HELLO token.",
+    "Host scripting and generation limitations are explicitly identified. The fixture does not claim actual Core admission, install_generation, native post-Init update delivery or production Host Ready.",
+    "The patch is an unapplied first-Init seam fragment; integration notes identify missing shared type/selector/coordinator/caller and post-Init dependencies rather than presenting it as a buildable Windows feature."
+  ],
+  "findings": [],
+  "independent_refutations_required": [],
+  "limits": [
+    "No native, desktop, probe, oracle or GUI operation executed.",
+    "No production source edits, fixes or commits.",
+    "No owned-process custody/Rust-internal review beyond the assigned integration boundaries.",
+    "prepare_shared.py reviewed statically; export helper and receipt-only native verification were not rerun.",
+    "No broad platform coverage or shipping Windows activation approval is implied."
+  ],
+  "recommendation": "This assigned review gate has no actionable blocker at the bound head. Root retains overall review, native evidence and publication decisions."
+}

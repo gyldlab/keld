@@ -1,0 +1,26 @@
+{
+  "sourceHashesBefore": {
+    "owned_process.py": "f9613f82c29ff5b7bc075033909d197fc665799979d9458021230b82f91181b2",
+    "test_owned_process.py": "92ac0fd71c8eb50b602f3ae065f33efeb6223c23dcfc1d2cfbd77d8f1258f9b7",
+    "run_native.py": "8d7b8524a2f98ed6b5f31275c62952759f9e218af3e31dfbd9e69b77709420b3",
+    "oracle.cjs": "a3b3e99d2f1c4ccbe54cd86969717e152494e93f62e1468f6d3aaf74080604af"
+  },
+  "sourceHashesAfter": {
+    "owned_process.py": "f9613f82c29ff5b7bc075033909d197fc665799979d9458021230b82f91181b2",
+    "test_owned_process.py": "92ac0fd71c8eb50b602f3ae065f33efeb6223c23dcfc1d2cfbd77d8f1258f9b7",
+    "run_native.py": "8d7b8524a2f98ed6b5f31275c62952759f9e218af3e31dfbd9e69b77709420b3",
+    "oracle.cjs": "a3b3e99d2f1c4ccbe54cd86969717e152494e93f62e1468f6d3aaf74080604af"
+  },
+  "unchanged": true,
+  "testsRun": 11,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "successful": true,
+  "elapsedSeconds": 10.61025550001068,
+  "harnessSha256": "da2f673408659a87c1baebdf64b7f12850cae374c86e231d3e73bd38216503de",
+  "python": "3.14.1 (tags/v3.14.1:57e0d17, Dec  2 2025, 14:05:07) [MSC v.1944 64 bit (AMD64)]",
+  "desktopQueriesLaunched": false,
+  "repositoryEdited": false,
+  "foreignProcessesSignalled": false
+}

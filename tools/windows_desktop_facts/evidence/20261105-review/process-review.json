@@ -1,0 +1,88 @@
+{
+  "reviewer": "/root/w4_process_review",
+  "reviewedDate": "2026-11-05",
+  "decision": "GO for the scoped Windows ownership helper and actual caller; no unresolved source finding on the final reviewed hashes. Separate independent stale-zero refutation is collected by root.",
+  "scope": {
+    "sourceEdited": false,
+    "desktopQueriesLaunched": false,
+    "foreignProcessesSignalled": false,
+    "fixtures": "Owned non-GUI Python processes and Windows process/Job/event APIs only",
+    "platform": "Windows 11 build 26300, Python 3.14.1 AMD64"
+  },
+  "sourceHashes": {
+    "owned_process.py": "f9613f82c29ff5b7bc075033909d197fc665799979d9458021230b82f91181b2",
+    "test_owned_process.py": "92ac0fd71c8eb50b602f3ae065f33efeb6223c23dcfc1d2cfbd77d8f1258f9b7",
+    "run_native.py": "8d7b8524a2f98ed6b5f31275c62952759f9e218af3e31dfbd9e69b77709420b3",
+    "oracle.cjs": "a3b3e99d2f1c4ccbe54cd86969717e152494e93f62e1468f6d3aaf74080604af"
+  },
+  "checks": [
+    "Reviewed ctypes structures and Win32 API prototypes; independently measured BasicLimits64, IoCounters48, ExtendedLimits144, Accounting48 bytes on assigned Win64 runtime.",
+    "Reviewed unnamed Job creation, kill-on-close flag/readback, explicit handle-list inheritance with close_fds, self-enrollment before target launch, child-side handle closure, no breakaway flags, exact retained handles only.",
+    "Reviewed file-backed output, preserved target environment, distinct target/bootstrap exit evidence, fixed execution deadline and single fixed cleanup budget, refusal when cleanup accounting is unproved.",
+    "Reviewed run_native.command refusal of timed_out, forced_cleanup, setup_error, absent target exit and nonzero/absent Job count; native main was never invoked.",
+    "Final helper diff from3629a50d is only poll-before-census ordering plus explanatory comment; all other helper behavior unchanged.",
+    "Final independent suite passed11 cases in10.61025550001068 seconds, no failures/errors/skips; all four source hashes unchanged before/after."
+  ],
+  "findings": [
+    {
+      "id": "original-pipe-drain-P2",
+      "origin": "Prior independent review",
+      "disposition": "Final actual-caller behavior validated corrected",
+      "evidence": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\caller-final-f961\\receipt.json",
+      "details": "timeout1s refused in1.0227555999881588s; own parent and descendant observed exited by1.0136176999949384s with exit1, bootstrap observed exit1; target exitnull,jobActiveAfter0,timedOut/forcedCleanuptrue. Descendant2.5s natural cap not reached. Healthy target7/bootstrap0/environment/stdout/stderr passed in0.17368249999708496s."
+    },
+    {
+      "id": "query-error-unenrolled-bootstrap-P2",
+      "origin": "Author discovery, independently confirmed here",
+      "disposition": "Confirmed old behavior and independently validated correction",
+      "evidence": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\query-comparison-receipt.json",
+      "oldRevisionSha256": "9fd90a9b7140cc7f4c7afe0e3158ef01ce25c433443031e23091d1ce39506f7a",
+      "testedRetrievedCopySha256": "4cc5210c3e53488978d262003110e1196c76ddb51e983d5beacebc0bba64534e",
+      "copyDifference": "Only omitted terminal LF; appending LF produces exact old revision hash.",
+      "details": "Old gated bootstrap remained live after cleanup refusal(wait258). Corrected3629a50d preserved refusal and observed bootstrap exit(wait0,exit1). No target launched; no foreign termination. Finalf961 preserves that correction, with final query-failure regression passing."
+    },
+    {
+      "id": "stale-zero-census-P2",
+      "origin": "This independent review",
+      "disposition": "Confirmed at3629a50d; corrected atf9613f82; separate independent refuter assigned by root",
+      "evidence": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\stale-zero-run\\receipt.json",
+      "details": "A real zero census before enrollment was delayed while own bootstrap enrolled, created a leaf and exited. Unmodified _cleanup returned(0,false) while actual Job census was1 and leaf handle unsignalled. Last Job-handle close later reaped leaf, but did not constitute observed zero before return.",
+      "scopeNuance": "Timeout/setup-error flags still make caller refuse. This is false zero custody evidence, not a demonstrated false healthy caller acceptance.",
+      "fix": "Observe bootstrap completion first, then read the Job census used to accept zero."
+    }
+  ],
+  "finalEvidence": {
+    "suite": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\suite-final-f961\\receipt.json",
+    "suiteLog": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\suite-final-f961\\unittest.log",
+    "caller": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\caller-final-f961\\receipt.json",
+    "originalFailurePreserved": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\p2-timeout-refutation\\run\\receipt.json",
+    "harnesses": {
+      "validate_caller_v2.py": "99bdd9825ea2ee57629911e1990852222cccbbcfeed215b77ef4cbf2f4211b6d",
+      "verify_frozen.py": "da2f673408659a87c1baebdf64b7f12850cae374c86e231d3e73bd38216503de",
+      "query_failure_review.py": "471e2143390729b1dc71445ce19a6927889494cb22ea29bdd9af2abfd73543e4",
+      "stale_zero_review.py": "d54a5a05ef04a25822998f2ac85eddc6254110ef21e0cca2809fc1efda226351"
+    },
+    "harnessCorrection": "Initial caller harness incorrectly unpacked command's returned dictionary after both commands completed. Preserved caller-3629-run and original validate_caller.py; corrected only isolated validate_caller_v2.py, then complete fresh runs passed."
+  },
+  "research": {
+    "accessDate": "2026-11-05",
+    "context7Library": "/python/cpython",
+    "context7Query": "On Windows, how must subprocess.STARTUPINFO.lpAttributeList handle_list be used with close_fds, inheritable handles, and concurrent process creation?",
+    "applicability": "Windows handle inheritance, Job membership/termination/accounting and native ctypes layout used by the Python evidence runner.",
+    "primaryUrls": [
+      "https://docs.python.org/3/library/subprocess.html",
+      "https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects",
+      "https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject",
+      "https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_extended_limit_information",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information"
+    ],
+    "conclusions": "Contract supports self-assigned inherited membership, kill-on-close last-handle behavior, explicit handle-list inheritance with close_fds and temporary inheritable flag. Independent census is required for zero proof; closing alone is not such proof."
+  },
+  "limits": [
+    "This review exercises process custody only; no native desktop probe, Electron session or UI sampling was run.",
+    "Custody covers CreateProcess descendants in the Job; delegation to external services is outside this helper's documented contract.",
+    "The code bounds waits; synchronous OS process creation and local file I/O are not claimed to withstand a hung kernel/filesystem call."
+  ]
+}

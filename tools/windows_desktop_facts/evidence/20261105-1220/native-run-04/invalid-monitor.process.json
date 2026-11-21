@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--mode",
+    "pmv2",
+    "--control",
+    "invalid-monitor"
+  ],
+  "pid": 7160,
+  "exit": 1,
+  "bootstrapPid": 10228,
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.13016349999816157,
+  "setupError": null,
+  "startedUnix": 1793881231.6269965,
+  "completedUnix": 1793881231.7587998,
+  "ownedProcessReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-04\\invalid-monitor.owned.json"
+}

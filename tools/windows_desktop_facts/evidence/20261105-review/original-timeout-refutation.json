@@ -1,0 +1,45 @@
+{
+  "finding": "P2 unbounded post-timeout communicate",
+  "classification": "confirmed",
+  "subjectPath": "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\run_native.py",
+  "subjectSha256": "ac00660aaa691f79caf21a7332595bbbcf37233e07159444c0a26b47c07fd502",
+  "harnessSha256": "c75784e15a85b0892abb46408a9d268644b6fb13f7672840f0bf2f1d176d536f",
+  "python": "3.14.1 (tags/v3.14.1:57e0d17, Dec  2 2025, 14:05:07) [MSC v.1944 64 bit (AMD64)]",
+  "pythonExecutable": "C:\\Users\\dnc\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+  "timeoutSeconds": 1,
+  "descendantSleepSeconds": 2.5,
+  "commandElapsedSeconds": 2.6974145999993198,
+  "commandException": "inherited-pipe: owned direct child exceeded its fixed deadline",
+  "ownedProcessObservation": {
+    "parentPid": 23416,
+    "descendantPid": 22904,
+    "nonce": "66a60f7b3e9e4e1496174dc63b03d0d9",
+    "handlesAcquiredSeconds": 0.12459669998497702,
+    "parentWaitResult": 0,
+    "parentExitObservedSeconds": 1.0191117000067607,
+    "parentExitCode": 1,
+    "descendantWaitAtParentExit": 258,
+    "descendantAliveAtParentExit": true,
+    "descendantWaitResult": 0,
+    "descendantExitObservedSeconds": 2.697442200005753,
+    "descendantExitCode": 0
+  },
+  "subjectProcessReceipt": {
+    "argv": [
+      "C:\\Users\\dnc\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+      "-B",
+      "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\p2-timeout-refutation\\refute_timeout.py",
+      "--parent",
+      "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\p2-timeout-refutation\\run",
+      "66a60f7b3e9e4e1496174dc63b03d0d9"
+    ],
+    "pid": 23416,
+    "exit": 1,
+    "ownedDirectChildTimeout": true,
+    "startedUnix": 1793837430.854835
+  },
+  "repositoryEdited": false,
+  "desktopQueriesLaunched": false,
+  "foreignProcessesSignalled": false,
+  "limitation": "Finite reproduction proves deadline overrun and descendant survival; indefinite duration is inferred from the missing drain deadline, not run."
+}

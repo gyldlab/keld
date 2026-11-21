@@ -1,0 +1,20 @@
+{
+  "bootstrapPid": 10228,
+  "targetPid": 7160,
+  "targetExit": 1,
+  "enrolled": true,
+  "targetWaitTimedOut": false,
+  "setupError": null,
+  "argv": [
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--mode",
+    "pmv2",
+    "--control",
+    "invalid-monitor"
+  ],
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.13016349999816157
+}

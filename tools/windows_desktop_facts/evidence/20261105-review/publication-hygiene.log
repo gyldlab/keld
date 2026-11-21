@@ -1,0 +1,526 @@
+bun --no-install test tools/ci_workflow_security.test.ts
+bun test v1.4.4 (38afee6c8)
+
+tools\ci_workflow_security.test.ts:
+(pass) base-owned workflow is immutable/read-only and never executes PR code [1.54ms]
+(pass) benign documentation and non-authority lockfile changes are admitted [2.41ms]
+(pass) protected CI authority change .github/workflows/evil.yml (added) is refused even if legacy CI required is green [1.10ms]
+(pass) protected CI authority change .github/workflows/ci.yml (modified) is refused even if legacy CI required is green [0.06ms]
+(pass) protected CI authority change .github/workflows/keldbot.yml (removed) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change .github/workflows/CI.YML (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change .github/CODEOWNERS (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change tools/ci-inputs.json (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change tools/dependency_review_metadata.sh (modified) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change tools/repo_path_contract.rs (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change tools/windows_signed_installed_acceptance.ps1 (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change crates/keld-wv/tests/linux_gui_smoke.sh (modified) is refused even if legacy CI required is green [0.08ms]
+(pass) protected CI authority change crates/keld-wv/tests/windows_media_guard.ps1 (modified) is refused even if legacy CI required is green [0.03ms]
+(pass) protected CI authority change crates/keld-wv/tests/fixtures/linux_media_interpose.c (modified) is refused even if legacy CI required is green [0.04ms]
+(pass) protected CI authority change crates/keld-wv/tests/linux_media_guard.sh (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change crates/keld-wv/tests/linux_media_checkout.sh (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change crates/keld-wv/tests/linux_media_checkout_test.sh (modified) is refused even if legacy CI required is green [0.25ms]
+(pass) protected CI authority change crates/keld-wv/examples/linux_media_guard.rs (modified) is refused even if legacy CI required is green [0.03ms]
+(pass) protected CI authority change crates/keld-wv/tests/fixtures/NEW-WATCHDOG.CMD (added) is refused even if legacy CI required is green [0.47ms]
+(pass) protected CI authority change docs/audits/verify.py (modified) is refused even if legacy CI required is green [0.10ms]
+(pass) protected CI authority change docs/audits/test_verify.py (modified) is refused even if legacy CI required is green [0.03ms]
+(pass) protected CI authority change docs/audits/VERIFY.PY (added) is refused even if legacy CI required is green [0.03ms]
+(pass) protected CI authority change .config/nextest.toml (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change crates/keld-updater-helper/clippy.toml (modified) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change crates/keld-core/.clippy.toml (added) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change .rustfmt.toml (modified) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change crates/keld-core/.rustfmt.toml (added) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change .ci-reader-proofs/readers/forged.json (added) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change .ci-reader-proofs/readers/old.json (removed) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change .ci-reader-proofs/readers/edited.json (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) protected CI authority change .cargo/config.toml (added) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change .github/actions/untrusted/action.yml (added) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change crates/keld-updater-helper/deny.toml (modified) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change .gitleaks.toml (modified) is refused even if legacy CI required is green [0.22ms]
+(pass) protected CI authority change tools/ci_changes.sh (modified) is refused even if legacy CI required is green [0.04ms]
+(pass) protected CI authority change tools/ci_workflow_security.ts (modified) is refused even if legacy CI required is green [0.27ms]
+(pass) protected CI authority change tools/ci_hygiene.rs (modified) is refused even if legacy CI required is green [0.06ms]
+(pass) protected CI authority change tools/test_ci_local.py (modified) is refused even if legacy CI required is green [0.03ms]
+(pass) protected CI authority change justfile (modified) is refused even if legacy CI required is green [0.01ms]
+(pass) protected CI authority change rust-toolchain.toml (modified) is refused even if legacy CI required is green [0.02ms]
+(pass) formatter policy input .gitignore cannot alter required checks [0.12ms]
+(pass) formatter policy input .GITIGNORE cannot alter required checks [0.02ms]
+(pass) formatter policy input crates/keld-cli/templates/hello/.gitignore cannot alter required checks [0.02ms]
+(pass) formatter policy input .prettierignore cannot alter required checks [0.02ms]
+(pass) formatter policy input packages/demo/.prettierignore cannot alter required checks [0.02ms]
+(pass) formatter policy input .prettierrc cannot alter required checks [0.01ms]
+(pass) formatter policy input packages/demo/.prettierrc.yaml cannot alter required checks
+(pass) formatter policy input packages/demo/prettier.config.cjs cannot alter required checks
+(pass) formatter policy input .editorconfig cannot alter required checks
+(pass) formatter policy input crates/keld-cli/templates/hello/.editorconfig cannot alter required checks [0.01ms]
+(pass) formatter policy input .oxfmtrc.jsonc cannot alter required checks [0.01ms]
+(pass) formatter policy input packages/demo/oxfmt.config.ts cannot alter required checks [0.01ms]
+(pass) formatter policy input packages/demo/package.yaml cannot alter required checks [0.02ms]
+(pass) formatter policy input packages/demo/package.yml cannot alter required checks [0.01ms]
+(pass) formatter policy input packages/demo/biome.jsonc cannot alter required checks
+(pass) added, deleted and renamed formatter authority cannot masquerade as documentation [0.40ms]
+(pass) a native formatter false-green from tracked source plus ignore is refused [239.06ms]
+(pass) root or nested test/build authority Cargo.toml is refused [0.18ms]
+(pass) root or nested test/build authority crates/keld-core/Cargo.toml is refused [0.02ms]
+(pass) root or nested test/build authority crates/keld-ipc/fuzz/Cargo.toml is refused [0.02ms]
+(pass) root or nested test/build authority bunfig.toml is refused [0.01ms]
+(pass) root or nested test/build authority packages/@keld/kipc/bunfig.toml is refused [0.01ms]
+(pass) root or nested test/build authority rustfmt.toml is refused
+(pass) root or nested test/build authority tsconfig.json is refused
+(pass) root or nested test/build authority packages/@keld/api/package.json is refused [0.01ms]
+(pass) root or nested test/build authority packages/@keld/kipc/package.json is refused [0.01ms]
+(pass) root or nested test/build authority packages/@keld/kipc/scripts/echo-codegen.ts is refused [0.03ms]
+(pass) renaming protected CI workflow to innocuous docs path is refused [0.09ms]
+(pass) renaming protected authority crates/keld-updater-helper/clippy.toml into an unrelated docs file is refused [0.06ms]
+(pass) renaming protected authority crates/keld-core/.clippy.toml into an unrelated docs file is refused [0.02ms]
+(pass) renaming protected authority .rustfmt.toml into an unrelated docs file is refused [0.01ms]
+(pass) renaming protected authority crates/keld-core/.rustfmt.toml into an unrelated docs file is refused [0.02ms]
+(pass) renaming protected authority .ci-reader-proofs/readers/forged.json into an unrelated docs file is refused [0.01ms]
+(pass) A-to-B-to-A mutable PR-file listing cannot hide protected commit A [0.09ms]
+(pass) immutable comparison checks correct commit base and complete file coverage [0.11ms]
+(pass) immutable comparison returns all 101 files on first commit-list page [0.61ms]
+(pass) immutable compare must fail closed at GitHub's 300-file response limit [0.56ms]
+(pass) renames missing original path and unknown statuses fail closed [0.09ms]
+(pass) mismatched or changing head/base, missing files, and wrong base fail closed [0.71ms]
+(pass) GitHub API problems, invalid PR/repo and comparison cap refuse admission [0.62ms]
+(pass) backslash and NUL in GitHub paths are refused, not normalized [0.14ms]
+(pass) review-state changes cannot authorize a protected CI edit without a trusted re-evaluation event [0.10ms]
+(pass) publisher has its own pinned identity and no PR-owned executable code [1.53ms]
+(pass) only a real success with matching immutable head/base emits verified App PASS [0.51ms]
+(pass) admission result failure cannot publish a successful required check [0.09ms]
+(pass) admission result cancelled cannot publish a successful required check [0.02ms]
+(pass) admission result skipped cannot publish a successful required check [0.01ms]
+(pass) admission result neutral cannot publish a successful required check [0.01ms]
+(pass) admission result unknown cannot publish a successful required check
+(pass) forged or missing admission proof {
+  verifiedHead: "cccccccccccccccccccccccccccccccccccccccc",
+} is never a PASS [0.07ms]
+(pass) forged or missing admission proof {
+  verifiedBase: "dddddddddddddddddddddddddddddddddddddddd",
+} is never a PASS [0.01ms]
+(pass) forged or missing admission proof {
+  verifiedHead: "",
+} is never a PASS [0.02ms]
+(pass) forged or missing admission proof {
+  verifiedBase: "",
+} is never a PASS [0.01ms]
+(pass) stale or mutated PR {
+  currentHead: "cccccccccccccccccccccccccccccccccccccccc",
+} cannot receive even a stale PASS [0.05ms]
+(pass) stale or mutated PR {
+  currentBase: "dddddddddddddddddddddddddddddddddddddddd",
+} cannot receive even a stale PASS [0.03ms]
+(pass) stale or mutated PR {
+  currentState: "closed",
+} cannot receive even a stale PASS [0.01ms]
+(pass) stale or mutated PR {
+  currentBaseName: "dev",
+} cannot receive even a stale PASS
+(pass) stale or mutated PR {
+  currentBaseRepo: "attacker/repo",
+} cannot receive even a stale PASS [0.03ms]
+(pass) wrong origin or malformed event {
+  owner: "attacker",
+} is refused before read or publish [0.07ms]
+(pass) wrong origin or malformed event {
+  repository: "evil",
+} is refused before read or publish [0.01ms]
+(pass) wrong origin or malformed event {
+  eventHead: "wrong",
+} is refused before read or publish
+(pass) wrong origin or malformed event {
+  eventBase: "wrong",
+} is refused before read or publish
+(pass) wrong origin or malformed event {
+  prNumber: -2,
+} is refused before read or publish
+(pass) read and App-write failures cannot become successful checks [0.11ms]
+(pass) publisher refuses unavailable or malformed test merge commit null [0.36ms]
+(pass) publisher refuses unavailable or malformed test merge commit "" [0.04ms]
+(pass) publisher refuses unavailable or malformed test merge commit "not-a-SHA" [0.03ms]
+(pass) publisher refuses unavailable or malformed test merge commit "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEF" [0.03ms]
+(pass) a delayed GitHub synthetic merge becomes usable after a bounded re-read [0.60ms]
+(pass) reviewed source head changing during merge readiness retry fails closed [0.11ms]
+(pass) unmergeable or indefinitely pending PR never receives a PASS [0.14ms]
+(pass) refresh is a protected-main-only cron and authorized manual dispatch, with no PR code checkout [0.21ms]
+(pass) a normal current PR gets exactly one App ID 5550363 success on test merge, never head [3.49ms]
+(pass) protected CI path is a real App failure, not an omitted or neutral result [0.24ms]
+(pass) 300 changed files is failure despite missing immutable comparison [0.15ms]
+(pass) untrusted refresh event {
+  ref: "refs/heads/feature",
+} never gets to Github PR API [0.07ms]
+(pass) untrusted refresh event {
+  eventName: "pull_request_target",
+} never gets to Github PR API [0.02ms]
+(pass) untrusted refresh event {
+  eventName: "workflow_dispatch",
+  actor: "outsider",
+  actorId: "999",
+} never gets to Github PR API [0.02ms]
+(pass) untrusted refresh event {
+  eventName: "workflow_dispatch",
+  actor: "0monish",
+  actorId: "999",
+} never gets to Github PR API [0.01ms]
+(pass) untrusted refresh event {
+  eventName: "workflow_dispatch",
+  actor: "0monish",
+  actorId: "155816356",
+  runAttempt: "2",
+} never gets to Github PR API [0.01ms]
+(pass) untrusted refresh event {
+  eventName: "workflow_dispatch",
+  actor: "0monish",
+  actorId: "155816356",
+  triggeringActor: "attacker",
+} never gets to Github PR API [0.01ms]
+(pass) untrusted refresh event {
+  repo: "forked",
+} never gets to Github PR API
+(pass) untrusted refresh event {
+  owner: "attacker",
+} never gets to Github PR API
+(pass) protected-main push immediately refreshes test-merge App status on base changes [0.13ms]
+(pass) Monish may manually refresh protected-main checks with stable actor ID [0.12ms]
+(pass) stale head after immutable comparison cannot publish a PASS [0.17ms]
+(pass) unmergeable or not-ready PR never gets a synthetic PASS on source head [0.29ms]
+(pass) GitHub asynchronous mergeability null is retried before check publication [0.19ms]
+(pass) final mergeable:null re-read cannot erase a previously proven immutable merge [0.89ms]
+(pass) final definite conflict after previously positive immutable merge never signs App PASS [0.19ms]
+(pass) final untrusted changed test-merge SHA does not sign PASS even with transient null [0.18ms]
+(pass) GitHub mergeability never resolves: no fabricated PASS and job reports incomplete [0.18ms]
+(pass) a genuinely unmergeable PR is skipped without a misleading merge-SHA check [0.14ms]
+(pass) old App successes expire after four days; daily refresh renews from verified main [0.22ms]
+(pass) fresh matching App check is reused instead of flooding GitHub check-run quota [0.14ms]
+(pass) existing App FAIL cannot silently become PASS from scheduled restarts [0.15ms]
+(pass) a transient 403 Compare Commits outage must NOT poison an otherwise benign PR [0.50ms]
+(pass) incomplete comparison metadata fails the refresh without writing sticky App failure [0.13ms]
+(pass) abandoned manual App approval or revocation watermark cannot be rewritten by scheduler [0.29ms]
+(pass) candidate-controlled same-name Actions status is NEVER accepted as App proof [0.17ms]
+(pass) duplicate PRs with identical merge SHA are fail-closed before check publication [0.62ms]
+(pass) GitHub write failure is reported, never falsely celebrated as a successful refresh [0.22ms]
+(pass) old scheduled-run rerun cannot publish a genuine-App PASS under an outdated trust policy [0.12ms]
+(pass) delayed scheduled job with obsolete protected-main source SHA cannot sign any PR [0.12ms]
+(pass) main changes while checking PRs: no App check can be minted by stale policy [0.23ms]
+(pass) scheduled workflow cannot claim another workflow source path [0.09ms]
+(pass) 501 open main PRs cannot globally abort: authorized batches 0 and 4 both make bounded progress [7.30ms]
+(pass) 80 transient mergeability-null PRs do not starve next eligible PR within the same batch [1.84ms]
+(pass) malformed or out-of-range manual batch index -1 cannot mint App checks [0.32ms]
+(pass) malformed or out-of-range manual batch index 999 cannot mint App checks [0.17ms]
+(pass) malformed or out-of-range manual batch index ABC cannot mint App checks [0.13ms]
+(pass) malformed or out-of-range manual batch index 4.2 cannot mint App checks [0.10ms]
+(pass) malformed or out-of-range manual batch index 1e5 cannot mint App checks [0.10ms]
+(pass) malformed or out-of-range manual batch index 01 cannot mint App checks [0.10ms]
+(pass) 20 days of attacker-controlled 480/481 open PR churn cannot starve stable PR #480 [56.93ms]
+(pass) cross-batch duplicate parent commits are denied even if other PR list merge SHA is null [0.91ms]
+(pass) direct native formatter selects JS/TS, honors ignores and checks without writes [489.34ms]
+(pass) native configuration alone can reject unchanged TypeScript [1627.93ms]
+(pass) actual workflow passes parsed security admission [9.91ms]
+(pass) Linux and Windows native acceptance tests print cargo failure output [257.13ms]
+(pass) KEL-167 Linux exact test rejects a zero-test result [306.84ms]
+(pass) KEL-167 Linux proof cannot be skipped or replaced while CI remains green [40.40ms]
+(pass) router contract regression runs independently without releasing its required gate [3.64ms]
+(pass) independent router regression job is unconditional, exact and required [72.09ms]
+(pass) CI retains main push and every pull request without trigger filters [31.50ms]
+(pass) CI workflow-wide token privileges stay read-only [19.64ms]
+(pass) non-CodeQL jobs cannot override workflow read-only token privileges [22.45ms]
+(pass) native CI jobs reject unreviewed container and services overrides [31.26ms]
+(pass) native Clippy and Nextest matrix must use every router-selected OS [27.11ms]
+(pass) change router output bindings cannot forge native OS or selected test inventory [43.46ms]
+(pass) change router classifier must execute its exact authoritative script [20.36ms]
+(pass) router executable steps cannot rewrite the classifier script before it runs [21.32ms]
+(pass) CI rejects unreviewed external actions, including mutable Docker image tags [19.52ms]
+(pass) selected native and MSRV checks cannot become false-green via continue-on-error [20.10ms]
+(pass) rustfmt avoids compiled Cargo cache without reducing format coverage [3.51ms]
+(pass) required included-file format commands cannot be skipped or shell-swallowed [17.82ms]
+(pass) rustfmt Cargo command and changed-Rust routing preserve executable failure [25.71ms]
+(pass) rustfmt rejects unreviewed job execution contexts [21.42ms]
+(pass) rustfmt rejects injected steps and step-level environment overrides [17.24ms]
+(pass) inherited custom shells cannot false-green terminal required results [31.86ms]
+(pass) inherited working directories cannot redirect executable CI gates [10.30ms]
+(pass) required job must still run when an upstream required lane fails [44.77ms]
+(pass) required evaluator runs exactly the reviewed 35-argument blocking script [43.89ms]
+(pass) required evaluator rejects injected shell startup and command search overrides [37.62ms]
+(pass) required evaluator cannot inherit unreviewed workflow or job environments [22.56ms]
+(pass) required job keeps its hosted runner, full dependency set and exact two-step order [54.20ms]
+(pass) every Rust installer agrees with the exact pin and immutable action commit [9.50ms]
+(pass) Rust toolchain admission reads the actual TOML toolchain table, never a decoy [1.25ms]
+(pass) dropping any one required Rust installer cannot silently use runner Rust [44.47ms]
+(pass) a uniformly replaced unknown action SHA is not an approved installer [3.42ms]
+(pass) a pinned Rust installer cannot be conditional or failure-tolerant [83.60ms]
+(pass) Rust setup must run immediately after checkout, before other steps [87.34ms]
+(pass) a Rustup environment override cannot shadow the pinned compiler [11.23ms]
+(pass) a run step cannot shadow the pinned compiler for later steps [24.47ms]
+(pass) source-budget reporting stays advisory, visible and unprivileged [1.98ms]
+(pass) offline CI attempt reporter regressions execute in the always-on router [3.27ms]
+(pass) CI attempt reporter tests cannot be skipped or shell-swallowed [13.46ms]
+(pass) source-budget tool unit tests run in normal unprivileged CI [5.47ms]
+(pass) new Rust test imports require explicit names in normal unprivileged CI [5.48ms]
+(pass) Windows media runner avoids unused Bun and rustfmt installation [2.34ms]
+(pass) Windows media acceptance must execute without step-level skip or failure masking [17.09ms]
+(pass) Windows media rejects unreviewed path and environment writers [11.81ms]
+(pass) both Nextest installers pin 0.9.149 and reject unpinned or downgraded releases [40.62ms]
+(pass) Nextest version verifier is mandatory on both native runner jobs [46.52ms]
+(pass) both Nextest installers refuse unreviewed tools and integrity overrides [34.95ms]
+(pass) required native main gates cannot skip, swallow failures or inherit unsafe environment [44.87ms]
+(pass) native check rejects unreviewed steps or environment writers before Clippy and Nextest [14.78ms]
+(pass) native jobs reject missing, duplicate or delayed reviewed Nextest installers [31.91ms]
+(pass) Windows media oracle matches its reviewed full-file digest [0.58ms]
+(pass) CodeQL Rust stays on hosted macOS for platform-specific semantic coverage [22.34ms]
+(pass) CodeQL rust rejects extra executable steps and job environment overrides [18.43ms]
+(pass) CodeQL rust cannot tolerate job-level analysis failures [16.21ms]
+(pass) CodeQL rust init and analyze must use an identical immutable SHA [6.88ms]
+(pass) CodeQL rust rejects uniformly changed unreviewed pinned actions [6.55ms]
+(pass) CodeQL cannot omit the rust job [5.97ms]
+(pass) CodeQL rust routes only on its own router output [31.54ms]
+(pass) CodeQL rust analyses and uploads exactly its own category [11.62ms]
+(pass) CodeQL rust permissions retain only read content and SARIF-upload authority [15.80ms]
+(pass) CodeQL javascript-typescript rejects extra executable steps and job environment overrides [13.87ms]
+(pass) CodeQL javascript-typescript cannot tolerate job-level analysis failures [11.77ms]
+(pass) CodeQL javascript-typescript init and analyze must use an identical immutable SHA [4.04ms]
+(pass) CodeQL javascript-typescript rejects uniformly changed unreviewed pinned actions [4.11ms]
+(pass) CodeQL cannot omit the javascript-typescript job [4.29ms]
+(pass) CodeQL javascript-typescript routes only on its own router output [26.90ms]
+(pass) CodeQL javascript-typescript analyses and uploads exactly its own category [11.55ms]
+(pass) CodeQL javascript-typescript permissions retain only read content and SARIF-upload authority [16.99ms]
+(pass) CodeQL actions rejects extra executable steps and job environment overrides [13.40ms]
+(pass) CodeQL actions cannot tolerate job-level analysis failures [10.48ms]
+(pass) CodeQL actions init and analyze must use an identical immutable SHA [3.39ms]
+(pass) CodeQL actions rejects uniformly changed unreviewed pinned actions [4.34ms]
+(pass) CodeQL cannot omit the actions job [3.17ms]
+(pass) CodeQL actions routes only on its own router output [23.08ms]
+(pass) CodeQL actions analyses and uploads exactly its own category [13.26ms]
+(pass) CodeQL actions permissions retain only read content and SARIF-upload authority [13.08ms]
+(pass) Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml) keeps the evidence-based step timeout under a longer job timeout [37.07ms]
+(pass) Install WebKitGTK build deps + X11 control tools (KEL-28) keeps the evidence-based step timeout under a longer job timeout [34.61ms]
+(pass) apt timeout reads the parsed run script, not names or layout [33.90ms]
+(pass) B3 Bun action post-cache save is disabled for every PR and non-main push [86.01ms]
+(pass) B3 Bun setup ownership rejects duplicated and rogue post-cache savers [8.14ms]
+(pass) B3 Cargo cache writes are restricted to trusted protected-main pushes [165.58ms]
+(pass) B3 signed WebKitGTK caches save only on a miss during protected-main push [11.22ms]
+(pass) check WebKitGTK .deb cache keeps its key, verified install and miss-only save [47.84ms]
+(pass) linux-gui-smoke WebKitGTK .deb cache keeps its key, verified install and miss-only save [46.98ms]
+(pass) pull_request_target workflows never check out or run pull-request code [1.32ms]
+(pass) B3 low-trust pull_request_target forbids workflow and job cache-mode overrides [1.31ms]
+(pass) no other step may use actions/cache, so apt index lists are never cached [3.87ms]
+(pass) no job outside the per-language owners may run CodeQL [3.52ms]
+(pass) cargo-deny installs the pinned version and verifies its recorded SHA-256 [32.98ms]
+(pass) cargo-deny steps cannot continue on error, be conditioned, removed, duplicated or reordered [67.33ms]
+(pass) cargo-deny runs the verified binary with the reviewed policy arguments [30.08ms]
+(pass) the deny job admits no Docker action, including the former cargo-deny-action [12.41ms]
+(pass) nothing in the deny job can replace or redirect the verified binary [31.73ms]
+(pass) block checkout with persistence disabled [3.66ms]
+(pass) block checkout with persistence enabled [2.90ms]
+(pass) flow checkout with persistence disabled [2.90ms]
+(pass) flow checkout with persistence enabled [2.34ms]
+(pass) alias checkout with persistence disabled [5.28ms]
+(pass) alias checkout with persistence enabled [2.58ms]
+(pass) every checkout must be protected; one secure step cannot mask another [148.76ms]
+(pass) every CI checkout must use the event-owned repository and source tree [821.63ms]
+(pass) flow-style and aliased checkouts cannot select another source [8.47ms]
+(pass) checkout repository case and subpaths cannot bypass its policy [25.23ms]
+(pass) codeql-rust Initialize CodeQL cannot be skipped, removed or duplicated [14.51ms]
+(pass) codeql-rust Analyze and upload CodeQL results cannot be skipped, removed or duplicated [15.17ms]
+(pass) codeql-javascript-typescript Initialize CodeQL cannot be skipped, removed or duplicated [13.50ms]
+(pass) codeql-javascript-typescript Analyze and upload CodeQL results cannot be skipped, removed or duplicated [14.67ms]
+(pass) codeql-actions Initialize CodeQL cannot be skipped, removed or duplicated [11.51ms]
+(pass) codeql-actions Analyze and upload CodeQL results cannot be skipped, removed or duplicated [13.53ms]
+(pass) dependency-review Review dependency vulnerabilities cannot be skipped, removed or duplicated [12.55ms]
+(pass) dependency-review Reject incomplete dependency metadata cannot be skipped, removed or duplicated [13.26ms]
+(pass) required scanner input codeql-rust upload cannot bypass its effect [3.89ms]
+(pass) required scanner input codeql-rust skip-queries cannot bypass its effect [4.65ms]
+(pass) required scanner input codeql-rust wait-for-processing cannot bypass its effect [7.23ms]
+(pass) required scanner input codeql-javascript-typescript upload cannot bypass its effect [5.48ms]
+(pass) required scanner input codeql-javascript-typescript skip-queries cannot bypass its effect [5.62ms]
+(pass) required scanner input codeql-javascript-typescript wait-for-processing cannot bypass its effect [5.54ms]
+(pass) required scanner input codeql-actions upload cannot bypass its effect [4.24ms]
+(pass) required scanner input codeql-actions skip-queries cannot bypass its effect [6.47ms]
+(pass) required scanner input codeql-actions wait-for-processing cannot bypass its effect [5.17ms]
+(pass) required scanner input dependency-review vulnerability-check cannot bypass its effect [4.88ms]
+(pass) required scanner input dependency-review warn-only cannot bypass its effect [5.03ms]
+(pass) required scanner input dependency-review fail-on-severity cannot bypass its effect [4.39ms]
+(pass) required scanner input dependency-review fail-on-scopes cannot bypass its effect [5.31ms]
+(pass) required scanner input dependency-review allow-ghsas cannot bypass its effect [5.00ms]
+(pass) wrong or floating action identity fails, including flow mappings [14.21ms]
+(pass) metadata admission cannot echo/swallow checks or change event refs [14.54ms]
+(pass) scanner prerequisites cannot be reordered [7.56ms]
+(pass) missing/malformed/unknown workflow shape refuses: "" [0.07ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: [" [0.05ms]
+(pass) missing/malformed/unknown workflow shape refuses: "---\na: 1\n---\nb: 2" [0.02ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: {}" [0.03ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: []" [0.05ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: {x: {steps: [false]}}" [0.02ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: {x: {steps: [[{}]]}}" [0.02ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: {x: {uses: owner/reusable@main}}" [0.02ms]
+(pass) missing/malformed/unknown workflow shape refuses: "jobs: &jobs { x: *jobs }" [0.04ms]
+(pass) Bun duplicate-key behavior is documented, not claimed as syntax validation [1.57ms]
+(pass) parsing budget admits the boundary and refuses one extra byte [4.59ms]
+(pass) equivalent scalar quotes and scope order preserve effects [4.68ms]
+(pass) existing Rust CLI invokes semantic admission and preserves its refusal [10659.72ms]
+
+ 300 pass
+ 0 fail
+ 21996 expect() calls
+Ran 300 tests across 1 file. [17.32s]
+python -B tools/test_hello_command.py
+python -B tools/test_ci_attempt_metrics.py
+............................
+----------------------------------------------------------------------
+Ran 28 tests in 0.004s
+
+OK
+mkdir -p target/ci-hygiene
+rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
+target/ci-hygiene/ci-hygiene-test
+
+running 140 tests
+test justfile_contract::justfile_contract_tests::a_variable_assignment_is_not_a_recipe_header ... ok
+test justfile_contract::justfile_contract_tests::a_trailing_comment_names_no_gate ... ok
+test justfile_contract::justfile_contract_tests::a_missing_recipe_is_none_and_a_cycle_stays_a_leaf ... ok
+test justfile_contract::justfile_contract_tests::bodyful_dependency_cycles_terminate ... ok
+test justfile_contract::justfile_contract_tests::a_flat_recipe_lists_its_own_dependencies ... ok
+test justfile_contract::justfile_contract_tests::reachability_descends_through_bodies_without_changing_inventory ... ok
+test justfile_contract::justfile_contract_tests::grouping_recipes_expand_in_order_and_gates_stay_leaves ... ok
+test justfile_contract::justfile_contract_tests::declaration_words_ignore_comments_but_preserve_quoted_arguments ... ok
+test justfile_contract::justfile_contract_tests::routed_entry_uses_its_declared_inventory_without_a_second_gate_list ... ok
+test tests::bun_lane_rejects_matrix_exclusions_and_includes ... ok
+test tests::bun_lane_runs_on_every_os ... ok
+test tests::bun_lane_requires_the_actual_job_level_routing_condition ... ok
+test tests::bun_ci_accepts_requested_144_and_rejects_other_versions ... ok
+test tests::channel_allocations_prefix_rule_admits_only_appends ... ok
+test tests::channel_allocations_step_must_bind_the_comparison_base ... ok
+test tests::an_inherited_override_that_retries_binds_the_gate ... ok
+test tests::an_override_that_retries_binds_the_gate ... ok
+test tests::an_unfollowable_parent_fails_closed ... ok
+test tests::bun_lane_gated_on_another_router_output_fails ... ok
+test tests::a_trailing_comment_does_not_hide_the_section ... ok
+test tests::ci_profile_that_retries_is_rejected ... ok
+test tests::comment_at_sign_does_not_false_report_unpinned ... ok
+test tests::broadened_product_status_windows_condition_fails ... ok
+test tests::check_job_if_must_not_use_matrix ... ok
+test tests::a_profile_that_does_not_bind_the_gate_may_retry ... ok
+test tests::bun_lane_must_not_apt_get ... ok
+test tests::commented_codeowners_path_does_not_count ... ok
+test tests::codeowners_path_without_owner_fails ... ok
+test tests::commented_mermaid_render_workflow_does_not_pass ... ok
+test tests::ci_profile_without_retries_passes ... ok
+test tests::bun_step_pins_accept_named_actions_and_ignore_job_strategy ... ok
+test tests::agent_context_step_is_mandatory_and_failure_preserving ... ok
+test tests::commented_mermaid_isolation_flag_does_not_pass ... ok
+test tests::commented_out_retries_is_not_a_retry ... ok
+test tests::deleting_codeowners_file_fails ... ok
+test tests::deleting_the_bun_lane_fails ... ok
+test tests::conditional_product_status_step_fails ... ok
+test tests::comment_mentioning_github_ignore_is_not_an_ignore_rule ... ok
+test tests::bodyful_dependencies_cannot_hide_transitive_parallel_rust_gates ... ok
+test tests::complete_fixture_passes ... ok
+test tests::agents_md_runs_unconditionally_in_the_router_job ... ok
+test tests::fixture_deny_job_is_the_live_ci_job ... ok
+test tests::bun_pin_is_bound_to_the_action_input_not_job_text ... ok
+test tests::empty_issue_template_dir_fails ... ok
+test tests::echoed_product_status_command_fails ... ok
+test tests::duplicate_product_status_windows_step_fails ... ok
+test tests::github_dir_ignore_patterns ... ok
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+test tests::empty_gitleaks_range_fails ... ok
+test tests::check_job_os_matrix_comes_only_from_the_router ... ok
+test tests::full_history_checkout_in_another_job_does_not_satisfy_changes_contract ... ok
+test tests::gitleaks_scan_refusals_exit_nonzero ... ok
+test tests::fuzz_workspace_step_must_be_ubuntu_and_rust_routed ... ok
+test tests::echoed_mermaid_gate_does_not_satisfy_workflow_contract ... ok
+test tests::github_if_guarded_router_command_does_not_satisfy_changes_contract ... ok
+test tests::floating_bun_version_in_bun_lane_fails ... ok
+test tests::gitleaks_range_inputs_come_from_the_event ... ok
+test tests::fuzz_workspace_step_must_run_the_exact_stable_check ... ok
+test tests::ignoring_github_dir_fails ... ok
+test tests::job_level_keys_after_steps_are_found_and_nested_if_is_ignored ... ok
+test tests::ignoring_github_star_pattern_fails ... ok
+test tests::atomic_protocol_step_is_mandatory_and_failure_preserving ... ok
+test tests::every_bun_consumer_requires_a_setup_action ... ok
+test tests::inline_comment_mermaid_gate_does_not_satisfy_workflow_contract ... ok
+test tests::keldbot_required_jobs_revalidate_synchronized_heads ... ok
+test tests::inheriting_the_implicit_default_parent_is_allowed ... ok
+test tests::gates_inside_parallel_groups_count_for_ci_and_ci_full ... ok
+test tests::missing_fuzz_workspace_step_fails ... ok
+test tests::missing_guard_codeowners_path_fails ... ok
+test tests::local_native_js_formatting_cannot_leave_the_ci_inventory ... ok
+test tests::missing_gitleaks_job_fails ... ok
+test tests::mermaid_output_outside_the_shared_checkout_fails ... ok
+test tests::linux_media_guard_commands_are_mandatory_in_the_gui_lane ... ok
+test tests::missing_llms_docs_check_fails ... ok
+test tests::missing_ipc_fuzzing_hook_test_step_fails ... ok
+test tests::missing_mermaid_msys_permission_restoration_fails ... ok
+test tests::decorated_parallel_attributes_cannot_hide_rust_gates ... ok
+test tests::missing_mermaid_msys_output_permission_fix_fails ... ok
+test tests::missing_mermaid_render_workflow_fails ... ok
+test tests::missing_mermaid_msys_shell_detection_fails ... ok
+test tests::missing_pr_gate_fails ... ok
+test tests::missing_tools_codeowner_fails ... ok
+test tests::doc_placeholder_and_hello_steps_run_whenever_the_hygiene_job_runs ... ok
+test tests::missing_wv_fuzz_workspace_step_fails ... ok
+test tests::missing_updater_helper_codeowners_path_fails ... ok
+test tests::linux_media_guard_rejects_inert_or_conditional_commands ... ok
+test tests::missing_update_fuzz_workspace_step_fails ... ok
+test tests::missing_product_status_check_fails ... ok
+test tests::msrv_must_not_apt_get_on_ubuntu ... ok
+test tests::missing_product_status_windows_step_fails ... ok
+test tests::native_js_formatting_allows_explanatory_comments ... ok
+test tests::quoted_uses_spec_sha_is_pinned ... ok
+test tests::missing_mermaid_msys_path_exclusion_fails ... ok
+test tests::package_loop_requires_bash_on_windows_matrix ... ok
+test tests::required_evaluator_refuses_unreviewed_step_environment ... ok
+test tests::inert_or_reordered_mermaid_msys_shell_text_fails ... ok
+test tests::required_job_preserves_only_reviewed_workflow_environment ... ok
+test tests::release_updater_helper_step_is_unique_and_direct ... ok
+test tests::required_job_refuses_inherited_environment ... ok
+test tests::product_status_windows_step_requires_bash ... ok
+test tests::required_evaluator_text_must_be_executed ... ok
+test tests::required_result_must_observe_security_jobs ... ok
+test tests::quoted_fetch_depth_in_changes_job_is_accepted ... ok
+test tests::required_result_job_is_mandatory_and_always_created ... ok
+test tests::public_audit_gate_is_mandatory_locally_and_in_docs_ci ... ok
+test tests::required_result_must_receive_security_results_without_spoofing ... ok
+test tests::retries_under_a_different_profile_is_not_this_contract ... ok
+test tests::required_result_must_observe_unconditional_gitleaks ... ok
+test tests::native_js_formatting_cannot_be_removed_or_skipped ... ok
+test tests::router_command_in_another_job_does_not_satisfy_changes_contract ... ok
+warning: in the working copy of 'crates/keld-ipc/channel_allocations.txt', LF will be replaced by CRLF the next time Git touches it
+test tests::doctest_job_is_routed_two_os_and_executed ... ok
+test tests::required_result_must_receive_router_applicability ... ok
+test tests::parallel_windows_media_job_preserves_required_admission ... ok
+test tests::selected_zero_test_package_must_not_fail_nextest ... ok
+test tests::router_test_in_another_job_does_not_satisfy_independent_contract ... ok
+test tests::root_test_recipe_requires_linux_xvfb_without_weakening_other_platforms ... ok
+test tests::rust_suffix_order_and_policy_before_rust_are_enforced ... ok
+test tests::shell_guarded_router_test_does_not_satisfy_changes_contract ... ok
+test tests::the_error_names_the_section_it_found ... ok
+test tests::typescript_cannot_run_inside_the_parallel_policy_batch ... ok
+test tests::the_inherited_default_profile_is_the_gate_too ... ok
+test tests::unknown_mermaid_applicability_must_fail_closed_locally ... ok
+test tests::the_retries_sub_table_binds_the_gate ... ok
+test tests::trailing_comment_cannot_spoof_the_gitleaks_scope ... ok
+test tests::unknown_event_must_refuse_a_gitleaks_range ... ok
+test tests::workflow_mentioning_hygiene_file_without_test_flag_fails ... ok
+test tests::unscoped_gitleaks_scan_fails ... ok
+test tests::unresolved_pull_request_sha_guard_is_required ... ok
+test tests::hosted_closeout_suites_cannot_be_omitted_or_echoed ... ok
+test tests::mermaid_permission_restoration_must_stay_bounded_and_preserve_status ... ok
+test tests::weakened_mermaid_resource_config_fails ... ok
+test tests::weakened_mermaid_renderer_isolation_fails ... ok
+test tests::windows_media_acceptance_step_is_unique_and_direct ... ok
+test tests::windows_media_acceptance_condition_and_shell_are_exact ... ok
+test tests::required_evaluator_rejects_false_green_shell_shapes ... ok
+test tests::every_bun_setup_in_each_bun_consumer_requires_its_own_pin ... ok
+test tests::release_updater_helper_step_cannot_be_narrowed_or_made_inert ... ok
+test tests::workspace_contracts_job_is_routed_cross_os_and_executed ... ok
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'crates/keld-ipc/channel_allocations.txt', LF will be replaced by CRLF the next time Git touches it
+test tests::channel_allocations_rule_reads_the_merge_base_and_fails_closed ... ok
+test tests::mermaid_native_dacl_does_not_depend_on_path_whoami ... ok
+test tests::windows_media_acceptance_commands_cannot_be_removed_or_made_inert ... ok
+
+test result: ok. 140 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.18s
+
+rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
+target/ci-hygiene/ci-hygiene check .
+CI workflow security semantics ok
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-e49badedb2d0424999c4472e02acc75d

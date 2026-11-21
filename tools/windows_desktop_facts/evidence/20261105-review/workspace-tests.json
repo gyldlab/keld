@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "python",
+    "-B",
+    "tools/workspace.py",
+    "run",
+    "gh-1186-windows-desktop-feasibility-20261105",
+    "--session",
+    "chatgpt-w4-desktop-20261105",
+    "--",
+    "cargo",
+    "nextest",
+    "run",
+    "--workspace",
+    "--profile",
+    "ci",
+    "--no-fail-fast"
+  ],
+  "pid": 23348,
+  "sourceHeadAtRun": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "startedUnix": 1793839957.2785752,
+  "completedUnix": 1793840149.6011755,
+  "exit": 100,
+  "executedTests": true,
+  "productSourceUnchanged": true
+}

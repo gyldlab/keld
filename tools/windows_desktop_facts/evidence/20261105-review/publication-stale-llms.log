@@ -1,0 +1,6 @@
+mkdir -p target/llms-docs
+rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
+target/llms-docs/llms-docs check .
+KELD-DOCS004: generated output `\\?\D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\llms-full.txt` is stale. Run `just llms` (or the documented rustc generator command) and commit the result.
+error: recipe `llms-check` failed on line 244 with exit code 1
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-512f9fa86d544c3c9079b1bfe11e871a

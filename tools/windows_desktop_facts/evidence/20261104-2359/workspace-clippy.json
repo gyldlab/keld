@@ -1,0 +1,23 @@
+{
+  "command": [
+    "python",
+    "-B",
+    "tools/workspace.py",
+    "run",
+    "gh-1186-windows-desktop-feasibility-20261105",
+    "--session",
+    "chatgpt-w4-desktop-20261105",
+    "--",
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit": 0,
+  "pid": 22160,
+  "startedUnix": 1793836564.591402,
+  "completedUnix": 1793836695.5654893
+}

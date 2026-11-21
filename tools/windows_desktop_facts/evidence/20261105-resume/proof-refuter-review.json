@@ -1,0 +1,118 @@
+{
+  "schema": "keld.w4-proof-refuter-review/v1",
+  "reviewer": "/root/w4_resume_proof_refuter",
+  "decision": "QUALIFIED_GO",
+  "scope": "Publish the bounded extracted-helper proof with W4 PR 1401 remaining draft. No approval of merge, native Windows semantics, or broader W4 completion.",
+  "method": {
+    "independent_source_and_log_review": true,
+    "independent_test_execution": false,
+    "independently_recomputed_input_hashes": false,
+    "publication_formatting_diff_directly_inspected": false,
+    "publication_execution_directly_inspected": false,
+    "owned_processes": [],
+    "active_test_run": false,
+    "rdc_access_used": false
+  },
+  "evidence_directory": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review",
+  "reviewed_artifacts": {
+    "driver": {
+      "path": "verify_init_seam.py",
+      "sha256": "2a25684182437d0970f93c254c1b8dabb9b76ffc4c09a033662080770347a3d3",
+      "hash_basis": "supplied identity; not independently recomputed"
+    },
+    "original_harness": {
+      "path": "init_seam_harness.rs",
+      "sha256": "3a0928332066c4c1d728583f9af9326a59af320b5c56e5fbaf17e1d1030ff158",
+      "hash_basis": "supplied identity; not independently recomputed"
+    },
+    "v3_patch": {
+      "path": "v3.patch",
+      "sha256": "e0b5ceca8c735e57d03f4088550d4de40cfebbc719572c16985fcc6543a76a27",
+      "hash_basis": "retained execution-01 receipt; not independently recomputed"
+    },
+    "extracted_v3_helper": {
+      "sha256": "bd93e882c6f24ce71c7830f860569bfe1c5577673d026ba617961b9350f04b24",
+      "hash_basis": "retained execution-01 receipt; not independently recomputed"
+    },
+    "source": {
+      "commit": "fe9a4ab8d69823c8ead58281ab1715a811a75835",
+      "path": "crates/keld-wv/src/webview2/mod.rs",
+      "git_blob": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+      "sha256": "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+      "hash_basis": "supplied blob and retained execution-01 receipt; not independently recomputed"
+    },
+    "logs": [
+      "execution-01/receipt.json",
+      "execution-01/run-v2.stderr",
+      "execution-01/run-before_sample.stderr",
+      "execution-01/run-noop.stderr",
+      "execution-01/run-v3.stdout"
+    ]
+  },
+  "publication_binding": {
+    "required": true,
+    "condition": "Extend this review to the publication copy only through a separately established original-to-publication formatting equivalence binding.",
+    "independently_verified_by_this_reviewer": false,
+    "hash_basis": "reported by author; not independently recomputed or directly diff-reviewed",
+    "driver_sha256": "2a25684182437d0970f93c254c1b8dabb9b76ffc4c09a033662080770347a3d3",
+    "harness_path": "publication/init_seam_harness.rs",
+    "harness_sha256": "ff583e3bb9755049281f32480ff2988bc7e6bc3a70974ca6fd7893c98157624c",
+    "receipt_path": "execution-publication-01/receipt.json",
+    "receipt_sha256": "b3a1dca8b4d5c0515e82a0d01d1084cb327d521d556f78b7b082ad39804b7693",
+    "equivalence_path": "publication-review.json",
+    "equivalence_sha256": "c971ab114b34d90eb2e65813a0b5c764b614d31777b2e927dc97344fc9b93f26"
+  },
+  "assessed_author_execution": {
+    "independently_executed": false,
+    "v2": {
+      "passed": 0,
+      "failed": 1,
+      "exit_code": 101,
+      "discrimination": "Post-enqueue clock advance produces 15001 instead of expected capture-completion timestamp 14999."
+    },
+    "v3": {
+      "passed": 8,
+      "failed": 0,
+      "exit_code": 0
+    },
+    "before_sample": {
+      "passed": 0,
+      "failed": 1,
+      "exit_code": 101,
+      "discrimination": "Sampling before slow capture produces 14999 instead of expected 15001."
+    },
+    "noop": {
+      "passed": 0,
+      "failed": 8,
+      "exit_code": 101,
+      "discrimination": "Required queue events and failure return values are missing."
+    },
+    "negative_controls_failed_at_expected_behavioral_assertions": true
+  },
+  "findings": [],
+  "supported_claims": [
+    "The extracted v3 helper samples the timestamp after capture completes and before desktop enqueue.",
+    "Successful ordering assertions inspect the real std::sync::mpsc receiver queue.",
+    "Absent capture, unavailable facts, and populated facts are separately exercised.",
+    "Each present capture callback is invoked once per tested helper invocation.",
+    "Actual receiver drop exercises desktop-send and initialization-send failure propagation.",
+    "A failed desktop send suppresses the initialization-send attempt."
+  ],
+  "limits": [
+    "Clock progression and the preemption hook are simulated; no actual Windows scheduler interruption is demonstrated.",
+    "No deadline predicate, Core admission, actual Core receipt, or end-to-end deadline eligibility is executed.",
+    "The helper runs outside the full crate with substituted surrounding types; this is not full-crate or Windows compilation evidence.",
+    "The first_host_init_turn guard and Option.take call are source checked; session-wide exactly-once behavior is not executed.",
+    "Desktop enqueue success does not prove Core delivery or admission.",
+    "No public Ready, native lifecycle, or native cleanup qualification follows.",
+    "The original harness was directly reviewed; the publication formatting diff and publication execution were not independently inspected by this reviewer.",
+    "No independent test run or input hash recomputation was performed."
+  ],
+  "failed_attempts": [
+    {
+      "action": "KELD agents status",
+      "result": "AGENTS_NO_CHAT",
+      "consequence": "Initial coordination unavailable; no test execution occurred through this attempt. Later direct author messages reported no remaining compiler/test processes."
+    }
+  ]
+}

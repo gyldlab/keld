@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "bun",
+    "test",
+    "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\subscribe_contract.test.ts",
+    "-t",
+    "W4 native first sample"
+  ],
+  "pid": 23100,
+  "exit": 0,
+  "startedUnix": 1793836756.966894,
+  "completedUnix": 1793836757.7592142,
+  "ownedDirectChildTimeout": false
+}

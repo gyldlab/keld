@@ -1,0 +1,25 @@
+{
+  "argv": [
+    "python",
+    "-B",
+    "tools/workspace.py",
+    "run",
+    "gh-1186-windows-desktop-feasibility-20261105",
+    "--session",
+    "chatgpt-w4-desktop-20261105",
+    "--",
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "keld-cli",
+    "--test",
+    "error_registry",
+    "--profile",
+    "ci"
+  ],
+  "pid": 14580,
+  "exit": 0,
+  "startedUnix": 1793840635.341484,
+  "completedUnix": 1793840689.9840295
+}

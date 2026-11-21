@@ -1,0 +1,146 @@
+{
+  "schema": "keld.w4-independent-publication-review/v1",
+  "created_at": "2026-11-05T12:13:28.535254+00:00",
+  "reviewer": "/root/w4_publication_review",
+  "lens": "contract/evidence consistency and regressions",
+  "base": "b18dbb9ebdac4fd554e2accce510a504d4995364",
+  "reviewed_head": "327122ea784f51a01c3ed177d95835eb157e61aa",
+  "worktree_clean": true,
+  "worktree": "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105",
+  "verdict": "No independently verified blocking finding in bounded review; exact helper behavior independently reproduced.",
+  "findings": [],
+  "review_scope": [
+    "Native adapter containment validation and regression test",
+    "Standalone Cargo fixture diff and parent-source sentinel",
+    "Integration v2 negative and v3 proposal patches",
+    "Helper extraction driver, deterministic clock harness, required negative outcomes",
+    "Relevant specification, integration notes, evidence documentation and retained receipts",
+    "Final 327122ea correction delta including maintenance config, learning-note removal and receipts"
+  ],
+  "verified_corrections": [
+    "Checked git config maintenance.auto false runs immediately after each temporary repository init.",
+    "Final correction removes only the imported fixture learning row; correction diff does not raise the context budget or remove unrelated learnings."
+  ],
+  "independent_execution": {
+    "completed_session_id": 92334,
+    "exit_code": 0,
+    "environment": {
+      "RUSTUP_TOOLCHAIN": "1.99.1"
+    },
+    "argv": [
+      "python3",
+      "-B",
+      "tools/windows_desktop_facts/verify_init_seam.py",
+      "--repo",
+      "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/object-store",
+      "--source-ref",
+      "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+      "--expected-source-sha256",
+      "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+      "--patch",
+      "tools/windows_desktop_facts/integration.patch",
+      "--red-patch",
+      "tools/windows_desktop_facts/integration-v2-negative.patch",
+      "--harness",
+      "tools/windows_desktop_facts/init_seam_harness.rs",
+      "--out",
+      "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-publication-20261105/reviewer/proof-327-with-owned-object-store"
+    ],
+    "receipt": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-publication-20261105/reviewer/proof-327-with-owned-object-store/receipt.json",
+    "receipt_sha256": "15477ae877dbe9d8ebf7b84b493672d30e40f07fb0f6ddd1a45f3d4c713c0c73",
+    "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+    "source_ref": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+    "source_blob": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+    "source_sha256": "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+    "driver_sha256": "8eb6bdc30b7cb5709aaf93c6a176ccc0faba55576108a1a73ae9fe3bad5fb3d3",
+    "harness_sha256": "ff583e3bb9755049281f32480ff2988bc7e6bc3a70974ca6fd7893c98157624c",
+    "observations": [
+      {
+        "variant": "v2",
+        "selected_test": "timely_capture_keeps_timestamp_across_post_enqueue_preemption",
+        "exit_code": 101,
+        "expected_exit_code": 101,
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      },
+      {
+        "variant": "v3",
+        "selected_test": null,
+        "exit_code": 0,
+        "expected_exit_code": 0,
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "variant": "before_sample",
+        "selected_test": "genuinely_slow_capture_is_not_backdated",
+        "exit_code": 101,
+        "expected_exit_code": 101,
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      },
+      {
+        "variant": "noop",
+        "selected_test": null,
+        "exit_code": 101,
+        "expected_exit_code": 101,
+        "passed": 0,
+        "failed": 8,
+        "ignored": 0
+      }
+    ],
+    "input_store_location_supplied_by_parent": true,
+    "pinned_source_identity_validated_by_driver": true,
+    "source_substitutions": false
+  },
+  "earlier_source_loading_failures_retained": [
+    {
+      "completed_session_id": 81784,
+      "exit_code": 1,
+      "repo": "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105",
+      "source_ref": "fe9a4ab8d69823c8ead58281ab1715a811a75835:crates/keld-wv/src/webview2/mod.rs",
+      "result": "Source path not available at supplied ref; driver stopped before compilation or execution.",
+      "classification": "Reviewer input/source-loading limitation, not an accepted negative test or demonstrated product defect"
+    },
+    {
+      "completed_session_id": 75103,
+      "exit_code": 1,
+      "repo": "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105",
+      "source_ref": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+      "result": "Pinned blob absent from this repository; driver stopped before compilation or execution.",
+      "classification": "Reviewer input/source-loading limitation, not an accepted negative test or demonstrated product defect"
+    }
+  ],
+  "earlier_checks": {
+    "hash_comparison_session": 85274,
+    "hash_comparison_exit_code": 0,
+    "bindings_match": [
+      "Integration v3 patch",
+      "Integration v2 negative patch",
+      "Helper harness",
+      "Original retained helper proof",
+      "Managed-check and publication-review receipts",
+      "Final driver"
+    ],
+    "head_observation_session": 74241,
+    "final_diff_inspection_session": 33373,
+    "final_diff_inspection_exit_code": 0
+  },
+  "limits": [
+    "Exact extracted helper bodies compile in isolation with an opaque facts token.",
+    "Instant is a deterministic injected clock; no actual scheduler preemption is claimed.",
+    "Sender delegates to real std::sync::mpsc then applies the controlled post-enqueue hook.",
+    "First-init guard/Option.take call site is source checked, not an executed tao native loop.",
+    "No Windows APIs, Core generation/admission, public Ready, deadlines or native cleanup are qualified.",
+    "Adapter suite, ExecutorTests, maintenance census and agent-context checks were not independently executed by this reviewer; retained owner results were reviewed.",
+    "Exact original fixture owner commit was not independently resolved; its changed code was reviewed.",
+    "No product build, native or GUI execution, Windows access, foreign worktree edit, or process signal.",
+    "No claim that every current hosted or full local gate has passed.",
+    "Source review is bounded to this named lens and listed scope."
+  ],
+  "active_owned_processes": [],
+  "product_or_worktree_edits_by_reviewer": false
+}

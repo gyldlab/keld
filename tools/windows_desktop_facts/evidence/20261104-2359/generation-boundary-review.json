@@ -1,0 +1,21 @@
+{
+  "review": "Follow-up: role generation and correlation identity",
+  "sharedCommit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+  "source": "packages/@keld/kipc/src/transport.ts",
+  "sourceBlob": "fbc747706a056c2f4c6b1d01dde07a75f4d5a5d1",
+  "observedSource": {
+    "counter": "WorkerLink initializes its own #nextCorr to 1 (line 2572); allocateCorr increments that instance's counter (2927-2931).",
+    "reply": "selectInboundPolicy looks up the current link's pending map by corr, then selects a channel/corr policy (1991-2005).",
+    "generation": "This client reply matching carries no Core install_generation or callback generation identity."
+  },
+  "decision": "Do not add a wrong-correlation test as stale-generation evidence. Successive WorkerLink instances can each allocate corr1 for initial Subscribe. An old completion rerouted by Host to a successor with the same channel/corr is not distinguishable by this client. A fabricated unequal corr would test no-match policy only.",
+  "executedExistingProof": [
+    "Retired WindowSource rejects direct stale apply with KELD-IPC-022 and does not revive callbacks.",
+    "Regressing desktop epoch produces sticky KELD-IPC-005; epoch is not role generation.",
+    "Fresh independent client applies scripted latest desktop/window replay before its correlated reply."
+  ],
+  "remaining": "Core must fence a completion captured under a retired role/generation from writing or resolving a successor's pending Subscribe. Requires the shared-owner Core handler/install_generation tests plus actual Windows integration.",
+  "repositoryFilesChanged": false,
+  "nativeInvoked": false,
+  "nativeCommandChanged": false
+}

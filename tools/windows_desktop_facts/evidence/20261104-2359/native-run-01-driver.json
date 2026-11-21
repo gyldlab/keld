@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "python",
+    "-B",
+    "tools/windows_desktop_facts/run_native.py",
+    "--probe",
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--shared",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\shared-s1",
+    "--oracle-exe",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\electron-44.4.5\\electron.exe",
+    "--out",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-01"
+  ],
+  "pid": 23272,
+  "exit": 0,
+  "startedUnix": 1793836756.3219457,
+  "completedUnix": 1793836758.7533267
+}

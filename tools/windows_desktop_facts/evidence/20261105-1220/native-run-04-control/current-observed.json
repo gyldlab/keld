@@ -1,0 +1,12 @@
+{
+  "scope": "mutated copy of actual native04 input; no new OS sample or settings write",
+  "variant": "current",
+  "originalIdentityCount": 1,
+  "afterInvalidIdentityCount": 1,
+  "changedWorkAreaX": -1,
+  "actualBoundsX": 0,
+  "error": "Error: W4 feasibility unavailable: single-primary work area extends outside its monitor",
+  "accepted": null,
+  "repairedIdentityCount": 2,
+  "repairedPrimaryId": 2
+}

@@ -1,0 +1,40 @@
+{
+  "cleanup": {
+    "globalSettingsWritten": false,
+    "ownedNativeHandles": 0,
+    "ownedWindowsCreated": 0
+  },
+  "dpiContext": {
+    "awareness": 2,
+    "coordinates": "physical-pixels",
+    "exactRequestedContext": true,
+    "requested": "pmv2",
+    "setterLastError": null,
+    "setterSucceeded": true
+  },
+  "error": {
+    "detail": "Native API reported failure; no fact was substituted.",
+    "kind": "native-failure",
+    "source": "GetMonitorInfoW",
+    "status": 1461
+  },
+  "machine": {
+    "architecture": "x86_64",
+    "name": "RAMANI",
+    "os": {
+      "build": 26300,
+      "major": 10,
+      "minor": 0,
+      "platformId": 2,
+      "source": "RtlGetVersion"
+    }
+  },
+  "probe": "keld-windows-desktop-facts-feasibility",
+  "processId": 7160,
+  "request": {
+    "control": "invalid-monitor",
+    "mode": "pmv2"
+  },
+  "schemaVersion": 1,
+  "status": "error"
+}
