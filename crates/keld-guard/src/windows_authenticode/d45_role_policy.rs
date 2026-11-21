@@ -85,22 +85,38 @@ fn require_issuer(
     facts: &WindowsD45NativeSignerFacts<'_>,
 ) -> Result<(), WindowsAuthenticodeError> {
     if policy.bytes.is_empty() || policy.bytes.len() > MAX_ISSUER_POLICY_BYTES {
-        return Err(refusal("the authenticated issuer policy bytes are missing or out of bounds"));
+        return Err(refusal(
+            "the authenticated issuer policy bytes are missing or out of bounds",
+        ));
     }
     if Sha256::digest(policy.bytes)[..] != policy.signed_digest[..] {
-        return Err(refusal("the issuer policy bytes differ from the signed issuer-policy digest"));
+        return Err(refusal(
+            "the issuer policy bytes differ from the signed issuer-policy digest",
+        ));
     }
     // D-WIRE exclusively checks the list count, sorted canonical JSON and
     // uniqueness before it creates a retained authenticated policy. Guard
     // checks only the native root and immediate-issuer membership predicate.
     if policy.root_certificate_hashes.is_empty() || policy.leaf_issuer_spki_hashes.is_empty() {
-        return Err(refusal("the authenticated issuer policy has no root or leaf issuer entries"));
+        return Err(refusal(
+            "the authenticated issuer policy has no root or leaf issuer entries",
+        ));
     }
-    if !policy.root_certificate_hashes.contains(&facts.root_certificate_sha256) {
-        return Err(refusal("the native verified root certificate is outside the commissioned issuer policy"));
+    if !policy
+        .root_certificate_hashes
+        .contains(&facts.root_certificate_sha256)
+    {
+        return Err(refusal(
+            "the native verified root certificate is outside the commissioned issuer policy",
+        ));
     }
-    if !policy.leaf_issuer_spki_hashes.contains(&facts.leaf_issuer_spki_sha256) {
-        return Err(refusal("the native verified leaf issuer SPKI is outside the commissioned issuer policy"));
+    if !policy
+        .leaf_issuer_spki_hashes
+        .contains(&facts.leaf_issuer_spki_sha256)
+    {
+        return Err(refusal(
+            "the native verified leaf issuer SPKI is outside the commissioned issuer policy",
+        ));
     }
     Ok(())
 }
@@ -116,35 +132,53 @@ fn require_d45_issuer_profile_role(
 ) -> Result<WindowsD45RolePolicyMatch, WindowsAuthenticodeError> {
     let policy = policy
         .ok_or_else(|| refusal("the authenticated D-WIRE issuer and role policy is unavailable"))?;
-    let facts =
-        native.ok_or_else(|| refusal("the native WinTrust issuer and signer EKU evidence is unavailable"))?;
+    let facts = native.ok_or_else(|| {
+        refusal("the native WinTrust issuer and signer EKU evidence is unavailable")
+    })?;
     if policy.app_id.is_empty() || facts.signed_app_id != policy.app_id {
-        return Err(refusal("the WinTrust signed app ID differs from the authenticated Host identity"));
+        return Err(refusal(
+            "the WinTrust signed app ID differs from the authenticated Host identity",
+        ));
     }
     if policy.application_profile_oid.is_empty()
         || policy.source_recovery_profile_oid.is_empty()
         || policy.destination_recovery_profile_oid.is_empty()
-        || matches!(policy.application_profile_oid, CODE_SIGNING_OID | PUBLIC_TRUST_OID)
-        || matches!(policy.source_recovery_profile_oid, CODE_SIGNING_OID | PUBLIC_TRUST_OID)
-        || matches!(policy.destination_recovery_profile_oid, CODE_SIGNING_OID | PUBLIC_TRUST_OID)
+        || matches!(
+            policy.application_profile_oid,
+            CODE_SIGNING_OID | PUBLIC_TRUST_OID
+        )
+        || matches!(
+            policy.source_recovery_profile_oid,
+            CODE_SIGNING_OID | PUBLIC_TRUST_OID
+        )
+        || matches!(
+            policy.destination_recovery_profile_oid,
+            CODE_SIGNING_OID | PUBLIC_TRUST_OID
+        )
         || policy.application_profile_oid == policy.source_recovery_profile_oid
         || policy.application_profile_oid == policy.destination_recovery_profile_oid
         || (policy.role == WindowsD45HostRole::DedicatedRecovery
             && policy.source_recovery_profile_oid != policy.destination_recovery_profile_oid)
     {
-        return Err(refusal("the commissioned application and recovery profiles are missing or overlap"));
+        return Err(refusal(
+            "the commissioned application and recovery profiles are missing or overlap",
+        ));
     }
     if !contains_once(facts.leaf_eku_oids, CODE_SIGNING_OID)
         || !contains_once(facts.leaf_eku_oids, PUBLIC_TRUST_OID)
     {
-        return Err(refusal("the verified primary signer lacks the required exact code-signing or Public Trust EKU"));
+        return Err(refusal(
+            "the verified primary signer lacks the required exact code-signing or Public Trust EKU",
+        ));
     }
     let required_profile_oid = match policy.role {
         WindowsD45HostRole::Ordinary => policy.application_profile_oid,
         WindowsD45HostRole::DedicatedRecovery => policy.source_recovery_profile_oid,
     };
     if !contains_once(facts.leaf_eku_oids, required_profile_oid) {
-        return Err(refusal("the verified signer lacks the exact commissioned role profile OID"));
+        return Err(refusal(
+            "the verified signer lacks the exact commissioned role profile OID",
+        ));
     }
     let forbidden_profile_oids = match policy.role {
         WindowsD45HostRole::Ordinary => [
@@ -160,7 +194,9 @@ fn require_d45_issuer_profile_role(
         .iter()
         .any(|oid| facts.leaf_eku_oids.contains(oid))
     {
-        return Err(refusal("the verified signer carries both application and recovery-only profile roles"));
+        return Err(refusal(
+            "the verified signer carries both application and recovery-only profile roles",
+        ));
     }
     // Source and destination issuer restrictions are independent. A destination
     // candidate may not use a valid chain from only one of the policy cohorts.

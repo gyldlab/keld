@@ -101,20 +101,16 @@ fn exact_role_issuer_cohorts_agree_as_data_only() {
     let digest = sha256(POLICY_BYTES);
     let ordinary = policy(&digest, WindowsD45HostRole::Ordinary);
     let ordinary_eku = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, APP_PROFILE, "1.2.3.4"];
-    assert!(require_d45_issuer_profile_role(
-        Some(&ordinary),
-        Some(&signer(&ordinary_eku)),
-    )
-    .is_ok());
+    assert!(
+        require_d45_issuer_profile_role(Some(&ordinary), Some(&signer(&ordinary_eku)),).is_ok()
+    );
 
     let mut recovery = policy(&digest, WindowsD45HostRole::DedicatedRecovery);
     recovery.destination_recovery_profile_oid = RECOVERY_PROFILE;
     let recovery_eku = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, RECOVERY_PROFILE];
-    assert!(require_d45_issuer_profile_role(
-        Some(&recovery),
-        Some(&signer(&recovery_eku)),
-    )
-    .is_ok());
+    assert!(
+        require_d45_issuer_profile_role(Some(&recovery), Some(&signer(&recovery_eku)),).is_ok()
+    );
 }
 
 #[test]
@@ -127,17 +123,33 @@ fn application_recovery_roles_cannot_be_crossed_or_combined() {
         APP_PROFILE,
         RECOVERY_PROFILE,
     ];
-    assert!(rejection(Some(&ordinary), Some(&signer(&dual_role))).contains("both application and recovery"));
+    assert!(
+        rejection(Some(&ordinary), Some(&signer(&dual_role)))
+            .contains("both application and recovery")
+    );
 
     let recovery_only = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, RECOVERY_PROFILE];
-    assert!(rejection(Some(&ordinary), Some(&signer(&recovery_only))).contains("exact commissioned role"));
+    assert!(
+        rejection(Some(&ordinary), Some(&signer(&recovery_only)))
+            .contains("exact commissioned role")
+    );
 
     let mut recovery = policy(&digest, WindowsD45HostRole::DedicatedRecovery);
     recovery.destination_recovery_profile_oid = RECOVERY_PROFILE;
     let application_only = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, APP_PROFILE];
-    assert!(rejection(Some(&recovery), Some(&signer(&application_only))).contains("exact commissioned role"));
-    let dual = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, RECOVERY_PROFILE, APP_PROFILE];
-    assert!(rejection(Some(&recovery), Some(&signer(&dual))).contains("both application and recovery"));
+    assert!(
+        rejection(Some(&recovery), Some(&signer(&application_only)))
+            .contains("exact commissioned role")
+    );
+    let dual = [
+        CODE_SIGNING_OID,
+        PUBLIC_TRUST_OID,
+        RECOVERY_PROFILE,
+        APP_PROFILE,
+    ];
+    assert!(
+        rejection(Some(&recovery), Some(&signer(&dual))).contains("both application and recovery")
+    );
 }
 
 #[test]
@@ -152,12 +164,16 @@ fn overlapping_generic_and_changed_recovery_profiles_refuse() {
 
     let mut overlapping = policy(&digest, WindowsD45HostRole::Ordinary);
     overlapping.destination_recovery_profile_oid = APP_PROFILE;
-    assert!(rejection(Some(&overlapping), Some(&facts)).contains("profiles are missing or overlap"));
+    assert!(
+        rejection(Some(&overlapping), Some(&facts)).contains("profiles are missing or overlap")
+    );
 
     let recovery_eku = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, RECOVERY_PROFILE];
     let changed = policy(&digest, WindowsD45HostRole::DedicatedRecovery);
-    assert!(rejection(Some(&changed), Some(&signer(&recovery_eku)))
-        .contains("profiles are missing or overlap"));
+    assert!(
+        rejection(Some(&changed), Some(&signer(&recovery_eku)))
+            .contains("profiles are missing or overlap")
+    );
 }
 
 #[test]
@@ -167,11 +183,19 @@ fn missing_duplicate_and_generic_eku_never_select_a_role() {
     for eku in [
         vec![PUBLIC_TRUST_OID, APP_PROFILE],
         vec![CODE_SIGNING_OID, APP_PROFILE],
-        vec![CODE_SIGNING_OID, CODE_SIGNING_OID, PUBLIC_TRUST_OID, APP_PROFILE],
+        vec![
+            CODE_SIGNING_OID,
+            CODE_SIGNING_OID,
+            PUBLIC_TRUST_OID,
+            APP_PROFILE,
+        ],
         vec![CODE_SIGNING_OID, PUBLIC_TRUST_OID, APP_PROFILE, APP_PROFILE],
     ] {
         let detail = rejection(Some(&policy), Some(&signer(&eku)));
-        assert!(detail.contains("EKU") || detail.contains("profile"), "{detail}");
+        assert!(
+            detail.contains("EKU") || detail.contains("profile"),
+            "{detail}"
+        );
     }
 }
 
@@ -187,7 +211,9 @@ fn signed_app_and_issuer_digest_mismatch_are_independent_refusals() {
     let mut corrupted = digest;
     corrupted[0] ^= 1;
     let wrong_policy = policy(&corrupted, WindowsD45HostRole::Ordinary);
-    assert!(rejection(Some(&wrong_policy), Some(&signer(&eku))).contains("signed issuer-policy digest"));
+    assert!(
+        rejection(Some(&wrong_policy), Some(&signer(&eku))).contains("signed issuer-policy digest")
+    );
 }
 
 #[test]
@@ -205,8 +231,13 @@ fn source_and_destination_issuer_restrictions_both_apply() {
 
     let mut foreign = signer(&eku);
     foreign.root_certificate_sha256 = OTHER_ROOTS[0];
-    assert!(rejection(Some(&policy(&digest, WindowsD45HostRole::Ordinary)), Some(&foreign))
-        .contains("root certificate"));
+    assert!(
+        rejection(
+            Some(&policy(&digest, WindowsD45HostRole::Ordinary)),
+            Some(&foreign)
+        )
+        .contains("root certificate")
+    );
 }
 
 #[test]
