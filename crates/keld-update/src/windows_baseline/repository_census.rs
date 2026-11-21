@@ -75,10 +75,15 @@ pub(crate) struct WindowsRepositoryEligibilityRequest<'a> {
 /// Private and non-cloneable by design. Only a future KEL-53 native T-82 owner may
 /// construct one after its versioned complete producer and real Windows tests are
 /// independently qualified. Nothing on this implementation base constructs it.
+/// The private zero-variant field also prevents accidental construction inside
+/// this defining module until the actual T-82 native owner has been reviewed.
+#[derive(Debug)]
+enum UnissuedRepositoryOwnerWitness {}
+
 #[derive(Debug)]
 #[must_use = "the native writer must retain eligibility until the protected operation is finished"]
 pub(crate) struct RepositoryLedgerCensus {
-    _native_owner_only: (),
+    _native_owner_only: UnissuedRepositoryOwnerWitness,
 }
 
 fn refuse(step: &'static str, detail: impl Into<String>) -> UpdateError {
@@ -163,7 +168,7 @@ pub(crate) fn require_windows_repository_eligibility(
 #[cfg(test)]
 mod tests {
     use super::{
-        WindowsRepositoryEligibilityRequest, WindowsRepositoryOperation,
+        RepositoryLedgerCensus, WindowsRepositoryEligibilityRequest, WindowsRepositoryOperation,
         require_windows_repository_eligibility,
     };
     use crate::{Channel, UpdateError};
@@ -190,6 +195,13 @@ mod tests {
             UpdateError::Baseline { step, .. } => step,
             other => panic!("unexpected repository error: {other}"),
         }
+    }
+
+    #[test]
+    fn repository_witness_has_no_constructible_native_owner_before_t82() {
+        // The empty match compiles only while this field has zero variants.
+        // Replacing it with a unit field makes this test fail to compile.
+        let _proof: fn(RepositoryLedgerCensus) -> ! = |census| match census._native_owner_only {};
     }
 
     #[test]
