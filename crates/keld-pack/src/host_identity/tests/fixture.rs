@@ -119,6 +119,34 @@ pub(super) fn container_section(name: [u8; 8], virtual_address: u32, raw_pointer
     }
 }
 
+/// A canonical D-4 v2 section from literal wire bytes. Compiles without the opt-in
+/// v2 feature so the public v1 reader's mixed-section refusal is tested by default.
+pub(super) fn v2_container_section(virtual_address: u32, raw_pointer: u32) -> Section {
+    let mut content = b"keld.expected-app-identity/v2\0\
+        \x0fcom.example.app\
+        \x06stable\
+        \x0bwindows-x64"
+        .to_vec();
+    content.extend_from_slice(&[0x11; 32]);
+    content.push(1); // Public Trust provider.
+    content.extend_from_slice(b"\x00\x1a1.2.840.113556.1.8000.2554");
+    content.extend_from_slice(&[0x22; 32]); // Issuer policy.
+    content.extend_from_slice(&[0x33; 32]); // Repository identity.
+    content.extend_from_slice(&[0x44; 32]); // Repository policy.
+    content.extend_from_slice(&[0x55; 32]); // Discovery policy.
+    content.extend_from_slice(&[1, 1, 1, 2]); // Owner, mode, principal, root.
+    assert_eq!(content.len(), 258, "independent D-4 fixture payload");
+    Section {
+        name: *b".keldea2",
+        virtual_size: 258,
+        virtual_address,
+        raw_size: 0x200,
+        raw_pointer,
+        characteristics: 0x4000_0040,
+        content,
+    }
+}
+
 pub(super) fn two_section_spec() -> Spec {
     Spec {
         nt: NT,
