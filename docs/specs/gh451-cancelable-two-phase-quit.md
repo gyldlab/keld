@@ -1,7 +1,11 @@
 # Spec: Cancelable two-phase application quit
-Status: draft
-Linear: GH-451 (#517) · Owner: @0monish (approval pending) · Updated: 2026-11-06
-Source baseline: `0eb3ce203187f35c5276a4237189c906a5220d5a`
+- Status: draft
+- Tracker: GH-451
+- Owner: @0monish (approval pending)
+- Updated: 2026-11-06
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
+
+Original tracking note: GH-451 (#517); owner approval remains pending.
 Publication: grouped future implementation pack; docs only, do not merge.
 
 ## 1. Goal & non-goals
@@ -30,76 +34,97 @@ Dock behavior.
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
 boundary and approves none of those changes.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-### AC1
+### AC-1: Before-quit veto
 
-Given a before-quit listener that vetoes, when quit is requested, then it runs once and no window close or terminal host action
-occurs.
+- **Given:** a before-quit listener that vetoes
+- **When:** quit is requested
+- **Then:** it runs once and no window close or terminal host action occurs.
+- **Negative control:** Remove the before-quit veto branch; assert the first native-close counter becomes nonzero.
+  - **Single fault:** Remove the before-quit veto branch.
+  - **At-risk precondition:** a before-quit listener that vetoes; quit is requested.
+  - **Expected RED:** The first native-close counter becomes nonzero despite the veto.
 
-Independent negative control: Remove the before-quit veto branch; assert the first native-close counter becomes nonzero.
+### AC-2: Two clean windows and physical close receipts
 
-### AC2
+- **Given:** two clean windows
+- **When:** one quit cycle starts
+- **Then:** each receives its own GH531 close request; will-quit and quit follow actual terminal window receipts, and window-all-closed is suppressed only while quitting stays active.
+- **Negative control:** Complete the app transaction from close-request issuance instead of destruction receipts.
+  - **Single fault:** Complete the transaction from close-request issuance rather than physical destruction.
+  - **At-risk precondition:** two clean windows; one quit cycle starts.
+  - **Expected RED:** Will-quit or quit precedes authenticated physical Destroyed receipts.
 
-Given two clean windows, when one quit cycle starts, then each receives its own GH531 close request; will-quit and quit follow
-actual terminal window receipts, and window-all-closed is suppressed only while quitting stays active.
+### AC-3: Veto does not stop remaining close requests
 
-Independent negative control: Complete the app transaction from close-request issuance instead of destruction receipts.
+- **Given:** a veto from either window in the two-window oracle fixture
+- **When:** the sweep runs
+- **Then:** the other window still receives its request and active quitting resets. A later explicit last-window destruction emits window-all-closed.
+- **Negative control:** Stop the sweep at the first veto, or retain active quitting after that veto; each mutation has a separate assertion.
+  - **Single fault:** Stop the sweep at the first veto.
+  - **At-risk precondition:** a veto from either window in the two-window oracle fixture; the sweep runs.
+  - **Expected RED:** The other window lacks its close request; separately retained Quitting also fails reset.
 
-### AC3
+### AC-4: Asynchronous Save and second Quit
 
-Given a veto from either window in the two-window oracle fixture, when the sweep runs, then the other window still receives its
-request and active quitting resets. A later explicit last-window destruction emits window-all-closed.
+- **Given:** draw.io's veto, asynchronous save and destroy sequence
+- **When:** the final window closes
+- **Then:** window-all-closed can trigger a second app.quit and a second before-quit, followed by will-quit and quit.
+- **Negative control:** Use remembered application intent as the suppression flag; the second before-quit must disappear and fail.
+  - **Single fault:** Use remembered application intent as the suppression flag.
+  - **At-risk precondition:** draw.io's veto, asynchronous save and destroy sequence; the final window closes.
+  - **Expected RED:** The second before-quit is missing following the final window destruction.
 
-Independent negative control: Stop the sweep at the first veto, or retain active quitting after that veto; each mutation has a
-separate assertion.
+### AC-5: Will-quit veto and fresh retry
 
-### AC4
+- **Given:** zero windows and a will-quit veto
+- **When:** quit is requested again later
+- **Then:** the host is still alive and before-quit/will-quit re-run without invented close events.
+- **Negative control:** Leave the application permanently in Quitting after a will-quit veto.
+  - **Single fault:** Leave the application permanently in Quitting after a will-quit veto.
+  - **At-risk precondition:** zero windows and a will-quit veto; quit is requested again later.
+  - **Expected RED:** The host terminates or a later attempt lacks before-quit and will-quit.
 
-Given draw.io's veto, asynchronous save and destroy sequence, when the final window closes, then window-all-closed can trigger a
-second app.quit and a second before-quit, followed by will-quit and quit.
+### AC-6: Native Dock Quit uses the veto owner
 
-Independent negative control: Use remembered application intent as the suppression flag; the second before-quit must disappear and
-fail.
+- **Given:** Dock or another non-menu OS quit source and a dirty window
+- **When:** quit is requested
+- **Then:** it reaches the same veto owner and never directly terminates the host.
+- **Negative control:** Allow the native terminate callback to bypass the authenticated quit-intent path.
+  - **Single fault:** Allow the native terminate callback to bypass the authenticated quit-intent path.
+  - **At-risk precondition:** Dock or another non-menu OS quit source and a dirty window; quit is requested.
+  - **Expected RED:** The dirty window loses its veto or Host terminates directly.
 
-### AC5
+### AC-7: Nested synchronous Quit coalesces
 
-Given zero windows and a will-quit veto, when quit is requested again later, then the host is still alive and
-before-quit/will-quit re-run without invented close events.
+- **Given:** a nested quit during a current synchronous callback
+- **When:** it re-enters the facade
+- **Then:** it coalesces with that active attempt and the caller does not park waiting for native close/save work.
+- **Negative control:** Await host shutdown on the calling JS stack or create a second overlapping sweep.
+  - **Single fault:** Await host shutdown on the calling JavaScript stack.
+  - **At-risk precondition:** a nested quit during a current synchronous callback; it re-enters the facade.
+  - **Expected RED:** The caller blocks on native close/save or overlapping sweeps begin.
 
-Independent negative control: Leave the application permanently in Quitting after a will-quit veto.
+### AC-8: Replacement window and Opening gate
 
-### AC6
+- **Given:** a closed listener creates a replacement window or a create reservation is still Opening
+- **When:** the original sweep has received all destruction receipts
+- **Then:** the app cannot enter WillQuit or Terminal until the current authoritative registry has no live or Opening entry.
+- **Negative control:** Treat an exhausted sweep snapshot as an empty current registry; the replacement-window survival counter must fail.
+  - **Single fault:** Treat an exhausted sweep snapshot as the current empty registry.
+  - **At-risk precondition:** a closed listener creates a replacement window or a create reservation is still Opening; the original sweep has received all destruction receipts.
+  - **Expected RED:** The replacement-window survival counter fails or terminal starts with live/Opening entries.
 
-Given Dock or another non-menu OS quit source and a dirty window, when quit is requested, then it reaches the same veto owner and
-never directly terminates the host.
+### AC-9: Zero-window terminal/Create serialization
 
-Independent negative control: Allow the native terminate callback to bypass the authenticated quit-intent path.
-
-### AC7
-
-Given a nested quit during a current synchronous callback, when it re-enters the facade, then it coalesces with that active
-attempt and the caller does not park waiting for native close/save work.
-
-Independent negative control: Await host shutdown on the calling JS stack or create a second overlapping sweep.
-
-### AC8
-
-Given a closed listener creates a replacement window or a create reservation is still Opening, when the original sweep has
-received all destruction receipts, then the app cannot enter WillQuit or Terminal until the current authoritative registry has no
-live or Opening entry.
-
-Independent negative control: Treat an exhausted sweep snapshot as an empty current registry; the replacement-window survival
-counter must fail.
-
-### AC9
-
-Given a zero-window app.quit immediately followed by BrowserWindow creation, when the existing host owner serializes admission,
-then an accepted Create prevents premature terminal quit, or a committed terminal fence rejects Create before a native window
-exists.
-
-Independent negative control: Use a stale zero-window snapshot and admit Create after terminal commitment; assert that no orphan
-native window can survive.
+- **Given:** a zero-window app.quit immediately followed by BrowserWindow creation
+- **When:** the existing host owner serializes admission
+- **Then:** an accepted Create prevents premature terminal quit, or a committed terminal fence rejects Create before a native window exists.
+- **Negative control:** Use a stale zero-window snapshot and admit Create after terminal commitment; assert that no orphan native window can survive.
+  - **Single fault:** Use a stale zero-window snapshot and admit Create after terminal commitment.
+  - **At-risk precondition:** a zero-window app.quit immediately followed by BrowserWindow creation; the existing host owner serializes admission.
+  - **Expected RED:** An orphan native window survives after terminal commit.
 
 ## 4. Design
 
@@ -151,30 +176,34 @@ rewrite GH531, invent another transport, alter deadlines or edit scoped unpublis
 This publication changes only `docs/specs/gh451-cancelable-two-phase-quit.md` and grouped-PR/issue metadata. Shared policies,
 architecture, generated schemas, code and unrelated work remain with their existing owners.
 
-## 6. Tasks (ordered, each independently reviewable)
+## 6. Tasks
 
-### T1
+### T-1: Record pending conformance and veto-reset fixtures
+- **Blocked by:** none
 
 - [ ] Record pending conformance cells and literal phase/order fixtures, including the veto-reset and second-quit oracle; preserve
 scoped D2 behavior until the joint contract is approved.
 
-### T2
+### T-2: Implement the facade-to-Host transaction and GH531 sweep
+- **Blocked by:** T-1, Q-1, Q-4
 
 - [ ] Implement one facade-to-host quit transaction together with the GH531 per-window sweep and zero-window will-quit branch;
 include every veto negative control. Include closed-listener replacement, Opening and same-turn zero-window Quit/Create controls
 against the current registry.
 
-### T3
+### T-3: Wire qualified non-menu native Quit and role retirement
+- **Blocked by:** T-2, Q-2, Q-3
 
 - [ ] Wire the qualified non-menu native quit adapter and retirement handling into the same coordinator; reject bypasses and stale
 intent.
 
-### T4
+### T-4: Run real macOS original-app conformance
+- **Blocked by:** T-2, T-3
 
 - [ ] Run real macOS clean/dirty/two-window/zero-window fixtures and original draw.io save/cancel/retry; move only this issue's
 evidenced cells to pass.
 
-## 7. Test plan
+## 7. Test plan & evidence
 
 Every AC has a distinct observable and negative mutation in section 3. Map the resulting tests and evidence rows to GH-451;
 preserve pending-fail/unknown status until the actual implementing commit passes the relevant fixture.
@@ -188,6 +217,12 @@ source-versus-proposal wording and file limits. Runtime, native and original-app
 belongs to the exact published head; a documentation-only green run does not prove platform behavior.
 The user restricted this session to GitHub. Local `just ci`, native execution, hooks and machine session closeout were not run.
 Official upstream GitHub sources were used within that source restriction; no Context7 or external-machine evidence is claimed.
+
+### E-1: Historical documentation-only review; native acceptance not run
+- **Run:** The original GitHub-only drafting session reported source readback and documentation checks, not an executed native-app test.
+- **n:** 0 native or installed-app acceptance runs.
+- **Environment:** GitHub-only spec publication at source baseline 0eb3ce203187f35c5276a4237189c906a5220d5a; no real macOS original app exercised.
+- **Limits:** Documentation checks do not establish GH-451 runtime, veto, Dock, terminal/cleanup or signed draw.io conformance.
 
 ## 8. Review gates triggered
 
@@ -204,12 +239,19 @@ sweep; no latency or startup improvement is claimed.
 
 No numerical product performance claim is made without a reproducible pinned workload, environment and receipt.
 
-## 10. Open questions (block implementation)
+## 10. Open questions, blockers & unknowns
 
-1. Approve the full API return/exception migration against the scoped D2 decision.
-2. Select the qualified AppKit terminate strategy using GH443 and approve the KEL-96 active-quitting amendment.
-3. Approve the single lifecycle payload allocation and exact role-loss disposition before enabling full quit.
-4. Reconcile late-created windows and the existing terminal/Create fence with the pinned Electron oracle; no stale empty snapshot
+### Q-1: API return and exception migration
+Approve the full API return/exception migration against the scoped D2 decision.
+
+### Q-2: Native AppKit strategy and KEL-96 amendment
+Select the qualified AppKit terminate strategy using GH443 and approve the KEL-96 active-quitting amendment.
+
+### Q-3: Lifecycle payload and role-loss disposition
+Approve the single lifecycle payload allocation and exact role-loss disposition before enabling full quit.
+
+### Q-4: Terminal/Create fence and late-created windows
+Reconcile late-created windows and the existing terminal/Create fence with the pinned Electron oracle; no stale empty snapshot
 may authorize exit.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
