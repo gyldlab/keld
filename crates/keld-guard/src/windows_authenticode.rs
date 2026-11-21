@@ -732,6 +732,19 @@ fn windows_publisher_scope_from_signer(
         ));
     }
     // SAFETY: `certificate` is non-null and owned by the live provider graph.
+    // SAFETY: only the ABI size header is read from the live provider-owned certificate.
+    let certificate_size = unsafe { (*certificate).cbStruct };
+    if certificate_size
+        < windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(
+            "primary leaf certificate",
+        )?
+    {
+        return Err(windows_identity_error(
+            "WinTrust returned a primary leaf certificate record smaller than the supported ABI",
+            "Use a supported Windows Authenticode certificate provider.",
+        ));
+    }
+    // SAFETY: size and provider-owned lifetime are checked before other fields.
     let certificate_ref = unsafe { &*certificate };
     if certificate_ref.dwError != 0 || certificate_ref.pCert.is_null() {
         return Err(windows_identity_error(
