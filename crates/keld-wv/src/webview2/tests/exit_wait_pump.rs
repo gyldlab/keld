@@ -229,7 +229,7 @@ fn expired_launch_reports_callback_channel_without_changing_refusal() {
     );
 }
 
-/// Fault injection proves that an already-expired WebView2 launch does not
+/// Fault injection proves that an already-expired `WebView2` launch does not
 /// call the synchronous Evergreen version API as a prerequisite for WV-009.
 /// In this dedicated child a late call traps immediately instead of allowing
 /// an unbounded loader query to mask the original failure.

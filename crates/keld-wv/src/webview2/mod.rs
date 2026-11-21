@@ -151,6 +151,19 @@ use crate::profile::{
     RecordedProcessObservation, WebProfileSelection, next_windows_lifecycle_action,
 };
 
+/// A successful preflight loader version captured before any launch deadline.
+/// Timeout reporting reads this snapshot without a second synchronous loader
+/// call after the deadline; a missing snapshot remains explicit.
+static GH814_PREFLIGHT_RUNTIME_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn gh814_assert_runtime_probe_is_not_late() {
+    assert!(
+        std::env::var_os("KELD_GH814_FORBID_LATE_RUNTIME_PROBE").is_none(),
+        "GH814: unbounded loader version probe reached after the launch deadline"
+    );
+}
+
 /// Returns the installed `WebView2` Evergreen runtime version.
 ///
 /// This is the detection path Microsoft documents. We deliberately do not read
@@ -163,13 +176,12 @@ use crate::profile::{
 /// Returns [`WvError::WebView2RuntimeMissing`] when the runtime is absent, too
 /// old, or the loader reports any other failure.
 pub fn runtime_version() -> Result<String, WvError> {
-    #[cfg(test)]
-    if std::env::var_os("KELD_GH814_FORBID_LATE_RUNTIME_PROBE").is_some() {
-        panic!("GH814: unbounded loader version probe reached after the launch deadline");
-    }
     use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::core::{PCWSTR, PWSTR};
+
+    #[cfg(test)]
+    gh814_assert_runtime_probe_is_not_late();
 
     let mut version = PWSTR::null();
     // SAFETY: `PCWSTR::null()` selects the installed Evergreen runtime (the
@@ -196,9 +208,21 @@ pub fn runtime_version() -> Result<String, WvError> {
     // SAFETY: `version` came from the COM task allocator and has not been freed.
     unsafe { CoTaskMemFree(Some(version.as_ptr().cast())) };
 
-    text.map_err(|err| WvError::WebView2RuntimeMissing {
+    let observed = text.map_err(|err| WvError::WebView2RuntimeMissing {
         detail: format!("runtime version string was not valid UTF-16: {err}"),
-    })
+    })?;
+    // The engine queries the loader before creating its first environment.
+    // Keep only a bounded numeric version for failure diagnostics; the actual
+    // WebView2 launch still performs every existing profile/COM check.
+    if !observed.is_empty()
+        && observed.len() <= 64
+        && observed
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        let _ = GH814_PREFLIGHT_RUNTIME_VERSION.set(observed.clone());
+    }
+    Ok(observed)
 }
 
 /// Kill-switch bound on launching `WebView2`: environment resolution plus the
@@ -719,18 +743,14 @@ fn wait_for_launch_with_message_pump_until<T>(
             let remaining_ms = deadline
                 .saturating_duration_since(phase_started)
                 .as_millis();
-            // The loader version is a bounded dotted numeric identifier, not
-            // a path, profile identity, app token, or COM error description.
-            let runtime = runtime_version()
-                .ok()
-                .filter(|value| {
-                    !value.is_empty()
-                        && value.len() <= 64
-                        && value
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-                })
-                .unwrap_or_else(|| String::from("unavailable"));
+            // The deadline already expired. Never call the synchronous loader
+            // again here: a blocked diagnostic query could mask the original
+            // WV-009 and prevent the Host from completing its failure cleanup.
+            // The preflight snapshot is already validated as bounded numeric
+            // text; tests that launch directly without preflight say unavailable.
+            let runtime = GH814_PREFLIGHT_RUNTIME_VERSION
+                .get()
+                .map_or("unavailable", String::as_str);
             eprintln!(
                 "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} launch_call_returned_ms={launch_call_returned_ms} launch_call_deadline_state={launch_call_deadline_state} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} callback_thread_relation={callback_thread_relation} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
                 phase.name(),
