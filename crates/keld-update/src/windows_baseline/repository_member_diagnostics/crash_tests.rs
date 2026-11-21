@@ -161,7 +161,7 @@ fn expected_members(cut: &str) -> Vec<(PathBuf, Vec<u8>)> {
     let pointer_bytes =
         encode_pending_repository_operation(&pending()).expect("canonical expected D-68 bytes");
     let pointer = (PathBuf::from("pending-operation.json"), pointer_bytes);
-    let pointed = (
+    let admitted_journal_member = (
         PathBuf::from("admissions").join(format!("{}.json", "2a".repeat(32))),
         b"pointed-admission-record".to_vec(),
     );
@@ -176,7 +176,7 @@ fn expected_members(cut: &str) -> Vec<(PathBuf, Vec<u8>)> {
         )],
         "d68-pointer-without-d64" => vec![pointer],
         "d68-with-unpointed-recovery" => vec![
-            pointed,
+            admitted_journal_member,
             pointer,
             (
                 PathBuf::from("recoveries").join("pending-unfinished"),
