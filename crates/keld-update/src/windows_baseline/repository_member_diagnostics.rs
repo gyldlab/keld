@@ -159,6 +159,9 @@ pub(super) fn require_only_pointed_repository_member(
 mod pointed_tests;
 
 #[cfg(test)]
+mod crash_tests;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
 
