@@ -1,7 +1,7 @@
 # Spec: generic compatibility evidence schema (KEL-74)
 
 Status: implementing
-Linear: KEL-74 · Owner: GYLDLAB · Updated: 2026-10-07
+Linear: KEL-74 · Owner: GYLDLAB · Updated: 2026-11-20
 
 ## 1. Goal & non-goals
 
@@ -36,7 +36,10 @@ Non-goals:
 1. Given a well-formed `keld.compat.evidence/v1` JSON object under the size cap, when
    `parse_evidence` runs, then it returns a record with artifact SHA-256, platform,
    architecture, Keld/Bun/engine revisions, authority profile, operation + semantic
-   oracle, verdict, and an allowed immutable evidence URI.
+   oracle, verdict, and an allowed immutable evidence URI. Admitted HTTPS evidence
+   is stored in WHATWG-canonical form (including host case, default port and
+   dot-segment normalization); `sha256:` evidence remains unchanged. `score`
+   revalidates the stored URI.
 2. Given bytes larger than the cap, non-UTF-8, trailing junk, unknown `schema`,
    unknown fields, or a malformed `sha256:` digest, when parse runs, then it returns
    the matching `KELD-COMPAT-*` error whose message states the fix.
@@ -85,8 +88,27 @@ Non-goals:
     `:` (and a bracketed host with `]:port`) MUST have a non-empty decimal
     port in the `u16` range; `github.com:abc` and `github.com:65536` are
     not public https locations. Host checks are literal (no DNS).
-    Abbreviated IPv4 (`127.1`, `010.0.0.1`, `1.1`) and DNS-to-private names
-    (`10.0.0.1.nip.io`) are T1 residuals.
+    Numeric IPv4 host spellings (including abbreviated, octal and hexadecimal
+    forms) are normalized before the public-host policy applies. DNS-to-private
+    names (`10.0.0.1.nip.io`) remain a T1 residual. A real `blob`/`tree`/`raw`
+    route with a mutable ref before the first pin is rejected, even when a
+    later filename looks like a git object id. After the immutable ref at a
+    known provider route, or after the first object id on a generic public
+    HTTPS host, ordinary `blob`/`tree`/`raw` directory names are file-path
+    data. However, recognizable provider routes at their actual ref position
+    (such as `/{owner}/{repo}/blob/<ref>` or `/-/blob/<ref>`) still require a
+    git object id there, even if an owner or project slug looks like an id.
+    Generic hosted `src/branch` and `src/tag` routes are mutable; a `src/commit`
+    route requires a full immutable ref, as does a direct `src/<ref>` route.
+    A plural `commits` history route must also name a full immutable revision
+    rather than a branch or tag, even if an earlier project slug resembles a SHA.
+    Safe encoded directory names remain allowed outside these routes; unsafe
+    encoded separators, controls and dot navigation are still refused.
+    On an unrecognized public host, a suffix shaped like a nested GitLab
+    `/-/blob/<branch>` or `/-/commits/<branch>` route is intentionally rejected even after a
+    SHA-looking earlier segment: this ambiguous shape cannot prove whether
+    the SHA is a project name or a revision. Use a `sha256:` evidence digest
+    instead when an otherwise pinned file path has this ambiguous suffix.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
     SHA-256, authority profile, or engine, when `score` runs, then `complete`
     is false and `unweighted_percent` is `None`.
@@ -113,9 +135,10 @@ Non-goals:
     A trailing FQDN dot is the same host, including GitHub raw CDN live-ref
     checks. An unbracketed authority with `:` (or `[v6]:port`) MUST use a
     decimal `u16` port. `/tmp/` is a path-prefix check on non-https URIs, not a
-    substring search on https URLs. Host checks are literal (no DNS). T1
-    residuals: abbreviated IPv4 (`127.1`, `010.0.0.1`, `1.1`) is not parsed;
-    DNS-to-private names (`10.0.0.1.nip.io`) are not resolved.
+    substring search on https URLs. Host checks are literal (no DNS).
+    WHATWG parsing canonicalizes numeric IPv4 authorities before public-host
+    classification (including abbreviated, octal and hexadecimal spellings).
+    DNS-to-private names (`10.0.0.1.nip.io`) are not resolved (T1 residual).
   - **Lifecycle:** schema version is a closed string. Unknown versions fail closed.
   - **I/O:** no filesystem reads in this slice. Magic classification is prefix-only.
   - **Failure:** every reject is a `KELD-COMPAT-*` code plus a fix sentence.
@@ -150,7 +173,18 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified / RFC1918 / CGNAT / NAT64 `64:ff9b::/96` / 6to4 `2002::/16` / link-local / unique-local; trailing FQDN dots and IPv4-mapped/compatible/translated embeddings count as that address; unbracketed `host:port` / `[v6]:port` must be a decimal `u16`) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name. Host check is literal (no DNS); abbreviated IPv4 and DNS-to-private are T1 residuals |
+| `evidence_uri` | `sha256:<64 hex>`, or HTTPS with a WHATWG-canonical public host and a 40/64-lowercase-hex git object id path segment; exclude userinfo, loopback, unspecified, IPv4 private/special-use, CGNAT, NAT64/6to4, link-local, unique-local and embedded variants; FQDN-dot and numeric IPv4 spellings are classified after canonicalization. A known `blob`/`tree`/`raw` or raw-CDN ref MUST be pinned at its route position; generic-host routes matching `/{owner}/{repo}/blob/<ref>` or `/-/blob/<ref>` also require that ref to be a pin. |
+
+Safe encoded file/directory punctuation below an established immutable pin is
+allowed. Parse returns a canonical serialized HTTPS URL. Host checks are
+literal (no DNS); DNS-to-private remains a T1 residual.
+
+The evidence JSON size cap is a limit on the supplied input bytes. HTTPS
+canonicalization can expand Unicode into percent-escaped URL bytes. A caller
+that constructs a second JSON document from the returned `evidence_uri` MUST
+still satisfy the cap on that second parse; a general arbitrary-size
+parse/serialize/reparse guarantee is not part of this v1 API. The returned
+record remains eligible for `score` without reserialization.
 
 ### 4.2 Denominator (`keld.compat.denominator/v1`)
 
