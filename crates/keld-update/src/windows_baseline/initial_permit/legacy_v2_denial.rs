@@ -107,7 +107,11 @@ mod tests {
     fn sibling_legacy_directory_is_a_distinct_native_object() {
         let temp = tempfile::tempdir().expect("isolated namespace");
         let local = temp.path().join("UserData");
-        let legacy = local.join("GYLDLAB").join("Keld").join("legacy").join("leaf");
+        let legacy = local
+            .join("GYLDLAB")
+            .join("Keld")
+            .join("legacy")
+            .join("leaf");
         fs::create_dir_all(local.join("GYLDLAB").join("Keld").join("v2"))
             .expect("create the canonical v2 namespace");
         fs::create_dir_all(&legacy).expect("create legacy fixture");

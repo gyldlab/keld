@@ -18,8 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::{
     FILE_ATTRIBUTE_REPARSE_POINT, FixtureDirectory, WindowsAuthenticodeError,
-    WindowsAuthenticodeImage, WindowsD45DirectDiscoveryEligibility,
-    sha256_retained_windows_image,
+    WindowsAuthenticodeImage, WindowsD45DirectDiscoveryEligibility, sha256_retained_windows_image,
 };
 
 /// Own only the junction leaves, never either target directory.
@@ -216,7 +215,9 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
     assert_ne!(
         sha256_retained_windows_image(
             &File::open(&visible).expect("open the foreign alias for the negative control"),
-            fs::metadata(&visible).expect("foreign image metadata").len(),
+            fs::metadata(&visible)
+                .expect("foreign image metadata")
+                .len(),
         )
         .expect("the replacement has readable bytes"),
         original_digest,
