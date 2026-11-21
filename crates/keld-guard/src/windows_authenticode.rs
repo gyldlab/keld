@@ -52,7 +52,7 @@ const WINDOWS_D45_MIN_ROOT_DER_BYTES: u32 = 64;
 const WINDOWS_D45_MAX_ROOT_DER_BYTES: u32 = 64 * 1024;
 
 /// Read-only D-45 certificate facts, not a trust, issuer-policy or role permit.
-/// Both values come from the one live WinTrust chain before CLOSE. The Pack
+/// Both values come from the one live `WinTrust` chain before CLOSE. The Pack
 /// D-WIRE and signed leaf EKU owners remain T-82-gated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowsD45ChainFacts {
@@ -69,6 +69,16 @@ struct WindowsTrustObservation {
 
 /// Hash one retained file in fixed chunks. Host size is never an allocation size.
 const WINDOWS_HOST_DIGEST_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Convert ABI structure sizes without truncating values on wider targets.
+fn windows_checked_abi_size<T>(structure: &str) -> Result<u32, WindowsAuthenticodeError> {
+    u32::try_from(std::mem::size_of::<T>()).map_err(|_| {
+        windows_identity_error(
+            format!("the {structure} structure size does not fit the 32-bit WinTrust ABI length"),
+            "Use a supported 64-bit Windows Keld build.",
+        )
+    })
+}
 
 /// Two distinct trust policies over the same retained, read-only image handle.
 /// Cache-only observation never substitutes for full revocation verification.
@@ -607,7 +617,7 @@ fn windows_identity_from_verified_trust_state(
     // SAFETY: the provider's first field is its ABI size, read before the
     // remaining fields of this versioned record.
     let provider_size = unsafe { (*provider).cbStruct };
-    if provider_size < std::mem::size_of::<CRYPT_PROVIDER_DATA>() as u32 {
+    if provider_size < windows_checked_abi_size::<CRYPT_PROVIDER_DATA>("provider")? {
         return Err(windows_identity_error(
             "WinTrust returned a provider record smaller than the supported ABI",
             "Use a supported Windows Authenticode trust provider.",
@@ -635,7 +645,7 @@ fn windows_identity_from_verified_trust_state(
     }
     // SAFETY: check the signer's ABI size before reading its tail fields.
     let signer_size = unsafe { (*signer).cbStruct };
-    if signer_size < std::mem::size_of::<CRYPT_PROVIDER_SGNR>() as u32 {
+    if signer_size < windows_checked_abi_size::<CRYPT_PROVIDER_SGNR>("primary signer")? {
         return Err(windows_identity_error(
             "WinTrust returned a primary signer record smaller than the supported ABI",
             "Use a supported Windows Authenticode signer provider.",
@@ -785,7 +795,7 @@ fn windows_d45_bounded_root_der_len(length: u32) -> Result<usize, WindowsAuthent
 }
 
 /// Observe two hashes from one selected chain, without a role or trust permit.
-/// All provider pointers are consumed before WinVerifyTrust CLOSE.
+/// All provider pointers are consumed before `WinVerifyTrust` CLOSE.
 fn windows_d45_chain_facts_from_signer(
     signer: *mut CRYPT_PROVIDER_SGNR,
 ) -> Result<WindowsD45ChainFacts, WindowsAuthenticodeError> {
@@ -812,7 +822,7 @@ fn windows_d45_single_selected_chain(
     // SAFETY: the pointer belongs to the live provider. Check the ABI size
     // header before reading its remaining fields.
     let context_size = unsafe { (*signer_ref.pChainContext).cbSize };
-    if context_size < std::mem::size_of::<CERT_CHAIN_CONTEXT>() as u32 {
+    if context_size < windows_checked_abi_size::<CERT_CHAIN_CONTEXT>("chain context")? {
         return Err(windows_identity_error(
             "the D-45 certificate chain context is smaller than the supported ABI",
             "Use a supported Windows certificate chain provider.",
@@ -842,7 +852,7 @@ fn windows_d45_single_selected_chain(
 }
 
 /// Return only provider-owned certificate pointers. The caller must consume
-/// them before WinVerifyTrust CLOSE; no pointer enters an owned result.
+/// them before `WinVerifyTrust` CLOSE; no pointer enters an owned result.
 #[allow(unsafe_code)] // bounds a live WinTrust simple chain and matches all provider slots
 fn windows_d45_selected_cert_contexts(
     signer: *mut CRYPT_PROVIDER_SGNR,
@@ -851,7 +861,7 @@ fn windows_d45_selected_cert_contexts(
 ) -> Result<(*const CERT_CONTEXT, *const CERT_CONTEXT), WindowsAuthenticodeError> {
     // SAFETY: WinTrust owns the selected chain; inspect the size header first.
     let chain_size = unsafe { (*simple_chain).cbSize };
-    if chain_size < std::mem::size_of::<CERT_SIMPLE_CHAIN>() as u32 {
+    if chain_size < windows_checked_abi_size::<CERT_SIMPLE_CHAIN>("simple chain")? {
         return Err(windows_identity_error(
             "the D-45 selected simple chain is smaller than the supported ABI",
             "Repair the signed Host certificate chain and retry.",
@@ -883,7 +893,7 @@ fn windows_d45_selected_cert_contexts(
         // SAFETY: the selected WinTrust element is non-null; check the size
         // header before accessing its decoded certificate pointer.
         let element_size = unsafe { (*element_ptr).cbSize };
-        if element_size < std::mem::size_of::<CERT_CHAIN_ELEMENT>() as u32 {
+        if element_size < windows_checked_abi_size::<CERT_CHAIN_ELEMENT>("chain element")? {
             return Err(windows_identity_error(
                 "the D-45 native chain element is smaller than the supported ABI",
                 "Use a supported Windows certificate chain provider.",
@@ -897,9 +907,15 @@ fn windows_d45_selected_cert_contexts(
                 "Repair the signed Host certificate chain and retry.",
             ));
         }
+        let cert_index = u32::try_from(index).map_err(|_| {
+            windows_identity_error(
+                "the D-45 selected chain index does not fit a WinTrust certificate index",
+                "Repair the signed Host certificate chain and retry.",
+            )
+        })?;
         windows_d45_match_provider_element(
             signer,
-            index as u32,
+            cert_index,
             element_ptr,
             element.pCertContext,
             index + 1 == count,
@@ -926,7 +942,7 @@ fn windows_d45_selected_cert_contexts(
     Ok((issuer, root))
 }
 
-/// Check each selected native element against the corresponding WinTrust
+/// Check each selected native element against the corresponding `WinTrust`
 /// provider slot and require terminal-root trust and self-signing.
 #[allow(unsafe_code)] // approved helper and provider fields under one live state
 fn windows_d45_match_provider_element(
@@ -949,7 +965,9 @@ fn windows_d45_match_provider_element(
     // its tail chain-element and root-trust fields are read.
     let provider_size = unsafe { (*provider_certificate).cbStruct };
     if provider_size
-        < std::mem::size_of::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>() as u32
+        < windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(
+            "provider certificate",
+        )?
     {
         return Err(windows_identity_error(
             "the D-45 provider certificate is smaller than the supported ABI",
