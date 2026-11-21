@@ -53,7 +53,9 @@ fn zero_first_kgc1_guardian_role() {
                     Err(source)
                         if matches!(
                             source.kind(),
-                            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                            io::ErrorKind::BrokenPipe
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::NotConnected
                         ) =>
                     {
                         break;
