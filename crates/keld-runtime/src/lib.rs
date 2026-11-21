@@ -241,6 +241,10 @@ fn clone_runtime_io_error(source: &std::io::Error) -> std::io::Error {
     {
         return std::io::Error::other(causes.clone());
     }
+    #[cfg(target_os = "macos")]
+    if let Some(denied) = macos_guardian::clone_unproven_denied_signal(source) {
+        return denied;
+    }
     if let Some(errno) = source.raw_os_error() {
         return std::io::Error::from_raw_os_error(errno);
     }

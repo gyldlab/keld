@@ -825,7 +825,11 @@ pub(super) fn retire_own_child_group(
         // returns anything but the exact signal-phase EPERM unchanged.
         match terminate_registered_group(group.pid) {
             Ok(()) => Decision::Done(Ok(())),
-            Err(refused) => Decision::Denied(refused),
+            Err(refused) => {
+                #[cfg(test)]
+                run_test_group_signal_hook(group.pid, TestGroupSignalPoint::AfterDeniedSignal);
+                Decision::Denied(refused)
+            }
         }
     };
     let decision = match observe_group_identity(group.pid) {
