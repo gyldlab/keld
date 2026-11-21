@@ -226,4 +226,3 @@ E-2 is unrun. The original scoped decision does not establish multiwindow, Dock 
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
-

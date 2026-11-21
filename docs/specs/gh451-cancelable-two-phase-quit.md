@@ -256,4 +256,3 @@ may authorize exit.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
-
