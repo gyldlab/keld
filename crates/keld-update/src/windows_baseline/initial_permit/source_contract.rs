@@ -120,10 +120,10 @@ fn hide_non_code(source: &str) -> Result<String, &'static str> {
 }
 
 // Exclude the argument tokens of macro invocations: `stringify !(call)` contains
-// valid Rust call tokens but never executes the call. Rust allows whitespace
-// and comments before `!`, so conservatively exclude any `!`-delimited group,
-// even a parenthesized unary negation. This can refuse a valid future source
-// edit; it cannot manufacture a positive effect proof.
+// valid Rust call tokens but never executes the call. The uninvoked definition
+// `macro_rules! name { ... }` also contains inert code. Rust permits whitespace
+// and comments on both sides of `!`, so mask both delimited forms. This can
+// refuse a valid future source edit; it cannot manufacture positive effect proof.
 fn hide_macro_token_trees(visible: &mut [u8]) -> Result<(), &'static str> {
     let mut at = 0;
     while at < visible.len() {
@@ -134,6 +134,24 @@ fn hide_macro_token_trees(visible: &mut [u8]) -> Result<(), &'static str> {
         let mut open = at + 1;
         while visible.get(open).is_some_and(u8::is_ascii_whitespace) {
             open += 1;
+        }
+        // Macro definitions put an identifier between `!` and the body.
+        // A macro's tokens are never an executed statement merely because
+        // they occur inside the permit method's lexical source.
+        if visible
+            .get(open)
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+        {
+            open += 1;
+            while visible
+                .get(open)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
+                open += 1;
+            }
+            while visible.get(open).is_some_and(u8::is_ascii_whitespace) {
+                open += 1;
+            }
         }
         let close = match visible.get(open).copied() {
             Some(b'(') => b')',
@@ -389,6 +407,16 @@ fn single_fault_permit_mutations_fail_before_a_native_issuer_exists() {
             "durable fence replaced with comment-gap stringify",
             "self.issuer.require_durable_creation_armed()?;",
             "let _ = stringify /* inert macro */ ! { self.issuer.require_durable_creation_armed()?; };",
+        ),
+        (
+            "durable fence replaced with dormant macro definition",
+            "self.issuer.require_durable_creation_armed()?;",
+            "macro_rules! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
+        ),
+        (
+            "durable fence replaced with spaced dormant macro definition",
+            "self.issuer.require_durable_creation_armed()?;",
+            "macro_rules /* inert */ ! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
         ),
         (
             "durable fence replaced with inert block comment",
