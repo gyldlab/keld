@@ -607,9 +607,8 @@ fn admit_virtual_layout(
     Ok(())
 }
 
-// The private v2 feature makes this pre-existing v1 reader refuse mixed PE
-// identity sections without altering the default v1-only reader.
-#[cfg(feature = "kel270-dwire-v2")]
+// The public v1 reader must refuse mixed identity sections and recovery roles
+// even in default builds, independently of the private v2 codec feature.
 fn reject_mixed_identity_sections(sections: &[Section]) -> Result<(), PackError> {
     if sections
         .iter()
@@ -626,10 +625,8 @@ fn read_container(source: &impl ImageSource) -> Result<ExpectedAppIdentityPayloa
     let layout = admit_structure(source)?;
     let sections = layout.sections();
 
-    // The opt-in D-4 format may never coexist with the old identity, and a
-    // dedicated recovery section cannot be read by the ordinary v1 route.
-    // Valid v1 images and the default feature-disabled v1 reader are unchanged.
-    #[cfg(feature = "kel270-dwire-v2")]
+    // Neither an ordinary v2 identity nor a recovery role may coexist with
+    // v1. This applies even when the private v2 codec is not compiled.
     reject_mixed_identity_sections(sections)?;
 
     // Step 2: count by the exact 8 name bytes.

@@ -29,29 +29,15 @@ fn canonical() -> Vec<u8> {
     embed_ordinary_v2(&two_sections(), &payload()).expect("private v2 writer")
 }
 
-fn independent_v2_section(virtual_address: u32, raw_pointer: u32) -> fixture::Section {
-    let bytes = payload().encode().expect("bounded fixture payload");
-    fixture::Section {
-        name: *b".keldea2",
-        virtual_size: u32::try_from(bytes.len()).expect("fixture length fits PE"),
-        virtual_address,
-        raw_size: 0x200,
-        raw_pointer,
-        characteristics: 0x4000_0040,
-        content: bytes,
-    }
-}
-
 fn valid_pe_fixture(image: &[u8]) {
     use crate::host_identity::{Bytes, admit_structure};
     admit_structure(&Bytes(image)).expect("the test must reach the v2 identity/role gate");
 }
 
 fn refused(result: Result<ExpectedAppIdentityV2, PackError>) {
-    assert!(
-        result.is_err(),
-        "unexpected v2 identity admission: {result:?}"
-    );
+    if let Ok(value) = result {
+        panic!("unexpected v2 identity admission: {value:?}");
+    }
 }
 
 fn container_detail(result: Result<ExpectedAppIdentityV2, PackError>) -> &'static str {
@@ -101,12 +87,20 @@ fn old_v1_payload_and_writer_remain_unchanged_when_private_v2_feature_is_on() {
 
 #[test]
 fn mixed_v1_v2_and_duplicate_v2_sections_refuse() {
+    let standalone_v2 = build(&fixture::Spec {
+        sections: vec![text(), data(), fixture::v2_container_section(0x3000, 0x600)],
+        ..two_section_spec()
+    });
+    assert_eq!(
+        read_ordinary_v2_bytes(&standalone_v2).expect("independent valid v2 section"),
+        payload()
+    );
     let mixed = build(&fixture::Spec {
         sections: vec![
             text(),
             data(),
             container_section(*b".keldeai", 0x3000, 0x600),
-            independent_v2_section(0x4000, 0x800),
+            fixture::v2_container_section(0x4000, 0x800),
         ],
         ..two_section_spec()
     });
@@ -119,7 +113,7 @@ fn mixed_v1_v2_and_duplicate_v2_sections_refuse() {
         sections: vec![
             text(),
             data(),
-            independent_v2_section(0x3000, 0x600),
+            fixture::v2_container_section(0x3000, 0x600),
             container_section(*b".keldeai", 0x4000, 0x800),
         ],
         ..two_section_spec()
@@ -130,15 +124,18 @@ fn mixed_v1_v2_and_duplicate_v2_sections_refuse() {
         Err(PackError::IdentityContainerDuplicate)
     ));
     assert!(
-        read_host_identity_bytes(&reversed).is_err(),
-        "v1 must also refuse mixed sections under D-WIRE feature"
+        matches!(
+            read_host_identity_bytes(&reversed),
+            Err(PackError::IdentityContainerDuplicate)
+        ),
+        "v1 must refuse mixed sections under D-WIRE feature"
     );
     let duplicate = build(&fixture::Spec {
         sections: vec![
             text(),
             data(),
-            independent_v2_section(0x3000, 0x600),
-            independent_v2_section(0x4000, 0x800),
+            fixture::v2_container_section(0x3000, 0x600),
+            fixture::v2_container_section(0x4000, 0x800),
         ],
         ..two_section_spec()
     });
@@ -157,7 +154,7 @@ fn missing_only_and_nonfinal_v2_sections_fail_at_the_correct_boundary() {
         "the v2 identity section is absent"
     );
     let only = build(&fixture::Spec {
-        sections: vec![independent_v2_section(0x1000, 0x200)],
+        sections: vec![fixture::v2_container_section(0x1000, 0x200)],
         ..two_section_spec()
     });
     valid_pe_fixture(&only);
@@ -168,7 +165,7 @@ fn missing_only_and_nonfinal_v2_sections_fail_at_the_correct_boundary() {
     let not_final = build(&fixture::Spec {
         sections: vec![
             text(),
-            independent_v2_section(0x2000, 0x400),
+            fixture::v2_container_section(0x2000, 0x400),
             fixture::Section {
                 virtual_address: 0x3000,
                 raw_pointer: 0x600,
@@ -193,7 +190,7 @@ fn dedicated_recovery_section_cannot_be_reinterpreted_as_ordinary_host() {
             text(),
             data(),
             container_section(*b".keldrec", 0x3000, 0x600),
-            independent_v2_section(0x4000, 0x800),
+            fixture::v2_container_section(0x4000, 0x800),
         ],
         ..two_section_spec()
     });
