@@ -62,6 +62,7 @@ let windowFactCallback = () => {};
 function onWindowFactApplied(callback) { windowFactCallback = callback; }
 const stateDefineProperty = Object.defineProperty;
 const nativeFacadeBootSelected = true;
+function observeWindowCreateActivity() { return { epoch: 0n, pending: 0 }; }
 const apiApp = {
   isReady: () => true,
   quit: () => { terminalCalls++; trace.push("terminal"); return Promise.resolve(); },

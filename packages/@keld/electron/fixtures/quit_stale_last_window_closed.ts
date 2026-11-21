@@ -30,6 +30,7 @@ mock.module("../../api/src/app.ts", () => ({
   // This ordinary replacement-window fixture has no qualified original source.
   captureOriginalWindowQuitScope: () => undefined,
   getWindowSnapshots: () => (live ? [{ host_destroyed: false }] : []),
+  observeWindowCreateActivity: () => ({ epoch: 0n, pending: 0 }),
 }));
 const { app } = await import("../src/app.ts");
 notifyLastWindow();

@@ -14,6 +14,8 @@ let admitted = true,
 let replacementAppeared = false;
 const outbound: WindowRequest[] = [];
 let resolveClose: ((value: unknown) => void) | undefined;
+let rejectWindow: ((reason: unknown) => void) | undefined;
+let pendingCreate: Promise<unknown> | undefined;
 let reportRequest: (() => void) | undefined;
 const requestObserved = new Promise<void>((resolve) => {
   reportRequest = resolve;
@@ -44,13 +46,22 @@ const session = {
     return admitted;
   },
   windowSource: source,
+  callWindowBlocking(request: WindowRequest) {
+    outbound.push(request);
+    requests++;
+    reportRequest?.();
+    throw requestFailure;
+  },
   callWindow(request: WindowRequest) {
     outbound.push(request);
     requests++;
     reportRequest?.();
     if (mode === "request-error") return Promise.reject(requestFailure);
-    return new Promise((resolve) => {
+    if (mode?.includes("-sync-throw-")) throw requestFailure;
+    if (mode?.includes("-transient-")) return Promise.reject(requestFailure);
+    return new Promise((resolve, reject) => {
       resolveClose = resolve;
+      rejectWindow = reject;
     });
   },
   quit() {
@@ -79,8 +90,42 @@ if (mode === "observer-retires") {
   });
 }
 const { app } = await import("../src/app.ts");
-const { captureOriginalWindowQuitScope } = await import("../../api/src/app.ts");
-const beforeAttack = mode?.startsWith("zero-before-") === true;
+const { captureOriginalWindowQuitScope, invokeWindow, invokeWindowBlocking } =
+  await import("../../api/src/app.ts");
+function startControlledCreate(): void {
+  const geometry = { width: 800, height: 600, x: null, y: null };
+  const request: WindowRequest = mode?.endsWith("-preload")
+    ? {
+        variant: "CreateWithPreload",
+        ...geometry,
+        preload_absolute: "/admitted/original-preload.js",
+        additional_arguments: [],
+      }
+    : { variant: "Create", ...geometry };
+  if (mode?.includes("-blocking-")) {
+    try {
+      invokeWindowBlocking(request);
+      pendingCreate = Promise.resolve(null);
+    } catch (error) {
+      pendingCreate = Promise.resolve(error);
+    }
+    return;
+  }
+  try {
+    pendingCreate = invokeWindow(request).then(
+      () => null,
+      (error: unknown) => error,
+    );
+  } catch (error) {
+    pendingCreate = Promise.resolve(error);
+  }
+}
+const beforeAttack =
+  mode === "zero-before-overwrite" ||
+  mode === "zero-before-getter-spoof" ||
+  mode?.startsWith("zero-before-global-") === true ||
+  mode?.startsWith("zero-before-reflect-") === true ||
+  mode?.startsWith("zero-before-slice-") === true;
 const willAttack =
   mode === "zero-will-overwrite" ||
   mode?.startsWith("zero-will-global-") === true ||
@@ -103,6 +148,15 @@ app.on("before-quit", (event: unknown) => {
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
+if (
+  mode?.startsWith("zero-before-pending-") ||
+  mode?.startsWith("zero-before-transient-")
+) {
+  app.on("before-quit", () => {
+    if (before !== 1) return;
+    startControlledCreate();
+  });
+}
 const offMode = mode?.startsWith("zero-off-") === true;
 const offTrace: string[] = [];
 if (offMode) {
@@ -195,6 +249,14 @@ if (mode?.startsWith("zero-will")) {
       replacementAppeared = true;
       return;
     }
+    if (
+      willQuit === 1 &&
+      (mode?.startsWith("zero-will-pending-") ||
+        mode?.startsWith("zero-will-transient-"))
+    ) {
+      startControlledCreate();
+      return;
+    }
     if (mode === "zero-will-throw" && willQuit === 1)
       throw new Error("controlled will-quit listener failure");
     if (willAttack) {
@@ -219,6 +281,7 @@ if (mode?.startsWith("zero-will")) {
 const ready = app.whenReady();
 if (mode !== "pre-ready") await ready;
 assert.ok(handlers);
+if (mode === "zero-preexisting-pending-create") startControlledCreate();
 if (mode?.startsWith("live-census-")) snapshot.document.current = false;
 // Poison one ordinary global at a time, only during the actual native intent.
 // Source imports already captured their framework intrinsics before this point.
@@ -484,6 +547,38 @@ if (mode?.startsWith("scope-")) {
       mode === "zero-will-veto"
         ? ["before-quit", "will-quit", "before-quit", "will-quit"]
         : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
+    );
+  } else if (
+    mode === "zero-preexisting-pending-create" ||
+    mode?.startsWith("zero-before-pending-") ||
+    mode?.startsWith("zero-before-transient-") ||
+    mode?.startsWith("zero-will-pending-") ||
+    mode?.startsWith("zero-will-transient-")
+  ) {
+    // No Host Created fact is available. The actual API owner nevertheless
+    // submitted a Create/WithPreload while source.all() still reports zero.
+    // Forceful Quit destroys the pending native window without its close veto.
+    await assert.rejects(nested, /KELD-COMPAT-012/);
+    assert.equal(
+      terminals,
+      0,
+      "pending or transient Create must retain the role",
+    );
+    assert.equal(admitted, true, "a refused terminal keeps the same app link");
+    assert.equal(requests, 1);
+    assert.equal(
+      outbound[0]?.variant,
+      mode?.endsWith("-preload") ? "CreateWithPreload" : "Create",
+    );
+    assert.equal(willQuit, mode?.startsWith("zero-will-") ? 1 : 0);
+    if (!mode?.includes("-transient-")) rejectWindow?.(requestFailure);
+    assert.equal(await pendingCreate, requestFailure);
+    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    await nested;
+    assert.equal(
+      terminals,
+      1,
+      "after the failed Create a fresh Quit may commit",
     );
   } else if (mode === "zero-will-create") {
     await assert.rejects(nested, /KELD-COMPAT-012/);

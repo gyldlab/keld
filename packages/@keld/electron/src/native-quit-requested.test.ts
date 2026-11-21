@@ -88,6 +88,17 @@ const modes = [
   "zero-will-retry",
   "zero-will-throw",
   "zero-will-create",
+  "zero-preexisting-pending-create",
+  "zero-before-pending-create",
+  "zero-before-pending-preload",
+  "zero-before-transient-create",
+  "zero-will-pending-create",
+  "zero-will-pending-preload",
+  "zero-will-transient-create",
+  "zero-will-transient-preload",
+  "zero-will-transient-blocking-create",
+  "zero-will-transient-blocking-preload",
+  "zero-will-transient-sync-throw-create",
   "live-census-filter-only",
   "live-census-some-only",
   "live-census-both",
@@ -170,6 +181,11 @@ for (const { facts, mode } of cases) {
       );
     } else if (
       mode === "zero-will-create" ||
+      mode === "zero-preexisting-pending-create" ||
+      mode?.startsWith("zero-before-pending-") ||
+      mode?.startsWith("zero-before-transient-") ||
+      mode?.startsWith("zero-will-pending-") ||
+      mode?.startsWith("zero-will-transient-") ||
       mode === "multi" ||
       mode?.startsWith("live-census-")
     ) {

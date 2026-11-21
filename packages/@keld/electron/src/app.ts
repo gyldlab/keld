@@ -13,6 +13,7 @@ import {
   type OriginalWindowQuitScope,
   getWindowSnapshots,
   hasObservedHostReady,
+  observeWindowCreateActivity,
   onWindowFactApplied,
   onNativeQuitRequested,
 } from "@keld/api/internal/app";
@@ -419,7 +420,18 @@ function requestQuitAfterBeforeEvent(
   return promise;
 }
 
+/** Role-local Create observations only refuse a Quit; they never authorize one. */
+function createRacedWithQuit(epochAtStart: bigint): boolean {
+  const activity = observeWindowCreateActivity();
+  return activity.pending !== 0 || activity.epoch !== epochAtStart;
+}
+
 function quit(): Promise<void> {
+  // Capture before user `before-quit` handlers: they may send an asynchronous
+  // Create that Core already admits as Opening before its Source publishes it.
+  const createEpochAtStart = nativeFacadeBootSelected
+    ? observeWindowCreateActivity().epoch
+    : undefined;
   return requestQuitAfterBeforeEvent((attempt) => {
     // GH451's full cancelable before-quit/window-close/will-quit choreography
     // has not passed its independent spec gate. Never translate Electron
@@ -434,6 +446,16 @@ function quit(): Promise<void> {
       return Promise.reject(
         new Error(
           "KELD-COMPAT-012: native facade Quit is not authorized before Host Ready; the current window census has not been authenticated",
+        ),
+      );
+    }
+    if (
+      createEpochAtStart !== undefined &&
+      createRacedWithQuit(createEpochAtStart)
+    ) {
+      return Promise.reject(
+        new Error(
+          "KELD-COMPAT-012: a native window Create remains pending or was submitted during Quit preflight; retry after its Host result and close policy settle",
         ),
       );
     }
@@ -507,11 +529,14 @@ function quit(): Promise<void> {
     // The prior zero-window census is no authority to force-close that window.
     if (
       nativeFacadeBootSelected &&
-      (!apiApp.isReady() || liveWindowSnapshots().length !== 0)
+      (!apiApp.isReady() ||
+        liveWindowSnapshots().length !== 0 ||
+        (createEpochAtStart !== undefined &&
+          createRacedWithQuit(createEpochAtStart)))
     ) {
       return Promise.reject(
         new Error(
-          "KELD-COMPAT-012: a window appeared during will-quit; retry through its cancelable close path",
+          "KELD-COMPAT-012: a window appeared or Create was submitted during will-quit; retry through its cancelable close path",
         ),
       );
     }

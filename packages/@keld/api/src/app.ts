@@ -712,6 +712,30 @@ export function onWindowFactApplied(
   };
 }
 
+// Supplemental role-local negative evidence, not a Host window census. A
+// Create/WithPreload may be admitted while Opening has no published Source
+// fact, and a failed transient Create may return the Source to zero. Neither
+// case gives the Electron facade permission to use forceful lifecycle Quit.
+let windowCreateAttemptEpoch = 0n;
+let pendingWindowCreateCalls = 0;
+
+/** @internal Only the Host may positively authorize terminal Quit. */
+export function observeWindowCreateActivity(): Readonly<{
+  epoch: bigint;
+  pending: number;
+}> {
+  return {
+    epoch: windowCreateAttemptEpoch,
+    pending: pendingWindowCreateCalls,
+  };
+}
+
+function isWindowCreate(request: WindowRequest): boolean {
+  return (
+    request.variant === "Create" || request.variant === "CreateWithPreload"
+  );
+}
+
 /** Host-minted synchronous Create / Destroy, unavailable until the full Ready barrier. */
 export function invokeWindowBlocking(request: WindowRequest): WindowResponse {
   if (!hostReady || !connectedLink?.windowSource) {
@@ -722,6 +746,7 @@ export function invokeWindowBlocking(request: WindowRequest): WindowResponse {
   }
   const session = connectedLink;
   const frozenRequest = snapshotHostCloseVerdict(request);
+  if (isWindowCreate(frozenRequest)) windowCreateAttemptEpoch += 1n;
   const response = session.callWindowBlocking(frozenRequest);
   acceptHostCloseReply(frozenRequest, response, session);
   return response;
@@ -773,10 +798,29 @@ export function invokeWindow(request: WindowRequest): Promise<WindowResponse> {
   }
   const session = connectedLink;
   const frozenRequest = snapshotHostCloseVerdict(request);
-  return session.callWindow(frozenRequest).then((response) => {
-    acceptHostCloseReply(frozenRequest, response, session);
-    return response;
-  });
+  const tracked = isWindowCreate(frozenRequest);
+  if (tracked) {
+    windowCreateAttemptEpoch += 1n;
+    pendingWindowCreateCalls += 1;
+  }
+  let result: Promise<WindowResponse>;
+  try {
+    result = session.callWindow(frozenRequest);
+  } catch (error) {
+    if (tracked) pendingWindowCreateCalls -= 1;
+    throw error;
+  }
+  return result.then(
+    (response) => {
+      if (tracked) pendingWindowCreateCalls -= 1;
+      acceptHostCloseReply(frozenRequest, response, session);
+      return response;
+    },
+    (error: unknown) => {
+      if (tracked) pendingWindowCreateCalls -= 1;
+      throw error;
+    },
+  );
 }
 
 /** Package-private FS invocation; public exports expose only typed read/write. */
