@@ -4,8 +4,8 @@
 mod creation;
 mod deletion;
 mod enumeration;
-mod repository_record_boundary;
 mod rename_binding;
+mod repository_record_boundary;
 mod retained_parent;
 mod support;
 mod volume;
