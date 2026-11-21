@@ -95,6 +95,22 @@ pub(super) struct RetainedOperationParents<'lease> {
     transitions: &'lease Dir,
 }
 
+impl<'lease> RetainedOperationParents<'lease> {
+    /// Bundle already authenticated retained native parents without deriving
+    /// a repository writer, census witness, or admission permission.
+    pub(super) const fn new(
+        admissions: &'lease Dir,
+        recoveries: &'lease Dir,
+        transitions: &'lease Dir,
+    ) -> Self {
+        Self {
+            admissions,
+            recoveries,
+            transitions,
+        }
+    }
+}
+
 impl<'lease> RepositoryMetadataIo<'lease> {
     /// Attaches only to the caller-retained lease and D-90 proof; this type
     /// cannot be constructed by a production caller before T-82 qualification.
