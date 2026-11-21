@@ -219,6 +219,57 @@ fn per_user_initializer_pins_source_until_final_protected_readback() {
 }
 
 #[test]
+fn foreign_update_entry_at_bootstrap_cut_refuses_before_activation_effect() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    let verified = support::baseline(&trust);
+    let update = trust.installation.update_root.clone();
+    let foreign = update.join("unexpected-at-bootstrap");
+    let mut reached_bootstrap_cut = false;
+
+    let refusal = initialize_per_user_with_observer(&verified, &source, &trust, |boundary| {
+        if boundary == BaselineBoundary::LockCreated {
+            reached_bootstrap_cut = true;
+            fs::write(&foreign, b"unrelated record")?;
+        }
+        Ok(())
+    })
+    .expect_err("a changed retained update directory must stop before activation");
+
+    assert!(
+        reached_bootstrap_cut,
+        "the test reached the actual KEL-53 first effect"
+    );
+    assert!(matches!(
+        refusal,
+        UpdateError::Baseline {
+            step: "bootstrap scaffold update reread",
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read(&foreign).expect("retain foreign evidence"),
+        b"unrelated record"
+    );
+    assert!(
+        update.join("bootstrap.lock").is_file(),
+        "the first effect is recorded"
+    );
+    for absent in [
+        update.join("activation.lock"),
+        update.join("current"),
+        update.join("last-known-good"),
+        trust.installation.install_root.join("install-provenance"),
+    ] {
+        assert!(
+            !absent.exists(),
+            "a changed bootstrap scaffold must refuse before the next effect: {}",
+            absent.display()
+        );
+    }
+}
+
+#[test]
 fn per_user_missing_archive_refuses_before_bootstrap_effects() {
     support::assert_user_principal_token();
     let (_temp, trust, source) = fixture();

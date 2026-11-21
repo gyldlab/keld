@@ -143,7 +143,9 @@ impl CreationArmedEffectGate<'_> {
         // recheck before the KEL-53 writer makes its first protected create.
         self.issuer.revalidate_under_repository_lease()?;
         let lock = initialize::acquire_bootstrap_lock(roots)?;
+        initialize::recheck_bootstrap_scaffold(roots)?;
         self.issuer.revalidate_bootstrap_lock(&lock)?;
+        initialize::recheck_bootstrap_scaffold(roots)?;
         self.issuer.publish_and_read_back_bootstrap_owned(&lock)?;
         Ok(lock)
     }

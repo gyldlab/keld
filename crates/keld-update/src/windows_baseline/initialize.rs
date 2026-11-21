@@ -262,6 +262,7 @@ fn initialize_with_authority_and_token_check(
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
     let mut lock = acquire_bootstrap_lock(&roots)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
+    recheck_bootstrap_scaffold(&roots)?;
     seed_activation_lock(&roots)?;
     observe(BaselineBoundary::ActivationLockCreated)
         .map_err(|cause| error("activation lock boundary", cause))?;
@@ -316,6 +317,31 @@ pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError>
     lock.sync_all()
         .map_err(|cause| error("bootstrap lock flush", cause))?;
     Ok(lock)
+}
+
+/// Rereads the retained KEL-53 scaffold immediately after the bootstrap cut.
+///
+/// A new sibling or stage appearing between the pre-create census and the
+/// next effect must stop the transaction as incomplete. This check neither
+/// proves D-90 repository-wide vacancy nor grants an initial-install permit.
+pub(super) fn recheck_bootstrap_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    let update_name = roots
+        .trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("topology", "update name absent"))?;
+    let install = roots
+        .install()
+        .map_err(|cause| error("bootstrap scaffold root", cause))?;
+    exact_entries(install, &[update_name])
+        .map_err(|cause| error("bootstrap scaffold install reread", cause))?;
+    exact_entries(&roots.update, &["versions", "bootstrap.lock"])
+        .map_err(|cause| error("bootstrap scaffold update reread", cause))?;
+    exact_entries(&roots.versions, &[])
+        .map_err(|cause| error("bootstrap scaffold versions reread", cause))?;
+    Ok(())
 }
 
 fn seed_activation_lock(roots: &Roots) -> Result<(), UpdateError> {
