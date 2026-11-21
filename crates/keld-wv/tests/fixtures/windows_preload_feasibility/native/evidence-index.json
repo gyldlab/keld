@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "kind": "Windows native feasibility fixture; no native run in this build receipt",
+  "qualifiedBase": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "exactBuildInputs": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "a72b28017ccddd23092d63c40f3844bcd5f931269d68934f4c30ea4f67b7b8bb",
+      "bytes": 704
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "634e92156fc7314a876aa93a421cd2f9b6f0e94f146e274608959e00f07e60a9",
+      "bytes": 9054
+    },
+    {
+      "path": "src/config.rs",
+      "sha256": "cca816af0f447c51854d7f4e0597783604b089a7e54f2a1b31e86f1d72ed9e21",
+      "bytes": 5367
+    },
+    {
+      "path": "src/digest.rs",
+      "sha256": "739b804a813396cb57d3c4405470403cce17966ee919f33e39779bec9d74a202",
+      "bytes": 191
+    },
+    {
+      "path": "src/events.rs",
+      "sha256": "471a70ff3700fcea78a8f230272e03131c214faa0cdd03bc734bb2fed2f31a76",
+      "bytes": 10579
+    },
+    {
+      "path": "src/forcing.js",
+      "sha256": "e43633cdc007182b2317a02852954c36afd81fe415bdf5b83eb8b4b9246a1581",
+      "bytes": 1178
+    },
+    {
+      "path": "src/main.rs",
+      "sha256": "16b78d41f6917b90a2f8dc902e640e62d30b8dfb8eba7621ec519c3454bd4594",
+      "bytes": 1009
+    },
+    {
+      "path": "src/native.rs",
+      "sha256": "dca489886eadf58cae45927c76ee931afb84cd2e6c958eac2f5d2427b219f60a",
+      "bytes": 14647
+    },
+    {
+      "path": "src/observer.js",
+      "sha256": "046a00d44b073a437e018d31b3eef939ebf25526a0239bc45fd077a9a10be852",
+      "bytes": 1470
+    },
+    {
+      "path": "src/pump.rs",
+      "sha256": "ef573852cfebdf63ca8fba016563cc815592776267dd637b0173d0d0024764a7",
+      "bytes": 4532
+    },
+    {
+      "path": "src/resources.rs",
+      "sha256": "c278406cbb499152d18843c3c10b29025131ea424192a136f212d3a1c7e944e9",
+      "bytes": 5506
+    },
+    {
+      "path": "src/runner.rs",
+      "sha256": "ab5f37f647ab27cdc67c948c7c556a7cc43d25975e2530b9c7b56693ae538e52",
+      "bytes": 5986
+    },
+    {
+      "path": "src/scenarios.rs",
+      "sha256": "65206ad236595962f6af4690727c14638f32b624022f931b2c4f084611781edb",
+      "bytes": 13722
+    },
+    {
+      "path": "src/trace.rs",
+      "sha256": "112a0a7b784f57cd8a08f51a3cfe72f45823f810ea76ee4f4c2ac147ea986d3c",
+      "bytes": 2302
+    }
+  ],
+  "binary": {
+    "path": "target/debug/keld-w1-native-probe.exe",
+    "sha256": "cf85ce3841f34ba36df3e3a317f43f4e62ea348f4f0da6e9fe68a5b1fc83fb65",
+    "bytes": 1309696
+  },
+  "currentLockSha256": "634e92156fc7314a876aa93a421cd2f9b6f0e94f146e274608959e00f07e60a9",
+  "originalE5LockSha256": "acb56069352171e9eb68ab9c60ca23e9cef25580e4814188e4639d767930c300",
+  "commonGitEvidence": "keld-closeout/chatgpt-w1-feasibility-20261105/native-build",
+  "finalReceipt": {
+    "name": "final-gates.receipt.json",
+    "sha256": "1e8f15521208cf4a9015919244b5aff81c64b3ff72ac9304da20e7197bfa0b80"
+  },
+  "gates": [
+    {
+      "command": "cargo fmt --manifest-path native/Cargo.toml -- --check",
+      "exitCode": 0
+    },
+    {
+      "command": "bun fmt --no-script --check native/src/observer.js native/src/forcing.js",
+      "exitCode": 0,
+      "receipt": "jsfmt-check-2.receipt.json"
+    },
+    {
+      "command": "cargo clippy --locked --offline --jobs 1 --manifest-path native/Cargo.toml --target-dir native/target -- -D warnings",
+      "exitCode": 0,
+      "log": "clippy-2.stderr.log"
+    },
+    {
+      "command": "cargo build --locked --offline --jobs 1 --manifest-path native/Cargo.toml --target-dir native/target",
+      "exitCode": 0,
+      "log": "build-4.stderr.log"
+    }
+  ],
+  "preservedFailures": [
+    {
+      "name": "build-1.stderr.log",
+      "exitCode": 101,
+      "reason": "Swapped close(state, config) arguments; fixed before build-2"
+    },
+    {
+      "name": "jsfmt-check-1.stderr.log",
+      "exitCode": 1,
+      "reason": "Both authored JS files needed formatting; corrected and rebuilt"
+    }
+  ],
+  "dependencyCorrection": {
+    "sha2": "0.10.9",
+    "cfgIf": "1.0.4",
+    "libc": "0.2.186",
+    "scope": "Reuse versions already in repository Cargo.lock; no production manifest change",
+    "priorLock": "Cargo.lock.pre-transitive-correction",
+    "historicalMetadata": "metadata-full.json describes pre-correction lock"
+  },
+  "nativeLaunched": false,
+  "unrun": [
+    "Native scenarios pending shared Windows slot",
+    "Full product and Bun-handler acceptance",
+    "Complete B7 natural Arm F/H matrix",
+    "Hosted CI/provenance owner review for native/Cargo.toml and native/.gitignore"
+  ],
+  "pendingWrapper": {
+    "powerShellPid": 23196,
+    "gitPid": 13516,
+    "operation": "read-only git rev-parse HEAD",
+    "deferMove": [
+      "build-3.stdout.log",
+      "build-3.stderr.log",
+      "build-3.receipt.json if produced"
+    ]
+  }
+}

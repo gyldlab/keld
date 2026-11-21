@@ -1,0 +1,31 @@
+[package]
+# Retain the E5 package identity; extend only with repo-pinned sha2 for fixture binding.
+name = "gh1184-w1-d-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "GH1184 bounded Windows native feasibility evidence; never product admission"
+
+[[bin]]
+name = "keld-w1-native-probe"
+path = "src/main.rs"
+
+[dependencies]
+webview2-com = "=0.38.2"
+windows-core = "=0.61.2"
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+
+[dependencies.windows]
+version = "=0.61.3"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[workspace]

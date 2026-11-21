@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><script>
+(() => {
+  "use strict";
+  const names = ["listenOnce", "registerMsgListener", "request", "sendMessage"];
+  const api = window.electron;
+  let configuration = null;
+  try { configuration = JSON.parse(localStorage.getItem(".configuration") || "null"); }
+  catch (error) { configuration = {parseError: String(error)}; }
+  const observed = {
+    apiPresent: Boolean(api),
+    keys: api ? Object.keys(api).sort() : [],
+    types: names.map((name) => api ? typeof api[name] : "undefined"),
+    processType: window.process ? window.process.type : null,
+    configuration,
+    contextIsolated: window.__w1FixtureObservation
+      ? window.__w1FixtureObservation.contextIsolated : null,
+    requireExposed: typeof window.require !== "undefined",
+    frozen: Boolean(api && Object.isFrozen(api))
+  };
+  // Independent first-inline observation. Later injection cannot rewrite this snapshot.
+  document.title = "W1_FIRST_INLINE:" + JSON.stringify(observed);
+  chrome.webview.postMessage(JSON.stringify({kind: "first-inline", observed}));
+  if (api) {
+    const request = {action: "watchFile", path: "fixture-only.txt", listener() {}};
+    api.request(request, () => {}, () => {});
+    api.sendMessage("fixture-only", {value: "page"}, "preload-omits-this-extra-argument");
+  }
+})();
+</script></head><body>W1 native first-inline observation</body></html>

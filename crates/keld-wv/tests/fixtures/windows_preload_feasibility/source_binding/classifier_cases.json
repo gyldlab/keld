@@ -1,0 +1,260 @@
+{
+  "schema": "keld.w1-hand-reviewed-classifier-corpus/v1",
+  "spec_head": "20a798976d03e76056c5edf4c0d6fb5775c5659c",
+  "scope": "First-party executable source-shape fixtures, adapted from r17 section 4.8; annotations are hand-reviewed expectations, not classifier output.",
+  "cases": [
+    {
+      "id": "F-A",
+      "source": "({ request: (m, ...xs) => { if (ALLOWED.has(m.action)) send('req', m, ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "page-input branch"
+    },
+    {
+      "id": "F-B",
+      "source": "({ sendMessage: (c, ...xs) => send(c, ...xs) })",
+      "expected_rules": [],
+      "reason": "page-selected channel, full pass-through"
+    },
+    {
+      "id": "F-B1",
+      "source": "({ doA: (...xs) => send('a', ...xs) })",
+      "expected_rules": [],
+      "reason": "literal channel, full pass-through"
+    },
+    {
+      "id": "F-B2",
+      "source": "({ listen: (c, cb) => on(c, (e, ...v) => cb(...v)) })",
+      "expected_rules": [],
+      "reason": "inbound pass-through excluding event"
+    },
+    {
+      "id": "F-C",
+      "source": "({ openFile: () => send('open-file') })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "omitted arguments"
+    },
+    {
+      "id": "F-D",
+      "source": "({ save: (p, ...xs) => send('save', path.normalize(p), ...xs) })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "page-input transform"
+    },
+    {
+      "id": "F-E",
+      "source": "require(name).send('evt');",
+      "expected_rules": [
+        "d"
+      ],
+      "reason": "dynamic require; never execute this fixture"
+    },
+    {
+      "id": "F-F",
+      "source": "on('evt', (e, ...v) => { if (v[0].ok) cb(...v); });",
+      "expected_rules": [
+        "b"
+      ],
+      "reason": "inbound value filter"
+    },
+    {
+      "id": "F-G",
+      "source": "({ request: (m) => { m.reqId = n++; if (m.action == 'watchFile') { L[m.path] = m.listener; delete m.listener; } send('req', m); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "combined assigned field, representation branch, truncation",
+      "expected_subclasses": [
+        "assigned-field",
+        "representation-branch",
+        "truncation"
+      ]
+    },
+    {
+      "id": "F-G1",
+      "source": "({ request: (m, ...xs) => { if (m.action == 'watchFile') { L[m.path] = m.listener; delete m.listener; } send('req', m, ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "representation-only claim cannot be statically proved"
+    },
+    {
+      "id": "F-H",
+      "source": "({ getConfig: (...xs) => send('read-config', 'config.json', ...xs) })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "constant argument"
+    },
+    {
+      "id": "F-I",
+      "source": "({ save: (m, ...xs) => { m.user = USER; send('save', m, ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "preload-assigned field"
+    },
+    {
+      "id": "F-J",
+      "source": "({ sendMessage: (c, x) => send(c, x) })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "truncated trailing arguments"
+    },
+    {
+      "id": "F-K",
+      "source": "on('auth', (e, ...v) => { token = v; });",
+      "expected_rules": [
+        "b"
+      ],
+      "reason": "consume without forwarding"
+    },
+    {
+      "id": "F-L",
+      "source": "({ onUser: (cb) => on('user', (e, ...v) => cb(v[0].name)) })",
+      "expected_rules": [
+        "b"
+      ],
+      "reason": "field-selected inbound payload"
+    },
+    {
+      "id": "F-M",
+      "source": "const mode = process.argv[1];",
+      "expected_rules": [
+        "c"
+      ],
+      "reason": "literal argv read; source data only"
+    },
+    {
+      "id": "F-N",
+      "source": "const tok = process.argv.find((a) => a.startsWith('--token='));",
+      "expected_rules": [
+        "c"
+      ],
+      "reason": "searched argv read; source data only"
+    },
+    {
+      "id": "F-O",
+      "source": "if (process.contextIsolated) contextBridge.exposeInMainWorld('api', { priv: (...xs) => send('priv', ...xs) }); else window.api = { pub: (...xs) => send('pub', ...xs) };",
+      "expected_rules": [],
+      "reason": "constant-fold false; reachable literal el:pub only"
+    },
+    {
+      "id": "F-P",
+      "source": "({ prefixed: (c, ...xs) => send('app:' + c, ...xs) })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "computed page-derived channel is UNENUMERABLE"
+    },
+    {
+      "id": "F-Q",
+      "source": "({ save: (m, ...xs) => { delete m.extra; send('save', m, ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "delete on page input"
+    },
+    {
+      "id": "F-R",
+      "source": "({ deleteAll: (...xs) => { if (unlocked) send('delete-all', ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "preload-private state branch"
+    },
+    {
+      "id": "F-S",
+      "source": "({ ping: (...xs) => { if (locked) return; send('ping', ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "early return on private state"
+    },
+    {
+      "id": "F-T",
+      "source": "({ later: (...xs) => { setTimeout(() => send('later', ...xs), 0); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "timer on path"
+    },
+    {
+      "id": "F-U",
+      "source": "({ safe: (...xs) => { try { send('safe', ...xs); } catch (err) { log(err); } } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "try/catch on path"
+    },
+    {
+      "id": "F-V",
+      "source": "({ thrice: (...xs) => { for (let i = 0; i < 3; i++) send('thrice', ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "loop on path"
+    },
+    {
+      "id": "F-W",
+      "source": "if (featureOn) contextBridge.exposeInMainWorld('api', { gated: (...xs) => send('gated', ...xs) });",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "selective exposure"
+    },
+    {
+      "id": "F-X",
+      "source": "on('evt', (e, ...v) => { if (unlocked) cb(...v); });",
+      "expected_rules": [
+        "b"
+      ],
+      "reason": "inbound filter on private state"
+    },
+    {
+      "id": "F-Y",
+      "source": "({ checked: (...xs) => { ready(() => send('checked', ...xs)); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "callback on path"
+    },
+    {
+      "id": "F-Z",
+      "source": "({ maybe: (...xs) => { unlocked && send('maybe', ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "expression condition on private state"
+    },
+    {
+      "id": "F-Z1",
+      "source": "const check = () => { if (locked) throw Error('locked'); }; ({ guarded: (...xs) => { check(); send('guarded', ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "helper can throw first"
+    },
+    {
+      "id": "F-Z2",
+      "source": "({ pair: (...xs) => { send('audit', ...xs); send('delete', ...xs); } })",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "second sink on same path"
+    },
+    {
+      "id": "F-Z3",
+      "source": "send('boot');",
+      "expected_rules": [
+        "a"
+      ],
+      "reason": "no exposure path; zero grants"
+    }
+  ]
+}
