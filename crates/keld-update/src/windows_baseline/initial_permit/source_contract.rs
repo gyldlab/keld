@@ -136,16 +136,20 @@ fn hide_macro_token_trees(visible: &mut [u8]) -> Result<(), &'static str> {
             open += 1;
         }
         // Macro definitions put an identifier between `!` and the body.
-        // A macro's tokens are never an executed statement merely because
-        // they occur inside the permit method's lexical source.
+        // Accept raw `r#name` and conservatively treat UTF-8 bytes as name
+        // constituents too, rather than leaving Unicode macro bodies visible.
+        // This masks a superset of Rust identifiers; it is not a parser.
+        if visible.get(open) == Some(&b'r') && visible.get(open + 1) == Some(&b'#') {
+            open += 2;
+        }
         if visible
             .get(open)
-            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_' || *byte >= 0x80)
         {
             open += 1;
             while visible
                 .get(open)
-                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte >= 0x80)
             {
                 open += 1;
             }
@@ -417,6 +421,16 @@ const SOURCE_MUTATIONS: &[(&str, &str, &str)] = &[
         "durable fence replaced with spaced dormant macro definition",
         "self.issuer.require_durable_creation_armed()?;",
         "macro_rules /* inert */ ! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
+    ),
+    (
+        "durable fence replaced with raw-identifier dormant macro definition",
+        "self.issuer.require_durable_creation_armed()?;",
+        "macro_rules! r#dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
+    ),
+    (
+        "durable fence replaced with Unicode-identifier dormant macro definition",
+        "self.issuer.require_durable_creation_armed()?;",
+        "macro_rules! \u{0394}fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
     ),
     (
         "durable fence replaced with inert block comment",
