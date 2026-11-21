@@ -6,6 +6,8 @@
 //! frame parser, output queue, principal or subscription policy is minted here.
 
 use std::io::Write as _;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicU32;
 
 use keld_ipc::channel_table::{Authority, ReceiveClass};
 use keld_ipc::window::{
@@ -152,6 +154,12 @@ fn original_refusal_detail(error: keld_wv::NativeNavigationRefusal) -> &'static 
 pub(super) struct WindowSession {
     registry: WindowRegistry,
     native_supported: bool,
+    /// One Core-owned source shared read-only with the `AppKit` Quit callback.
+    #[cfg(target_os = "macos")]
+    pub(super) native_quit_source_attempt: std::sync::Arc<AtomicU32>,
+    /// Last actual Ready-published generation; global Ready survives recovery.
+    #[cfg(target_os = "macos")]
+    pub(super) native_quit_ready_attempt: u32,
     #[cfg(target_os = "macos")]
     original_selection: Option<std::sync::Arc<super::original_webapp::OriginalLoadSelection>>,
     // The one subscription owner is this live link, not the window instances.
@@ -175,6 +183,10 @@ impl WindowSession {
         Self {
             registry: WindowRegistry::new(),
             native_supported,
+            #[cfg(target_os = "macos")]
+            native_quit_source_attempt: std::sync::Arc::new(AtomicU32::new(0)),
+            #[cfg(target_os = "macos")]
+            native_quit_ready_attempt: 0,
             #[cfg(target_os = "macos")]
             original_selection: None,
             subscribed: None,
@@ -962,6 +974,13 @@ impl PrimaryRouterHandle {
                 .map_err(|_| app_detail("window role retirement", "registry lock poisoned"))?;
             if session.subscribed == Some(retired) {
                 session.subscribed = None;
+                #[cfg(target_os = "macos")]
+                {
+                    session
+                        .native_quit_source_attempt
+                        .store(0, Ordering::Release);
+                    session.native_quit_ready_attempt = 0;
+                }
             }
             #[cfg(target_os = "macos")]
             if session
@@ -1003,6 +1022,33 @@ impl PrimaryRouterHandle {
             }
             (_, result) => result,
         }
+    }
+    #[cfg(target_os = "macos")]
+    fn arm_native_quit_on_window_subscribe(
+        &self,
+        caller: &PrimaryCallerContext,
+        channel: u16,
+    ) -> Result<(), HostAppError> {
+        // The real Ready and correlated Subscribe may arrive in either order.
+        // The last completing one arms the source while the writer lock is held.
+        if channel != keld_ipc::channel_table::WINDOW.wire_id() {
+            return Ok(());
+        }
+        let Some(windows) = &self.windows else {
+            return Ok(());
+        };
+        let session = windows
+            .lock()
+            .map_err(|_| app_detail("native Quit subscription", "registry lock poisoned"))?;
+        if session.native_quit_ready_attempt == caller.attempt
+            && session
+                .original_menu_quit_selected(WindowOwner::new(caller.identity, caller.attempt))
+        {
+            session
+                .native_quit_source_attempt
+                .store(caller.attempt, Ordering::Release);
+        }
+        Ok(())
     }
     pub(super) fn subscribe_window(
         &self,
@@ -1094,6 +1140,9 @@ impl PrimaryRouterHandle {
                     &mut failed,
                 )
             })();
+            #[cfg(target_os = "macos")]
+            let result =
+                result.and_then(|()| self.arm_native_quit_on_window_subscribe(caller, channel));
             self.finish_window_write(current, failed, result)
         });
         if let Some(attempt) = failed {
@@ -2182,6 +2231,13 @@ impl PrimaryRouterHandle {
                 return Err(app_detail(
                     "window native event",
                     "legacy lifecycle fact entered managed registry dispatch",
+                ));
+            }
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::NativeQuitRequested { .. } => {
+                return Err(app_detail(
+                    "window native event",
+                    "native OS Quit intent belongs to the current Core session coordinator",
                 ));
             }
             #[cfg(any(target_os = "macos", windows))]

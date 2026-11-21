@@ -129,6 +129,8 @@ mock.module("../../api/src/app.ts", () => ({
 mock.module("./app.ts", () => ({
   // This controlled window-fact role owns no original Quit handoff attempt.
   joinOriginalQuitBeforeClose: () => false,
+  noteOriginalQuitVetoApplied: () => {},
+  noteOriginalQuitWindowDestroyed: () => {},
   emitNativeAppEvent: (name: string, _event: unknown, value: unknown) => {
     creationEvents.push({ name, value });
     if (mode === "published-listener-throws")

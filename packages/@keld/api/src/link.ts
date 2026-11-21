@@ -99,7 +99,8 @@ export type LifecycleHandler = {
   onCompatEvent?: CompatConsumer;
   onCompatError?: (error: unknown) => void;
   onReady: () => void;
-  onLastWindowClosed: () => void;
+  /** Native milestone carries its exact app-link owner, like quit-requested. */
+  onLastWindowClosed: (session: LifecycleLink) => void;
   /** Scoped Host intent; the captured live session is rechecked by the consumer. */
   onQuitRequested?: (session: LifecycleLink) => void;
   /** The singleton belongs to @keld/api before a Ready callback may construct. */
@@ -286,7 +287,7 @@ export class LifecycleLink {
         ) {
           session.#handledLastWindowClosed =
             session.#dispatchedLastWindowClosed;
-          handlers.onLastWindowClosed();
+          handlers.onLastWindowClosed(session);
         }
       }
     });

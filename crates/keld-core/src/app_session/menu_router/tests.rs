@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[path = "tests/native_os_quit.rs"]
+mod native_os_quit;
+
 fn session(
     source: &str,
 ) -> (

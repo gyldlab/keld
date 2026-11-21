@@ -326,14 +326,16 @@ def wait_roles_gone(host: pathlib.Path, bun: pathlib.Path, identities: list[Proc
     raise RuntimeError(f"{phase}: owned Host, Guardian or Bun not retired after native UI quit")
 
 
-def current_exact_role(identity: ProcessFact) -> bool:
+def current_exact_role(identity: ProcessFact, *, allow_reparent: bool = False) -> bool:
+    """Match witnessed process birth, UID and executable; cleanup permits reparenting."""
     try:
         pid, ppid, uid, sec, usec, executable = native_process_identity(identity.pid)
     except RuntimeError as error:
         if definitely_exited(identity.pid):
             return False
         raise RuntimeError(f"PID {identity.pid} still exists but identity is unknown") from error
-    return (pid == identity.pid and ppid == identity.ppid and uid == identity.uid
+    return (pid == identity.pid and (allow_reparent or ppid == identity.ppid)
+            and uid == identity.uid
             and f"{sec}.{usec:06d}" == identity.start
             and executable == identity.executable)
 
@@ -417,7 +419,9 @@ def cleanup_verified_roles(evidence: Evidence, install_root: pathlib.Path) -> No
             if not pathlib.Path(fact.executable).is_relative_to(install_root):
                 continue
             try:
-                exact = current_exact_role(fact)
+                # Parent exit changes PPID without changing the witnessed
+                # child's birth or executable. Preserve that cleanup authority.
+                exact = current_exact_role(fact, allow_reparent=True)
             except RuntimeError as error:
                 evidence.record(step="failure-cleanup-identity-unknown", pid=fact.pid, reason=str(error))
                 continue  # Unknown identity never authorizes a signal.

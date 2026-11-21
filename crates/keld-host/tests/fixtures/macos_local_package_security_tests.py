@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Portable actual-census oracle controls, not native installed acceptance."""
+"""Portable census and emergency-cleanup controls, not installed acceptance."""
 import errno
+import signal
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -65,6 +67,52 @@ class ExactCensusTests(unittest.TestCase):
             self.assertEqual(security.exact_census(self.root), [])
         executable.assert_not_called()
         kill.assert_not_called()
+
+
+class EmergencyCleanupTests(unittest.TestCase):
+    def test_witnessed_child_reparented_after_guardian_death_is_signaled(self):
+        # The kernel birth, UID and executable still identify the witnessed
+        # child after its former parent dies. Its original PPID cannot be a
+        # precondition for emergency cleanup of this same owned process.
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable = str(root / "Example.app/Contents/Helpers/bun")
+            witness = security.smoke.ProcessFact(420, 419, "123.000004", executable, False, 501)
+            events = []
+            evidence = type("Evidence", (), {
+                "owned_roles": [witness],
+                "record": lambda self, **row: events.append(row),
+            })()
+            with patch.object(security.smoke, "native_process_identity",
+                              return_value=(420, 1, 501, 123, 4, executable)), \
+                 patch.object(security.smoke, "current_birth_alive", return_value=False), \
+                 patch.object(security.smoke.os, "kill") as kill:
+                security.smoke.cleanup_verified_roles(evidence, root)
+            kill.assert_called_once_with(420, signal.SIGTERM)
+            self.assertTrue(any(row["step"] == "failure-cleanup-retired" for row in events))
+            self.assertEqual([row["pid"] for row in events
+                              if row["step"] == "failure-cleanup-signal"], [420])
+
+    def test_changed_birth_uid_or_executable_never_authorizes_cleanup(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable = str(root / "Example.app/Contents/Helpers/bun")
+            witness = security.smoke.ProcessFact(420, 419, "123.000004", executable, False, 501)
+            for row in (
+                (420, 1, 501, 123, 5, executable),
+                (420, 1, 502, 123, 4, executable),
+                (420, 1, 501, 123, 4, executable + "-replaced"),
+            ):
+                with self.subTest(row=row):
+                    evidence = type("Evidence", (), {
+                        "owned_roles": [witness],
+                        "record": lambda self, **event: None,
+                    })()
+                    with patch.object(security.smoke, "native_process_identity", return_value=row), \
+                         patch.object(security.smoke, "current_birth_alive", return_value=False), \
+                         patch.object(security.smoke.os, "kill") as kill:
+                        security.smoke.cleanup_verified_roles(evidence, root)
+                    kill.assert_not_called()
 
 
 if __name__ == '__main__':
