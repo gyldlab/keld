@@ -11,6 +11,7 @@
 
 use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
+use super::repository_member_diagnostics::require_only_pointed_repository_member;
 use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -26,13 +27,15 @@ const PENDING_OPERATION: &str = "pending-operation.json";
 
 /// Borrowed, prevalidated native repository handles held by the KEL-53 writer.
 ///
-/// The caller owns both handles and the metadata lease for this entire lifetime.
+/// The caller retains all four handles and the metadata lease for this entire lifetime.
 /// A native D-90 eligibility witness is mandatory even to construct this I/O
 /// wrapper. The witness has no constructor until its complete native producer
 /// is qualified, so this code currently cannot publish a journal.
 pub(super) struct InitialAdmissionJournalIo<'lease> {
     repository: &'lease Dir,
     admissions: &'lease Dir,
+    recoveries: &'lease Dir,
+    transitions: &'lease Dir,
     anchor: &'lease RepositoryAnchor,
     _eligibility: &'lease RepositoryLedgerCensus,
     profile: keld_guard::WindowsInstallProtectionProfile,
@@ -44,6 +47,8 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
     pub(super) const fn new(
         repository: &'lease Dir,
         admissions: &'lease Dir,
+        recoveries: &'lease Dir,
+        transitions: &'lease Dir,
         anchor: &'lease RepositoryAnchor,
         eligibility: &'lease RepositoryLedgerCensus,
         profile: keld_guard::WindowsInstallProtectionProfile,
@@ -51,6 +56,8 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         Self {
             repository,
             admissions,
+            recoveries,
+            transitions,
             anchor,
             _eligibility: eligibility,
             profile,
@@ -123,6 +130,16 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
                 "another repository operation is active",
             ));
         }
+        // The exact pointer cannot excuse an orphan admission or an
+        // interrupted D-65/D-85 operation in another retained namespace.
+        // This checks local shape only; D-90 still proves the full ledger.
+        require_only_pointed_repository_member(
+            self.admissions,
+            self.recoveries,
+            self.transitions,
+            self.anchor,
+            Some(&pointer),
+        )?;
         let record = self.read_attempt(&pointer.attempt_id)?.ok_or_else(|| {
             error(
                 "repository pending pointer",
@@ -156,6 +173,22 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
                 "D-90 named an absent admission journal",
             )
         })?;
+        // Project the expected leaf for a negative directory observation.
+        // This is NOT a durable D-68 pointer or a recovery authorization.
+        let expected_member = PendingRepositoryOperation {
+            repository_id: self.anchor.repository_id,
+            app_id: self.anchor.app_id.clone(),
+            owner_sid: self.anchor.owner_sid.clone(),
+            kind: PendingOperationKind::InitialAdmission,
+            attempt_id: *attempt,
+        };
+        require_only_pointed_repository_member(
+            self.admissions,
+            self.recoveries,
+            self.transitions,
+            self.anchor,
+            Some(&expected_member),
+        )?;
         let disposition = inspect_initial_admission(self.anchor, Some(&record), None, &[])?;
         if !matches!(
             disposition,
@@ -258,6 +291,15 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
                 "another operation is already pending",
             ));
         }
+        // A prior crash may have left an unpointed journal or publication
+        // sibling. Never create another attempt on top of that evidence.
+        require_only_pointed_repository_member(
+            self.admissions,
+            self.recoveries,
+            self.transitions,
+            self.anchor,
+            None,
+        )?;
         // KEL-53 owns entropy; never accept a caller-chosen attempt identifier.
         getrandom::fill(&mut record.attempt_id)
             .map_err(|cause| error("initial attempt entropy", cause))?;
@@ -327,6 +369,16 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
             kind: PendingOperationKind::InitialAdmission,
             attempt_id: record.attempt_id,
         };
+        // The one durable admitted leaf must be the entire local operation
+        // set before publication. This is a shape check, not an existing
+        // pointer or a substitute for D-90's retained-member proof.
+        require_only_pointed_repository_member(
+            self.admissions,
+            self.recoveries,
+            self.transitions,
+            self.anchor,
+            Some(&pointer),
+        )?;
         let bytes = encode_pending_repository_operation(&pointer)?;
         publish_new_record(self.repository, PENDING_OPERATION, &bytes, self.profile)?;
         self.require_pointed_phase(record, InitialAdmissionPhase::Admitted)

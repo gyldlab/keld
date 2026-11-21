@@ -14,6 +14,9 @@
 use super::initial_admission_journal::InitialAdmissionJournalIo;
 use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
+use super::repository_member_diagnostics::{
+    require_no_unpointed_admissions, require_only_pointed_repository_member,
+};
 use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -70,7 +73,7 @@ pub(super) enum NativeRepositoryRestart {
     },
 }
 
-/// Native metadata directories borrowed from the same KEL-53 repository writer.
+/// Native metadata and operation directories borrowed from the same KEL-53 writer.
 ///
 /// The owner must have pinned and checked acquisition ancestry, no-reparse,
 /// volume, actual captured SID, DACL and fixed NTFS before constructing this.
@@ -78,6 +81,9 @@ pub(super) struct RepositoryMetadataIo<'lease> {
     enrollments: &'lease Dir,
     repository: &'lease Dir,
     generations: &'lease Dir,
+    admissions: &'lease Dir,
+    recoveries: &'lease Dir,
+    transitions: &'lease Dir,
     expected: &'lease RepositoryAnchor,
     eligibility: &'lease RepositoryLedgerCensus,
     profile: keld_guard::WindowsInstallProtectionProfile,
@@ -90,6 +96,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         enrollments: &'lease Dir,
         repository: &'lease Dir,
         generations: &'lease Dir,
+        admissions: &'lease Dir,
+        recoveries: &'lease Dir,
+        transitions: &'lease Dir,
         expected: &'lease RepositoryAnchor,
         eligibility: &'lease RepositoryLedgerCensus,
         profile: keld_guard::WindowsInstallProtectionProfile,
@@ -98,6 +107,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
             enrollments,
             repository,
             generations,
+            admissions,
+            recoveries,
+            transitions,
             expected,
             eligibility,
             profile,
@@ -106,13 +118,12 @@ impl<'lease> RepositoryMetadataIo<'lease> {
 
     /// Binds D-23 inspection and D-64/D-68 journal diagnosis to the same
     /// D-90 witness and repository parent. No successful result grants launch.
-    pub(super) fn inspect_restart(
-        &self,
-        admissions: &'lease Dir,
-    ) -> Result<NativeRepositoryRestart, UpdateError> {
+    pub(super) fn inspect_restart(&self) -> Result<NativeRepositoryRestart, UpdateError> {
         let journal = InitialAdmissionJournalIo::new(
             self.repository,
-            admissions,
+            self.admissions,
+            self.recoveries,
+            self.transitions,
             self.expected,
             self.eligibility,
             self.profile,
@@ -123,13 +134,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 disposition,
             });
         }
-        // D-64 publishes `admitted` before D-68 publishes the pointer.
-        // A crash between those durable cuts leaves a real orphan;
-        // absence of the pointer is not permission to select metadata.
-        // The retained admissions parent and D-90 witness remain live.
-        // An empty local directory is only a negative diagnostic, not
-        // a repository-wide member or old-reader completeness proof.
-        super::repository_member_diagnostics::require_no_unpointed_admissions(admissions)?;
+        // The ordinary path must refuse every unpointed operation namespace,
+        // including an orphan admitted at the D-64/D-68 publication cut.
+        // inspect() performs that fence again before inspecting metadata.
         self.inspect().map(NativeRepositoryRestart::Metadata)
     }
 
@@ -375,6 +382,17 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 "pending operation owns the repository; ordinary mutation or selection refused",
             ));
         }
+        // A missing D-68 pointer can follow a durable D-64/D-65/D-85 journal
+        // or a crash that left a pending publication sibling. A local empty
+        // scan is only a negative check; D-90 still owns full census proof.
+        require_no_unpointed_admissions(self.admissions)?;
+        require_only_pointed_repository_member(
+            self.admissions,
+            self.recoveries,
+            self.transitions,
+            self.expected,
+            None,
+        )?;
         Ok(())
     }
 

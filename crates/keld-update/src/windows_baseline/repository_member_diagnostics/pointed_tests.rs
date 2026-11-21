@@ -221,3 +221,101 @@ fn concurrent_sibling_after_unlocked_observation_refuses_on_recheck() {
     // A local recheck detects this race but cannot stop it. Only the missing
     // KEL-53 repository-wide writer lease can serialize acquisition and launch.
 }
+
+#[test]
+fn recovery_crash_cut_refuses_cross_namespace_even_with_one_pointed_initial_journal() {
+    let (root, admissions, recoveries, transitions) = fixture();
+    let owner = owner();
+    let pending = pointer(&owner, PendingOperationKind::InitialAdmission);
+    let admitted = root
+        .path()
+        .join("admissions")
+        .join(format!("{}.json", "2a".repeat(32)));
+    fs::write(&admitted, b"durable-admitted").expect("persist exact pointed journal");
+
+    for name in ["recoveries", "transitions"] {
+        let partial = root.path().join(name).join("pending-interrupted");
+        fs::write(&partial, b"unfinished-preparation").expect("simulate another crash cut");
+        assert_eq!(
+            refusal_step(
+                &admissions,
+                &recoveries,
+                &transitions,
+                &owner,
+                Some(&pending)
+            ),
+            "repository member namespace",
+            "the initial pointer cannot hide a {name} crash cut"
+        );
+        assert_eq!(
+            fs::read(&partial).expect("preserve foreign crash evidence"),
+            b"unfinished-preparation"
+        );
+        assert_eq!(
+            fs::read(&admitted).expect("preserve pointed journal"),
+            b"durable-admitted"
+        );
+        fs::remove_file(&partial).expect("fixture removes only its simulated foreign cut");
+    }
+    require_only_pointed_repository_member(
+        &admissions,
+        &recoveries,
+        &transitions,
+        &owner,
+        Some(&pending),
+    )
+    .expect("one pointed local member remains only a shape observation");
+}
+
+#[test]
+fn pointer_absent_after_durable_admission_refuses_even_with_empty_other_namespaces() {
+    let (root, admissions, recoveries, transitions) = fixture();
+    let owner = owner();
+    let admitted = root
+        .path()
+        .join("admissions")
+        .join(format!("{}.json", "3b".repeat(32)));
+    fs::write(&admitted, b"pre-pointer-admitted").expect("persist unpointed D-64 journal");
+
+    assert_eq!(
+        refusal_step(&admissions, &recoveries, &transitions, &owner, None),
+        "repository member namespace"
+    );
+    assert_eq!(
+        fs::read(&admitted).expect("retain unpointed journal"),
+        b"pre-pointer-admitted"
+    );
+    assert!(
+        !root.path().join("pending-operation.json").exists(),
+        "absence cannot synthesize a new D-68 pointer or recovery authority"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn differently_cased_pointed_leaf_does_not_pass_windows_namespace_check() {
+    let (root, admissions, recoveries, transitions) = fixture();
+    let owner = owner();
+    let pending = pointer(&owner, PendingOperationKind::InitialAdmission);
+    let wrong_case = root
+        .path()
+        .join("admissions")
+        .join(format!("{}.JSON", "2a".repeat(32)));
+    fs::write(&wrong_case, b"case-alias").expect("create exact bytes at wrong-case leaf");
+
+    assert_eq!(
+        refusal_step(
+            &admissions,
+            &recoveries,
+            &transitions,
+            &owner,
+            Some(&pending)
+        ),
+        "repository member namespace",
+        "a case-insensitive lookup must not turn a noncanonical leaf into the D-68 owner"
+    );
+    assert_eq!(
+        fs::read(&wrong_case).expect("preserve alias"),
+        b"case-alias"
+    );
+}
