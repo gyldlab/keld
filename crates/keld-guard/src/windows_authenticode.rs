@@ -972,19 +972,29 @@ mod tests {
     }
 
     #[test]
-    fn d45_foreign_direct_source_refuses_before_full_wintrust() {
-        // Test only the byte-custody subcondition before WinTrust. Do not
-        // fabricate an authenticated Direct or issuer-policy witness: the
-        // T-82-gated D-45 full-verification path remains nonconstructible.
+    fn d45_retained_source_accepts_exact_bytes_and_refuses_equal_length_foreign_host() {
+        // This is a source-byte subcondition, not a fabricated authenticated
+        // Direct or issuer-policy witness. Full D-45 v2 remains T-82-gated.
+        // The independent SHA-256("abc") vector prevents an always-refuse
+        // implementation from making a negative-only test appear to pass.
+        let expected_digest = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
+        ];
         let directory = FixtureDirectory::new("d45-foreign-source-witness");
-        let path = directory.path().join("unsigned-host.exe");
-        fs::write(&path, b"bounded owner mismatch fixture").expect("write source fixture");
-        let source =
-            WindowsAuthenticodeImage::open(&path).expect("retain the test's original regular file");
-        let expected_bytes = u64::try_from(b"bounded owner mismatch fixture".len())
-            .expect("fixture source size fits u64");
-        let error = require_retained_host_source(&source.image, expected_bytes, &[0_u8; 32])
-            .expect_err("a different Host source digest must refuse before any WinTrust grant");
+        let original_path = directory.path().join("original-host.exe");
+        let foreign_path = directory.path().join("foreign-host.exe");
+        fs::write(&original_path, b"abc").expect("write original source fixture");
+        fs::write(&foreign_path, b"abd").expect("write same-length foreign source fixture");
+        let original = WindowsAuthenticodeImage::open(&original_path)
+            .expect("retain the original regular file");
+        let foreign =
+            WindowsAuthenticodeImage::open(&foreign_path).expect("retain the foreign regular file");
+        require_retained_host_source(&original.image, 3, &expected_digest)
+            .expect("the original retained Host satisfies the exact source-byte check");
+        let error = require_retained_host_source(&foreign.image, 3, &expected_digest)
+            .expect_err("same-length foreign bytes must refuse before any WinTrust grant");
         assert!(
             error
                 .detail()
@@ -992,6 +1002,14 @@ mod tests {
             "{error}"
         );
         assert!(error.close_failure().is_none(), "{error}");
+        let error = require_retained_host_source(&original.image, 2, &expected_digest)
+            .expect_err("a wrong authenticated length must refuse before digest comparison");
+        assert!(
+            error
+                .detail()
+                .contains("differs from the authenticated expected length"),
+            "{error}"
+        );
     }
 
     #[test]
