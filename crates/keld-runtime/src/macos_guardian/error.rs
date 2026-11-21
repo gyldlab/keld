@@ -8,10 +8,10 @@ use std::io;
 /// Original typed failures from one macOS Guardian cleanup transaction.
 ///
 /// A Guardian can fail both its exact Child wait (for example ECHILD) and
-/// its attested process-group absence proof. The public outer error stays a
-/// `RuntimeError::Lifecycle` with the existing cleanup phase and diagnostics,
-/// but callers can downcast that Lifecycle's `io::Error::get_ref()` to this
-/// type and inspect every original typed cause, including its OS errno.
+/// its attested process-group absence proof. The public outer error keeps its
+/// original variant and diagnostics. Callers can downcast the Lifecycle or
+/// `GuardianExited` cleanup `io::Error::get_ref()` to this type to inspect every
+/// original typed cause, including its OS errno.
 /// Standard `Error::source()` chains are linear and expose only the first
 /// cause. `failures()` is the authoritative complete collection.
 #[derive(Debug, Clone)]
@@ -75,7 +75,108 @@ pub(super) fn collapse_failures(mut failures: Vec<RuntimeError>) -> RuntimeError
 
 #[cfg(test)]
 mod tests {
+    use super::super::process_group::{GroupIdentity, reconcile_denied_signal_after_reap_for_test};
     use super::*;
+    use std::time::{Duration, Instant};
+
+    // Exercise the shipping denial classifier with a controlled absence
+    // observation. This proves error-source fidelity and introduces no native
+    // process-group signal or claim about an actual kernel EPERM event.
+    fn denied_with_unproven_absence() -> (GroupIdentity, RuntimeError) {
+        let group = GroupIdentity::unverified_for_test(7_331);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let before = deadline
+            .checked_sub(Duration::from_millis(1))
+            .expect("test deadline has one millisecond of margin");
+        let after = deadline + Duration::from_millis(1);
+        let mut clock_reads = 0;
+        let denied = reconcile_denied_signal_after_reap_for_test(
+            group,
+            lifecycle_error(
+                "macOS guardian process-group signal",
+                io::Error::from_raw_os_error(nix::libc::EPERM),
+            ),
+            deadline,
+            || {
+                clock_reads += 1;
+                if clock_reads == 1 { before } else { after }
+            },
+            |raw| {
+                assert_eq!(raw, 7_331);
+                (Err(Errno::ESRCH), Err(Errno::EPERM))
+            },
+        )
+        .expect_err("a denied signal with a held group must remain fatal");
+        assert_eq!(clock_reads, 2, "test must exercise the absence observer");
+        (group, denied)
+    }
+
+    fn assert_original_denial_source(error: &RuntimeError) {
+        let RuntimeError::Lifecycle { phase, source } = error else {
+            panic!("the original denied signal must remain Lifecycle: {error}");
+        };
+        assert_eq!(*phase, "macOS guardian process-group signal");
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+        let original = source
+            .get_ref()
+            .and_then(|cause| cause.source())
+            .and_then(|cause| cause.downcast_ref::<io::Error>())
+            .expect("the nested denied signal must retain its original typed kernel I/O cause");
+        assert_eq!(
+            original.raw_os_error(),
+            Some(nix::libc::EPERM),
+            "original signal-phase errno must survive the error clone"
+        );
+    }
+
+    #[test]
+    fn cloned_unproven_denied_signal_keeps_original_eperm_and_reconciliation() {
+        let (group, denied) = denied_with_unproven_absence();
+        assert_original_denial_source(&denied);
+        let copied = denied.clone();
+        assert_original_denial_source(&copied);
+        let mut probes = 0;
+        let observed_at = Instant::now();
+        reconcile_denied_signal_after_reap_for_test(
+            group,
+            copied,
+            observed_at + Duration::from_secs(1),
+            || observed_at,
+            |raw| {
+                assert_eq!(raw, 7_331);
+                probes += 1;
+                (Err(Errno::ESRCH), Err(Errno::ESRCH))
+            },
+        )
+        .expect("a cloned typed denial permits read-only reconciliation after dual ESRCH");
+        assert_eq!(probes, 1, "the original group absence must be observed");
+    }
+
+    #[test]
+    fn cloned_guardian_cleanup_preserves_nested_unproven_eperm() {
+        let (group, denied) = denied_with_unproven_absence();
+        let wrapped = RuntimeError::GuardianExited {
+            group_pid: group.pid,
+            exit_code: None,
+            cleanup_error: Some(typed_cleanup_io_error(denied)),
+        };
+        let copied = wrapped.clone();
+        for returned in [&wrapped, &copied] {
+            let RuntimeError::GuardianExited {
+                cleanup_error: Some(cleanup),
+                ..
+            } = returned
+            else {
+                panic!("the Guardian terminal report must retain its typed cleanup: {returned}");
+            };
+            let causes = cleanup
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<GuardianCleanupCauses>())
+                .expect("original and cloned terminal errors must keep structured causes");
+            assert_eq!(causes.failures().len(), 1);
+            assert_original_denial_source(&causes.failures()[0]);
+        }
+    }
 
     #[test]
     fn terminal_cleanup_preserves_single_typed_echild_source() {
