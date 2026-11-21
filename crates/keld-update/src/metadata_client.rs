@@ -143,6 +143,16 @@ fn read_complete_role(
     role: TufRole,
     reader: &mut dyn Read,
 ) -> Result<Vec<u8>, MetadataClientRefusal> {
+    read_complete_role_observing_reservations(role, reader, |_| {})
+}
+
+// The no-op observer is compiled away for production. Tests use it to count
+// actual successful reservation calls, not wall-clock time or allocator luck.
+fn read_complete_role_observing_reservations(
+    role: TufRole,
+    reader: &mut dyn Read,
+    mut observe_reservation: impl FnMut(usize),
+) -> Result<Vec<u8>, MetadataClientRefusal> {
     let mut complete = Vec::new();
     let mut chunk = [0_u8; 8_192];
     loop {
@@ -161,9 +171,20 @@ fn read_complete_role(
         if read > remaining {
             return Err(MetadataClientRefusal::RoleExceedsCap(role));
         }
-        complete
-            .try_reserve_exact(read)
-            .map_err(|_| MetadataClientRefusal::RoleReadFailed(role))?;
+        if complete.len() + read > complete.capacity() {
+            // Grow geometrically, even if an adversarial Read returns one
+            // byte at a time. Never *request* capacity above the role cap;
+            // retained bytes and cap-plus-one refusal are unchanged.
+            let desired_capacity = complete
+                .capacity()
+                .saturating_mul(2)
+                .max(chunk.len())
+                .min(role.max_bytes());
+            complete
+                .try_reserve_exact(desired_capacity - complete.len())
+                .map_err(|_| MetadataClientRefusal::RoleReadFailed(role))?;
+            observe_reservation(desired_capacity);
+        }
         complete.extend_from_slice(&chunk[..read]);
     }
 }
@@ -171,7 +192,8 @@ fn read_complete_role(
 #[cfg(test)]
 mod tests {
     use super::{
-        MetadataClientRefusal, SignedRoleBytes, SignedRoleReaders, TufRole, verify_ready_revision,
+        MetadataClientRefusal, SignedRoleBytes, SignedRoleReaders, TufRole,
+        read_complete_role_observing_reservations, verify_ready_revision,
         verify_ready_revision_from_readers,
     };
     use std::io::{self, Cursor, Read};
@@ -347,6 +369,46 @@ mod tests {
             assert_eq!(reader.offset, role_bytes.len());
             assert_eq!(reader.eof_observations, 1);
         }
+    }
+
+    #[test]
+    fn one_byte_targets_fragments_require_only_logarithmic_reservations() {
+        // Independent D-21 Targets cap. The old per-read reserve_exact(1)
+        // attempts 1,048,576 reservations against this compliant reader.
+        const TARGETS_LIMIT: usize = 1_048_576;
+        const MAX_RESERVATIONS: usize = 8;
+        let payload = vec![b'X'; TARGETS_LIMIT];
+        let mut source = ObservedReader::new(&payload);
+        source.max_chunk = 1;
+        let mut reservations = Vec::new();
+        let complete =
+            read_complete_role_observing_reservations(TufRole::Targets, &mut source, |target| {
+                reservations.push(target)
+            })
+            .expect("one-byte reads still produce the complete bounded role");
+
+        assert_eq!(complete.len(), TARGETS_LIMIT);
+        assert!(
+            complete.iter().all(|&byte| byte == b'X'),
+            "the complete role must retain every original byte"
+        );
+        assert_eq!(source.offset, TARGETS_LIMIT);
+        assert_eq!(source.eof_observations, 1);
+        assert!(
+            !reservations.is_empty() && reservations.len() <= MAX_RESERVATIONS,
+            "one-byte fragmentation made {} reservation requests, not logarithmic growth",
+            reservations.len()
+        );
+        assert!(
+            reservations.iter().all(|&target| target <= TARGETS_LIMIT),
+            "a reservation requested capacity beyond the independent Targets cap"
+        );
+        assert!(
+            reservations
+                .windows(2)
+                .all(|pair| pair[1] >= pair[0].saturating_mul(2)),
+            "reservation targets must grow geometrically: {reservations:?}"
+        );
     }
 
     #[test]
