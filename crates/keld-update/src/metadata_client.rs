@@ -11,10 +11,12 @@
 //! 35b378d98765c2ae9cdc3e9963ea7e670da8cdd9ee39611b8d722083c7f1ac11.
 //! Until the owner reviews the corrected source, *every* role set refuses.
 //!
-//! Test-layout review trigger (owner KEL-270/T-20): the four tests remain
+//! Test-layout review trigger (owner KEL-270/T-20): the scoped tests remain
 //! adjacent to this private, closed production intake while T-82 is blocked.
 //! Split/review at the qualified tough-client integration; no test identity
 //! or runner change is authorized by this exception request.
+
+use std::io::Read;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TufRole {
@@ -43,6 +45,16 @@ pub(crate) struct SignedRoleBytes<'a> {
     pub(crate) targets: &'a [u8],
 }
 
+/// One real, caller-owned reader per untrusted top-level role. This intake
+/// borrows the readers; it never opens a pathname, transfers a HANDLE, starts
+/// a network request or creates a parallel metadata datastore.
+pub(crate) struct SignedRoleReaders<'a> {
+    pub(crate) root: &'a mut dyn Read,
+    pub(crate) timestamp: &'a mut dyn Read,
+    pub(crate) snapshot: &'a mut dyn Read,
+    pub(crate) targets: &'a mut dyn Read,
+}
+
 impl SignedRoleBytes<'_> {
     fn roles(self) -> [(TufRole, usize); 4] {
         [
@@ -58,6 +70,7 @@ impl SignedRoleBytes<'_> {
 pub(crate) enum MetadataClientRefusal {
     MissingRole(TufRole),
     RoleExceedsCap(TufRole),
+    RoleReadFailed(TufRole),
     TufClientNotQualified,
 }
 
@@ -89,9 +102,73 @@ pub(crate) fn verify_ready_revision(
     Err(MetadataClientRefusal::TufClientNotQualified)
 }
 
+/// Reads real role streams to their reported EOF within the D-21 individual
+/// limits, then passes their complete untrusted bytes to the closed verifier.
+///
+/// A short successful `Read` is not an EOF. An error after the final signed
+/// byte is still an error until the actual EOF observation succeeds. A
+/// cap-plus-one body refuses without buffering the overflow byte.
+///
+/// This is NOT the TUF transport: the existing acquisition owner must enforce
+/// HTTPS origin, identity content encoding, request/aggregate size and timeout,
+/// and source-handle custody. EOF does not authenticate a signed length or
+/// hash. No input, including perfectly bounded signed-looking JSON, mints
+/// `ReadyRevision` before T-20/T-82 qualifies patched tough and its root,
+/// threshold, expiry, rollback, historical floors and snapshot graph.
+pub(crate) fn verify_ready_revision_from_readers(
+    readers: SignedRoleReaders<'_>,
+) -> Result<ReadyRevision, MetadataClientRefusal> {
+    let root = read_complete_role(TufRole::Root, readers.root)?;
+    let timestamp = read_complete_role(TufRole::Timestamp, readers.timestamp)?;
+    let snapshot = read_complete_role(TufRole::Snapshot, readers.snapshot)?;
+    let targets = read_complete_role(TufRole::Targets, readers.targets)?;
+    verify_ready_revision(SignedRoleBytes {
+        root: &root,
+        timestamp: &timestamp,
+        snapshot: &snapshot,
+        targets: &targets,
+    })
+}
+
+// Keep both the I/O work and its allocated body bounded. A read asks for at
+// most the remaining bytes plus one to distinguish exact-cap EOF from excess.
+// All bytes stay private and are dropped on any refusal. Never parse a prefix.
+fn read_complete_role(
+    role: TufRole,
+    reader: &mut dyn Read,
+) -> Result<Vec<u8>, MetadataClientRefusal> {
+    let mut complete = Vec::new();
+    let mut chunk = [0_u8; 8_192];
+    loop {
+        let remaining = role.max_bytes() - complete.len();
+        let requested = chunk.len().min(remaining + 1);
+        let read = reader
+            .read(&mut chunk[..requested])
+            .map_err(|_| MetadataClientRefusal::RoleReadFailed(role))?;
+        if read == 0 {
+            return if complete.is_empty() {
+                Err(MetadataClientRefusal::MissingRole(role))
+            } else {
+                Ok(complete)
+            };
+        }
+        if read > remaining {
+            return Err(MetadataClientRefusal::RoleExceedsCap(role));
+        }
+        complete
+            .try_reserve_exact(read)
+            .map_err(|_| MetadataClientRefusal::RoleReadFailed(role))?;
+        complete.extend_from_slice(&chunk[..read]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MetadataClientRefusal, SignedRoleBytes, TufRole, verify_ready_revision};
+    use super::{
+        MetadataClientRefusal, SignedRoleBytes, SignedRoleReaders, TufRole, verify_ready_revision,
+        verify_ready_revision_from_readers,
+    };
+    use std::io::{self, Cursor, Read};
 
     // Independent D-21 oracles. Do not derive fixture lengths from the
     // production TufRole::max_bytes implementation under test: a changed cap
@@ -198,5 +275,193 @@ mod tests {
             verify_ready_revision(inputs(&root, &timestamp, &snapshot, &targets)).unwrap_err(),
             MetadataClientRefusal::TufClientNotQualified
         );
+    }
+
+    struct ObservedReader<'a> {
+        bytes: &'a [u8],
+        offset: usize,
+        eof_observations: usize,
+        max_chunk: usize,
+        fail_after: Option<usize>,
+    }
+
+    impl<'a> ObservedReader<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self {
+                bytes,
+                offset: 0,
+                eof_observations: 0,
+                max_chunk: usize::MAX,
+                fail_after: None,
+            }
+        }
+    }
+
+    impl Read for ObservedReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.fail_after.is_some_and(|end| self.offset >= end) {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "interrupted body",
+                ));
+            }
+            let available = self.bytes.len() - self.offset;
+            if available == 0 {
+                self.eof_observations += 1;
+                return Ok(0);
+            }
+            let count = available.min(buffer.len()).min(self.max_chunk);
+            buffer[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn short_reads_require_actual_eof_for_all_four_roles() {
+        let role_bytes = br#"{"signed":{"_type":"timestamp","version":100,"expires":"2099-01-01T00:00:00Z"},"signatures":[]}"#;
+        let mut root = ObservedReader::new(role_bytes);
+        let mut timestamp = ObservedReader::new(role_bytes);
+        let mut snapshot = ObservedReader::new(role_bytes);
+        let mut targets = ObservedReader::new(role_bytes);
+        for reader in [&mut root, &mut timestamp, &mut snapshot, &mut targets] {
+            reader.max_chunk = 3;
+        }
+        assert_eq!(
+            verify_ready_revision_from_readers(SignedRoleReaders {
+                root: &mut root,
+                timestamp: &mut timestamp,
+                snapshot: &mut snapshot,
+                targets: &mut targets,
+            })
+            .unwrap_err(),
+            MetadataClientRefusal::TufClientNotQualified
+        );
+        for reader in [&root, &timestamp, &snapshot, &targets] {
+            assert_eq!(reader.offset, role_bytes.len());
+            assert_eq!(reader.eof_observations, 1);
+        }
+    }
+
+    #[test]
+    fn exact_cap_streams_observe_eof_but_cannot_grant_trust() {
+        let one = b"X";
+        for (role, max_bytes) in D21_ROLE_LIMITS {
+            let complete = vec![b'X'; max_bytes];
+            let mut root = Cursor::new(if role == TufRole::Root {
+                complete.as_slice()
+            } else {
+                one
+            });
+            let mut timestamp = Cursor::new(if role == TufRole::Timestamp {
+                complete.as_slice()
+            } else {
+                one
+            });
+            let mut snapshot = Cursor::new(if role == TufRole::Snapshot {
+                complete.as_slice()
+            } else {
+                one
+            });
+            let mut targets = Cursor::new(if role == TufRole::Targets {
+                complete.as_slice()
+            } else {
+                one
+            });
+            assert_eq!(
+                verify_ready_revision_from_readers(SignedRoleReaders {
+                    root: &mut root,
+                    timestamp: &mut timestamp,
+                    snapshot: &mut snapshot,
+                    targets: &mut targets,
+                })
+                .unwrap_err(),
+                MetadataClientRefusal::TufClientNotQualified,
+                "role {role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cap_plus_one_stream_refuses_without_reading_full_oversized_body() {
+        let one = b"X";
+        for (role, max_bytes) in D21_ROLE_LIMITS {
+            let oversized = vec![b'X'; max_bytes + 4_096];
+            let mut root = Cursor::new(if role == TufRole::Root {
+                oversized.as_slice()
+            } else {
+                one
+            });
+            let mut timestamp = Cursor::new(if role == TufRole::Timestamp {
+                oversized.as_slice()
+            } else {
+                one
+            });
+            let mut snapshot = Cursor::new(if role == TufRole::Snapshot {
+                oversized.as_slice()
+            } else {
+                one
+            });
+            let mut targets = Cursor::new(if role == TufRole::Targets {
+                oversized.as_slice()
+            } else {
+                one
+            });
+            assert_eq!(
+                verify_ready_revision_from_readers(SignedRoleReaders {
+                    root: &mut root,
+                    timestamp: &mut timestamp,
+                    snapshot: &mut snapshot,
+                    targets: &mut targets,
+                })
+                .unwrap_err(),
+                MetadataClientRefusal::RoleExceedsCap(role)
+            );
+            let consumed = match role {
+                TufRole::Root => root.position(),
+                TufRole::Timestamp => timestamp.position(),
+                TufRole::Snapshot => snapshot.position(),
+                TufRole::Targets => targets.position(),
+            };
+            assert_eq!(consumed, max_bytes as u64 + 1, "role {role:?}");
+        }
+    }
+
+    #[test]
+    fn stream_failure_at_or_after_last_byte_is_not_eof() {
+        let one = b"X";
+        for (role, eof_failure) in [
+            (TufRole::Root, false),
+            (TufRole::Timestamp, false),
+            (TufRole::Snapshot, false),
+            (TufRole::Targets, false),
+            (TufRole::Root, true),
+            (TufRole::Timestamp, true),
+            (TufRole::Snapshot, true),
+            (TufRole::Targets, true),
+        ] {
+            let mut root = ObservedReader::new(one);
+            let mut timestamp = ObservedReader::new(one);
+            let mut snapshot = ObservedReader::new(one);
+            let mut targets = ObservedReader::new(one);
+            let chosen = match role {
+                TufRole::Root => &mut root,
+                TufRole::Timestamp => &mut timestamp,
+                TufRole::Snapshot => &mut snapshot,
+                TufRole::Targets => &mut targets,
+            };
+            chosen.fail_after = Some(if eof_failure { 1 } else { 0 });
+            assert_eq!(
+                verify_ready_revision_from_readers(SignedRoleReaders {
+                    root: &mut root,
+                    timestamp: &mut timestamp,
+                    snapshot: &mut snapshot,
+                    targets: &mut targets,
+                })
+                .unwrap_err(),
+                MetadataClientRefusal::RoleReadFailed(role),
+                "role {role:?}, after-last-byte={eof_failure}"
+            );
+        }
     }
 }
