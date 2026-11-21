@@ -89,6 +89,7 @@ const modes = [
   "zero-will-throw",
   "zero-will-create",
   "zero-preexisting-pending-create",
+  "zero-preexisting-pending-preload",
   "zero-before-pending-create",
   "zero-before-pending-preload",
   "zero-before-transient-create",
@@ -181,7 +182,7 @@ for (const { facts, mode } of cases) {
       );
     } else if (
       mode === "zero-will-create" ||
-      mode === "zero-preexisting-pending-create" ||
+      mode?.startsWith("zero-preexisting-pending-") ||
       mode?.startsWith("zero-before-pending-") ||
       mode?.startsWith("zero-before-transient-") ||
       mode?.startsWith("zero-will-pending-") ||

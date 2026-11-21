@@ -281,7 +281,7 @@ if (mode?.startsWith("zero-will")) {
 const ready = app.whenReady();
 if (mode !== "pre-ready") await ready;
 assert.ok(handlers);
-if (mode === "zero-preexisting-pending-create") startControlledCreate();
+if (mode?.startsWith("zero-preexisting-pending-")) startControlledCreate();
 if (mode?.startsWith("live-census-")) snapshot.document.current = false;
 // Poison one ordinary global at a time, only during the actual native intent.
 // Source imports already captured their framework intrinsics before this point.
@@ -549,7 +549,7 @@ if (mode?.startsWith("scope-")) {
         : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
     );
   } else if (
-    mode === "zero-preexisting-pending-create" ||
+    mode?.startsWith("zero-preexisting-pending-") ||
     mode?.startsWith("zero-before-pending-") ||
     mode?.startsWith("zero-before-transient-") ||
     mode?.startsWith("zero-will-pending-") ||
