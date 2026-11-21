@@ -80,7 +80,7 @@ impl<'lease> WindowsInitialInstallPermit<'lease> {
     /// recovery belongs to the original bound attempt, never a reissued
     /// permit or a replay. This method cannot perform an installation effect.
     pub(super) fn consume_for_admission_journal(
-        mut self,
+        self,
     ) -> Result<CreationArmedEffectGate<'lease>, UpdateError> {
         if thread::current().id() != self.worker {
             return Err(error(
@@ -110,7 +110,7 @@ impl CreationArmedEffectGate<'_> {
     /// No network/refresh/async dispatch is allowed between revalidation and
     /// first protected creation.
     pub(super) fn enter_bootstrap_effect(
-        mut self,
+        self,
         effect: impl FnOnce() -> Result<File, UpdateError>,
     ) -> Result<File, UpdateError> {
         if thread::current().id() != self.worker {
