@@ -177,7 +177,9 @@ class CandidateIntegrityTest(unittest.TestCase):
         checkout = Path(self.temp.name) / "immutable-source-fixture"
         commands = [
             ["git", "clone", "--shared", "--no-checkout", str(SOURCE), str(checkout)],
+            ["git", "-C", str(checkout), "config", "maintenance.auto", "false"],
             ["git", "-C", str(checkout), "sparse-checkout", "init", "--cone"],
+            ["git", "-C", str(checkout), "config", "maintenance.auto", "false"],
             [
                 "git", "-C", str(checkout), "sparse-checkout", "set",
                 "packages/@keld", "crates/keld-cli/tests/fixtures/gh1404-minimal-app",
