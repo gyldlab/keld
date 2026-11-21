@@ -78,12 +78,23 @@ thread_local! {
 
 #[cfg(test)]
 fn windows_d45_capture_chain_for_test(signer: *mut CRYPT_PROVIDER_SGNR) {
-    let armed =
-        WINDOWS_D45_TEST_PROBE.with(|probe| matches!(*probe.borrow(), WindowsD45TestProbe::Armed));
+    // A test-only borrow conflict must not panic between WinTrust VERIFY and
+    // CLOSE. An absent capture fails the independent native test instead.
+    let armed = WINDOWS_D45_TEST_PROBE
+        .try_with(|probe| {
+            probe
+                .try_borrow()
+                .is_ok_and(|state| matches!(*state, WindowsD45TestProbe::Armed))
+        })
+        .unwrap_or(false);
     if armed {
         let result = windows_d45_chain_facts_from_signer(signer);
-        WINDOWS_D45_TEST_PROBE.with(|probe| {
-            *probe.borrow_mut() = WindowsD45TestProbe::Captured(result);
+        let _ = WINDOWS_D45_TEST_PROBE.try_with(|probe| {
+            if let Ok(mut state) = probe.try_borrow_mut()
+                && matches!(*state, WindowsD45TestProbe::Armed)
+            {
+                *state = WindowsD45TestProbe::Captured(result);
+            }
         });
     }
 }

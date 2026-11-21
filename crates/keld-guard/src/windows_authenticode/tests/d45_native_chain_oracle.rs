@@ -97,6 +97,60 @@ fn installed_foreign_fixture(env_key: &str, relative_path: &str) -> PathBuf {
     )
 }
 
+/// Own the test-thread observer through all returns and unwinding paths.
+/// The live production verifier never knows this guard or its captured value.
+struct WindowsD45ProbeScope;
+
+impl WindowsD45ProbeScope {
+    fn arm() -> Self {
+        WINDOWS_D45_TEST_PROBE.with(|probe| {
+            let mut state = probe.borrow_mut();
+            assert!(
+                matches!(*state, WindowsD45TestProbe::Disabled),
+                "the D-45 native observation requires a fresh test-thread probe"
+            );
+            *state = WindowsD45TestProbe::Armed;
+        });
+        Self
+    }
+
+    fn take(&mut self) -> WindowsD45TestProbe {
+        WINDOWS_D45_TEST_PROBE.with(|probe| {
+            std::mem::replace(&mut *probe.borrow_mut(), WindowsD45TestProbe::Disabled)
+        })
+    }
+}
+
+impl Drop for WindowsD45ProbeScope {
+    fn drop(&mut self) {
+        // Never cause a second panic while unwinding an unexpected native
+        // failure. No test borrow is intentionally held across verification.
+        let _ = WINDOWS_D45_TEST_PROBE.try_with(|probe| {
+            if let Ok(mut state) = probe.try_borrow_mut() {
+                *state = WindowsD45TestProbe::Disabled;
+            }
+        });
+    }
+}
+
+#[test]
+fn native_chain_test_probe_releases_armed_state_on_unwind() {
+    let failure = std::panic::catch_unwind(|| {
+        let _probe = WindowsD45ProbeScope::arm();
+        WINDOWS_D45_TEST_PROBE.with(|slot| {
+            assert!(matches!(*slot.borrow(), WindowsD45TestProbe::Armed));
+        });
+        panic!("intentional test-only probe unwind");
+    });
+    assert!(failure.is_err(), "the fault injection must have panicked");
+    WINDOWS_D45_TEST_PROBE.with(|slot| {
+        assert!(
+            matches!(*slot.borrow(), WindowsD45TestProbe::Disabled),
+            "the probe must be disabled after unwinding"
+        );
+    });
+}
+
 fn verify_foreign_native_chain(
     path: PathBuf,
     expected_image_sha256: [u8; 32],
@@ -113,12 +167,7 @@ fn verify_foreign_native_chain(
         "the independent signed-binary fixture changed; re-pin after reviewing its signer"
     );
 
-    let previous = WINDOWS_D45_TEST_PROBE
-        .with(|probe| std::mem::replace(&mut *probe.borrow_mut(), WindowsD45TestProbe::Armed));
-    assert!(
-        matches!(previous, WindowsD45TestProbe::Disabled),
-        "the D-45 native observation must own a fresh test-thread probe"
-    );
+    let mut probe = WindowsD45ProbeScope::arm();
 
     // This is the exact production VERIFY→provider read→CLOSE ceremony with
     // whole-chain revocation. The test-only probe reads chain facts before
@@ -126,8 +175,7 @@ fn verify_foreign_native_chain(
     let refusal = image
         .verify()
         .expect_err("a valid foreign signer never grants Keld Host identity");
-    let captured = WINDOWS_D45_TEST_PROBE
-        .with(|probe| std::mem::replace(&mut *probe.borrow_mut(), WindowsD45TestProbe::Disabled));
+    let captured = probe.take();
     assert!(
         matches!(
             refusal.detail(),
