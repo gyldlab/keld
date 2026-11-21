@@ -18,7 +18,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::{
     FILE_ATTRIBUTE_REPARSE_POINT, FixtureDirectory, WindowsAuthenticodeError,
-    WindowsAuthenticodeImage,
+    WindowsAuthenticodeImage, WindowsD45DirectDiscoveryEligibility,
+    sha256_retained_windows_image,
 };
 
 /// Own only the junction leaves, never either target directory.
@@ -189,6 +190,11 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
     let pinned =
         WindowsAuthenticodeImage::open(&visible).expect("Guard retains the original signed file");
     let retained_identity = windows_file_identity(&pinned.image);
+    let original_len = fs::metadata(&original)
+        .expect("the original signed source has a known fixture length")
+        .len();
+    let original_digest = sha256_retained_windows_image(&pinned.image, original_len)
+        .expect("hash original signed Host from its retained handle");
     assert_eq!(retained_identity, path_identity(&original));
 
     junctions.substitute(&foreign_dir);
@@ -201,6 +207,20 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
         retained_identity,
         path_identity(&visible),
         "the retained original HANDLE must not name the substituted path object"
+    );
+    assert_eq!(
+        sha256_retained_windows_image(&pinned.image, original_len)
+            .expect("substituting the path cannot change the original handle's signed bytes"),
+        original_digest
+    );
+    assert_ne!(
+        sha256_retained_windows_image(
+            &File::open(&visible).expect("open the foreign alias for the negative control"),
+            fs::metadata(&visible).expect("foreign image metadata").len(),
+        )
+        .expect("the replacement has readable bytes"),
+        original_digest,
+        "a path reopen must observe the foreign unsigned bytes"
     );
     let size = usize::try_from(fs::metadata(&original).expect("original image").len())
         .expect("signed Git fixture fits the test address space");
@@ -280,9 +300,22 @@ fn d45_trusted_signed_host_verifies_original_hfile_after_path_substitution() {
     junctions.substitute(&foreign_dir);
     assert_ne!(original_id, path_identity(&visible));
 
-    let verified = pinned
-        .verify()
-        .expect("WinTrust must verify the retained signed hFile");
+    // This ignored operator case is restricted to a genuinely commissioned
+    // Keld-signed carrier. It exercises source continuity only; it supplies no
+    // D-43 Direct decision or v2 issuer/profile commissioning evidence.
+    let preflight = pinned
+        .observe_preflight()
+        .expect("local offline WinTrust must accept the signed original Host");
+    assert_eq!(windows_file_identity(preflight.file()), original_id);
+    let mut independently_pinned_digest = [0_u8; 32];
+    independently_pinned_digest.copy_from_slice(&original_sha);
+    let verified = preflight
+        .verify_full_bound(WindowsD45DirectDiscoveryEligibility {
+            original_host_sha256: independently_pinned_digest,
+            expected_host_bytes: u64::try_from(original_bytes.len())
+                .expect("the signed fixture length fits u64"),
+        })
+        .expect("full WinTrust must independently verify the same retained signed hFile");
     assert_eq!(verified.identity().app_id(), expected_app);
     let actual_publisher = hex_bytes(verified.identity().publisher_scope());
     assert_eq!(actual_publisher, expected_publisher);

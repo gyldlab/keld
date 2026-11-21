@@ -44,6 +44,9 @@ const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.windows/v1\0";
 const WINDOWS_SIGNER_SPKI_MAX_BYTES: u32 = 64 * 1024;
 const WINDOWS_OPUS_INFO_MAX_BYTES: u32 = 4 * 1024;
 
+/// Hash one retained file in fixed chunks. Host size is never an allocation size.
+const WINDOWS_HOST_DIGEST_CHUNK_BYTES: usize = 64 * 1024;
+
 /// Two distinct trust policies over the same retained, read-only image handle.
 /// Cache-only observation never substitutes for full revocation verification.
 #[derive(Clone, Copy)]
@@ -132,6 +135,19 @@ pub struct WindowsPreflightImage {
     observed_app_id: Box<str>,
 }
 
+/// Native D-43 Direct-discovery eligibility required before D-45 full verification.
+///
+/// KEL-53/T-82 has not qualified an issuer for authenticated publisher,
+/// profile OID, issuer policy, repository census, or old-reader evidence.
+/// This type has no production constructor and does not accept a caller
+/// Boolean, pathname, or digest as an authority grant.
+#[allow(dead_code)] // T-82 has not commissioned a native Direct-discovery issuer.
+struct WindowsD45DirectDiscoveryEligibility {
+    original_host_sha256: [u8; 32],
+    // Exact signed-catalogue host.bytes, never from the filesystem or request.
+    expected_host_bytes: u64,
+}
+
 impl WindowsPreflightImage {
     /// Locally observed publisher scope. No current revocation status is implied.
     #[must_use]
@@ -152,6 +168,93 @@ impl WindowsPreflightImage {
     pub const fn file(&self) -> &File {
         &self.source.image
     }
+
+    /// Revalidate the exact same retained image using full chain revocation.
+    ///
+    /// Kept private and requires a non-forgeable, current-lease Direct-discovery
+    /// witness. No production witness constructor exists before T-82 grants
+    /// the native issuer/profile/role checks and the KEL-53 repository census.
+    /// Neither a preflight value nor a caller Boolean can authorize conversion.
+    #[allow(dead_code)] // T-82 pending: no production Direct-discovery witness exists yet.
+    fn verify_full_bound(
+        self,
+        direct: WindowsD45DirectDiscoveryEligibility,
+    ) -> Result<VerifiedWindowsImage, WindowsAuthenticodeError> {
+        // The Direct witness must bind an exact authenticated byte count and
+        // digest before any full-file read; preflight performs no such scan.
+        let exact_digest =
+            sha256_retained_windows_image(&self.source.image, direct.expected_host_bytes)?;
+        if exact_digest != direct.original_host_sha256 {
+            return Err(windows_identity_error(
+                "the Direct discovery source differs from the retained offline Host",
+                "Repeat authenticated owner discovery against the original signed Host.",
+            ));
+        }
+        let full = self.source.verify()?;
+        if full.identity.publisher_scope != self.observed_publisher_scope
+            || full.identity.app_id != self.observed_app_id
+        {
+            return Err(windows_identity_error(
+                "the authenticated signer or app ID differs from the retained offline preflight",
+                "Restore the original signed Host and repeat discovery and full verification.",
+            ));
+        }
+        Ok(full)
+    }
+}
+
+/// Computes a complete byte digest through one retained file object. No path is
+/// opened or trusted here, and this digest alone cannot authorize a signed Host.
+fn sha256_retained_windows_image(
+    image: &File,
+    expected_bytes: u64,
+) -> Result<[u8; 32], WindowsAuthenticodeError> {
+    use std::os::windows::fs::FileExt as _;
+
+    let length = image
+        .metadata()
+        .map_err(|source| {
+            windows_identity_error(
+                format!("the retained signed Host length cannot be read: {source}"),
+                "Restore the signed Host file and restart read-only verification.",
+            )
+        })?
+        .len();
+    if expected_bytes == 0 || length != expected_bytes {
+        return Err(windows_identity_error(
+            "the retained signed Host byte count differs from the authenticated expected length",
+            "Restore the exact signed Host and repeat authenticated source selection.",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    let mut bytes = [0_u8; WINDOWS_HOST_DIGEST_CHUNK_BYTES];
+    let mut offset = 0_u64;
+    while offset < expected_bytes {
+        let remaining = expected_bytes - offset;
+        let take = usize::try_from(remaining)
+            .unwrap_or(WINDOWS_HOST_DIGEST_CHUNK_BYTES)
+            .min(WINDOWS_HOST_DIGEST_CHUNK_BYTES);
+        let count = image
+            .seek_read(&mut bytes[..take], offset)
+            .map_err(|source| {
+                windows_identity_error(
+                    format!("the retained signed Host read failed: {source}"),
+                    "Restore the signed Host file and restart read-only verification.",
+                )
+            })?;
+        if count == 0 {
+            return Err(windows_identity_error(
+                "the retained signed Host ended before its handle-derived length",
+                "Restore the signed Host file and restart read-only verification.",
+            ));
+        }
+        hasher.update(&bytes[..count]);
+        offset += count as u64;
+    }
+    let digest = hasher.finalize();
+    let mut exact = [0_u8; 32];
+    exact.copy_from_slice(&digest);
+    Ok(exact)
 }
 
 /// A pinned executable image and the identity that verifying that handle proved.
@@ -811,6 +914,65 @@ mod tests {
         );
         drop(image);
         fs::rename(&image_path, &moved).expect("a released image can move");
+    }
+
+    #[test]
+    fn d45_retained_host_digest_matches_independent_sha256_literal() {
+        let directory = FixtureDirectory::new("d45-retained-digest");
+        let path = directory.path().join("host-source.exe");
+        fs::write(&path, b"abc").expect("write exact fixed hash vector");
+        let image = WindowsAuthenticodeImage::open(&path)
+            .expect("unsigned synthetic image may be held for read-only hashing");
+        assert_eq!(
+            sha256_retained_windows_image(&image.image, 3)
+                .expect("read all source bytes through the pinned hFile"),
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+                0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+                0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+                0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+            ],
+            "the digest must cover the exact original bytes"
+        );
+        let error = sha256_retained_windows_image(&image.image, 4)
+            .expect_err("a different expected size must refuse before a file scan");
+        assert!(
+            error
+                .detail()
+                .contains("differs from the authenticated expected length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn d45_foreign_direct_source_refuses_before_full_wintrust() {
+        // This deliberately fabricated *test-only* preflight state cannot
+        // authenticate anything. It isolates the independent native-source
+        // identity check that must precede full WinTrust after D-43 discovery.
+        let directory = FixtureDirectory::new("d45-foreign-source-witness");
+        let path = directory.path().join("unsigned-host.exe");
+        fs::write(&path, b"bounded owner mismatch fixture").expect("write source fixture");
+        let source = WindowsAuthenticodeImage::open(&path)
+            .expect("retain the test's original regular file");
+        let preflight = WindowsPreflightImage {
+            source,
+            observed_publisher_scope: [0x22; 32],
+            observed_app_id: "com.example.app".into(),
+        };
+        let error = preflight
+            .verify_full_bound(WindowsD45DirectDiscoveryEligibility {
+                original_host_sha256: [0_u8; 32],
+                expected_host_bytes: u64::try_from(b"bounded owner mismatch fixture".len())
+                    .expect("fixture source size fits u64"),
+            })
+            .expect_err("a different Direct source digest cannot reach full WinTrust");
+        assert!(
+            error
+                .detail()
+                .contains("Direct discovery source differs from the retained offline Host"),
+            "{error}"
+        );
+        assert!(error.close_failure().is_none(), "{error}");
     }
 
     #[test]
