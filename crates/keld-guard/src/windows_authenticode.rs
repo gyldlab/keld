@@ -60,6 +60,34 @@ struct WindowsD45ChainFacts {
     _leaf_issuer_spki_sha256: [u8; 32],
 }
 
+/// An operator-only test observes an unrelated, publicly signed executable
+/// after verified signer selection but before the required Keld app-ID
+/// attribute refusal. No test state or captured fact exists in release code.
+#[cfg(test)]
+enum WindowsD45TestProbe {
+    Disabled,
+    Armed,
+    Captured(Result<WindowsD45ChainFacts, WindowsAuthenticodeError>),
+}
+
+#[cfg(test)]
+thread_local! {
+    static WINDOWS_D45_TEST_PROBE: std::cell::RefCell<WindowsD45TestProbe> =
+        const { std::cell::RefCell::new(WindowsD45TestProbe::Disabled) };
+}
+
+#[cfg(test)]
+fn windows_d45_capture_chain_for_test(signer: *mut CRYPT_PROVIDER_SGNR) {
+    let armed =
+        WINDOWS_D45_TEST_PROBE.with(|probe| matches!(*probe.borrow(), WindowsD45TestProbe::Armed));
+    if armed {
+        let result = windows_d45_chain_facts_from_signer(signer);
+        WINDOWS_D45_TEST_PROBE.with(|probe| {
+            *probe.borrow_mut() = WindowsD45TestProbe::Captured(result);
+        });
+    }
+}
+
 /// The legacy identity is unchanged; D-45 chain facts are observed only for
 /// offline discovery and never participate in an authorization conversion.
 struct WindowsTrustObservation {
@@ -652,6 +680,8 @@ fn windows_identity_from_verified_trust_state(
         ));
     }
     let publisher_scope = windows_publisher_scope_from_signer(signer)?;
+    #[cfg(test)]
+    windows_d45_capture_chain_for_test(signer);
     let signed_program_name = windows_signed_program_name_from_signer(signer)?;
     let app_id = parse_windows_signed_program_name(&signed_program_name)?;
     let d45_chain_facts = if observe_d45_chain {
@@ -1199,6 +1229,7 @@ mod tests {
     use super::*;
 
     mod d45_host_handle_alias;
+    mod d45_native_chain_oracle;
 
     /// One isolated trust-image fixture directory under the system temporary directory.
     struct FixtureDirectory(PathBuf);
