@@ -260,13 +260,7 @@ fn initialize_with_authority_and_token_check(
         publication::ValidatedBaselineStageSource::open_legacy(verified, archive)?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
-    let update_name = trust
-        .installation
-        .update_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| error("topology", "update name absent"))?;
-    let mut lock = acquire_bootstrap_lock(&roots, update_name)?;
+    let mut lock = acquire_bootstrap_lock(&roots)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
     seed_activation_lock(&roots)?;
     observe(BaselineBoundary::ActivationLockCreated)
@@ -295,11 +289,18 @@ fn initialize_with_authority_and_token_check(
 mod publication;
 use publication::{publish_baseline_version, seed_baseline_pointers};
 
-fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, UpdateError> {
+pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError> {
     let profile = roots.profile();
     let install = roots
         .install()
         .map_err(|cause| error("install root", cause))?;
+    let update_name = roots
+        .trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("topology", "update name absent"))?;
     exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
     exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
     exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;

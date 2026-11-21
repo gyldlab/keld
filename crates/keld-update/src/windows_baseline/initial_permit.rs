@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::{self, ThreadId};
 
-use super::error;
+use super::{Roots, error, initialize};
 use crate::UpdateError;
 
 // The native handle-identity denial can compile and exercise real directory
@@ -41,6 +41,15 @@ trait NativeInitialAdmissionIssuer {
     /// Independently reread the exact matching armed journal and pending
     /// pointer through retained native objects before an installation effect.
     fn require_durable_creation_armed(&mut self) -> Result<(), UpdateError>;
+
+    /// Before *any* bootstrap write, bind this exact KEL-53 retained scaffold
+    /// to the admitted destination/root disposition, captured SID, volume,
+    /// creator provenance, and still-live repository selection. Refuse a
+    /// foreign scaffold even if its protection profile looks valid.
+    ///
+    /// FreshAbsent v2 cannot use a preprovisioned scaffold without D-43's
+    /// separately qualified creator proof. No such proof is commissioned.
+    fn require_bound_existing_scaffold(&mut self, roots: &Roots) -> Result<(), UpdateError>;
 
     /// Verify the actual exclusive bootstrap handle and repeat D-42/D-43
     /// destination ownership checks while both locks are still held.
@@ -106,18 +115,17 @@ impl<'lease> WindowsInitialInstallPermit<'lease> {
 impl CreationArmedEffectGate<'_> {
     /// Enter the first KEL-53 installation effect, once, on the admitted worker.
     ///
-    /// This is the ONLY permitted route into the effect closure for a v2
-    /// initializer. `self` moves and the closure is `FnOnce`; safe Rust cannot
-    /// replay the effect. The closure must create any admitted scaffold and
-    /// return the actual exclusive KEL-53 bootstrap lock handle. This method
-    /// retains the metadata lease until that handle has been revalidated and
-    /// D-64 `bootstrap-owned` has been durably reread.
+    /// This is the ONLY permitted D-46 route into the KEL-53 bootstrap-lock
+    /// creation. The consumed gate calls the *existing* retained-root writer,
+    /// with no callback through which a caller could return an unrelated
+    /// `activation.lock` or perform another effect. This call requires the
+    /// previously admitted scaffold handles; fresh installation-specific
+    /// parent creation needs its separate D-43/D-44 native owner before use.
+    /// The metadata lease remains borrowed until the actual exclusive KEL-53
+    /// bootstrap handle has been revalidated and D-64 `bootstrap-owned` reread.
     /// No network/refresh/async dispatch is allowed between revalidation and
     /// first protected creation.
-    pub(super) fn enter_bootstrap_effect(
-        self,
-        effect: impl FnOnce() -> Result<File, UpdateError>,
-    ) -> Result<File, UpdateError> {
+    pub(super) fn enter_bootstrap_effect(self, roots: &Roots) -> Result<File, UpdateError> {
         if thread::current().id() != self.worker {
             return Err(error(
                 "initial install admission",
@@ -126,7 +134,15 @@ impl CreationArmedEffectGate<'_> {
         }
         self.issuer.revalidate_under_repository_lease()?;
         self.issuer.require_durable_creation_armed()?;
-        let lock = effect()?;
+        // This MUST run before create-new: revalidation of the resulting lock
+        // cannot undo an effect in an unrelated, caller-selected install root.
+        self.issuer.require_bound_existing_scaffold(roots)?;
+        // The native issuer checks the actual worker/token, generation,
+        // deadline, and retained source *again* after journal/root I/O. No
+        // issuer callback, refresh, or application dispatch follows this last
+        // recheck before the KEL-53 writer makes its first protected create.
+        self.issuer.revalidate_under_repository_lease()?;
+        let lock = initialize::acquire_bootstrap_lock(roots)?;
         self.issuer.revalidate_bootstrap_lock(&lock)?;
         self.issuer.publish_and_read_back_bootstrap_owned(&lock)?;
         Ok(lock)
