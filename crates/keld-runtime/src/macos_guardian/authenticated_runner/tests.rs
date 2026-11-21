@@ -27,7 +27,9 @@ fn expired_direct_child_deadline_never_sends_a_late_kill() {
             .expect("own real native direct child"),
     ));
     let owned = child.0.as_mut().expect("retain exact native child");
-    let expired = Instant::now() - Duration::from_millis(1);
+    let expired = Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .expect("monotonic clock must have at least one millisecond of history");
     let result = reap_owned_child_within_deadline(owned, expired);
     assert!(
         matches!(&result, Err(error) if error.kind() == std::io::ErrorKind::TimedOut),
@@ -55,8 +57,13 @@ fn expired_deadline_still_accepts_an_already_reaped_child() {
     ));
     let owned = child.0.as_mut().expect("retain exact native child");
     assert!(owned.wait().expect("complete exact child").success());
-    let status = reap_owned_child_within_deadline(owned, Instant::now() - Duration::from_secs(1))
-        .expect("already-reaped exact child needs no signal");
+    let status = reap_owned_child_within_deadline(
+        owned,
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("monotonic clock must have at least one second of history"),
+    )
+    .expect("already-reaped exact child needs no signal");
     assert!(status.success());
 }
 
