@@ -222,15 +222,25 @@ fn initialize_with_authority(
         trust,
         authority,
         observe,
-        |authority| match authority {
-            BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),
-            BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),
-            BaselineAuthority::MachineUac => {
-                keld_guard::require_windows_non_system_token()?;
-                keld_guard::require_windows_machine_uac_owner_token()
-            }
-        },
+        require_native_baseline_authority,
     )
+}
+
+/// Reobserve the existing v1 mode predicates against the current Windows token.
+///
+/// This does not bind an exact TokenId or owner SID, supply D-42 worker
+/// admission, or grant D-46 v2 authority. It is repeated at KEL-53's first
+/// write boundary so a stale initial mode result cannot bypass a changed
+/// native SYSTEM/non-SYSTEM or UAC mode predicate at creation time.
+fn require_native_baseline_authority(authority: BaselineAuthority) -> io::Result<()> {
+    match authority {
+        BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),
+        BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),
+        BaselineAuthority::MachineUac => {
+            keld_guard::require_windows_non_system_token()?;
+            keld_guard::require_windows_machine_uac_owner_token()
+        }
+    }
 }
 
 fn initialize_with_authority_and_token_check(
@@ -260,6 +270,11 @@ fn initialize_with_authority_and_token_check(
         publication::ValidatedBaselineStageSource::open_legacy(verified, archive)?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
+    // The first token check preceded retained-source and root I/O. This native
+    // second observation is mandatory even for test-only injected initial
+    // token checks, and must precede KEL-53's first FILE_CREATE effect.
+    require_native_baseline_authority(authority)
+        .map_err(|cause| error("bootstrap authority recheck", cause))?;
     let mut lock = acquire_bootstrap_lock(&roots)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
     recheck_bootstrap_scaffold(&roots)?;

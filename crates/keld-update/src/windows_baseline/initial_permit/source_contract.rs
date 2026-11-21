@@ -7,6 +7,100 @@
 //! durability; those require the commissioned native issuer and native tests.
 
 const SOURCE: &str = include_str!("../initial_permit.rs");
+const LEGACY_INITIALIZER: &str = include_str!("../initialize.rs");
+
+// This source-only boundary check does NOT prove a token change can be
+// injected on Windows. It protects the already-authorized v1 native Guard
+// observation at the real KEL-53 FILE_CREATE cut until the D-42 issuer exists.
+fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
+    let visible = hide_non_code(source)?;
+    let helper_start = visible
+        .find("fn require_native_baseline_authority(")
+        .ok_or("native v1 token helper missing")?;
+    let initializer_start = visible
+        .find("fn initialize_with_authority_and_token_check(")
+        .ok_or("sole KEL-53 initializer missing")?;
+    if helper_start >= initializer_start {
+        return Err("native v1 token helper moved out of the entry boundary");
+    }
+    let helper = code(&visible[helper_start..initializer_start]);
+    for guard in [
+        "BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token()",
+        "BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token()",
+        "BaselineAuthority::MachineUac => { keld_guard::require_windows_non_system_token()?; keld_guard::require_windows_machine_uac_owner_token()",
+    ] {
+        if !helper.contains(guard) {
+            return Err("legacy native mode guard removed or replaced");
+        }
+    }
+    let end = visible[initializer_start..]
+        .find("\nmod publication;")
+        .ok_or("KEL-53 publication boundary missing")?;
+    let initializer = code(&visible[initializer_start..initializer_start + end]);
+    required_order(
+        &initializer,
+        &[
+            "token_check(authority)",
+            "publication::ValidatedBaselineStageSource::open_legacy(verified, archive)?;",
+            "open_roots(trust, true)",
+            "require_native_baseline_authority(authority)",
+            "let mut lock = acquire_bootstrap_lock(&roots)?;",
+        ],
+    )?;
+    if initializer
+        .matches("require_native_baseline_authority(authority)")
+        .count()
+        != 1
+    {
+        return Err("bootstrap recheck must be exactly one native call");
+    }
+    Ok(())
+}
+
+#[test]
+fn all_three_legacy_modes_recheck_native_guard_before_first_effect() {
+    legacy_effect_authority_contract(LEGACY_INITIALIZER)
+        .expect("KEL-53 v1 calls the actual Guard token check after source/root admission");
+}
+
+#[test]
+fn native_effect_recheck_single_fault_mutations_are_refused() {
+    let recheck = "require_native_baseline_authority(authority)\n        .map_err(|cause| error(\"bootstrap authority recheck\", cause))?;";
+    for (label, before, after) in [
+        ("recheck deleted", recheck, "let _ = authority;"),
+        (
+            "effect occurs before native recheck",
+            "require_native_baseline_authority(authority)\n        .map_err(|cause| error(\"bootstrap authority recheck\", cause))?;\n    let mut lock = acquire_bootstrap_lock(&roots)?;",
+            "let mut lock = acquire_bootstrap_lock(&roots)?;\n    require_native_baseline_authority(authority)\n        .map_err(|cause| error(\"bootstrap authority recheck\", cause))?;",
+        ),
+        (
+            "SYSTEM guard replaced by unconditional acceptance",
+            "BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),",
+            "BaselineAuthority::MachineSystem => Ok(()),",
+        ),
+        (
+            "PerUser guard replaced by unconditional acceptance",
+            "BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),",
+            "BaselineAuthority::PerUser => Ok(()),",
+        ),
+        (
+            "UAC owner guard replaced by unconditional acceptance",
+            "keld_guard::require_windows_machine_uac_owner_token()",
+            "Ok(())",
+        ),
+    ] {
+        assert_eq!(
+            LEGACY_INITIALIZER.matches(before).count(),
+            1,
+            "{label}: anchor"
+        );
+        let mutant = LEGACY_INITIALIZER.replacen(before, after, 1);
+        assert!(
+            legacy_effect_authority_contract(&mutant).is_err(),
+            "{label}: missing native first-effect authority was not detected"
+        );
+    }
+}
 
 // Keep offsets unchanged so the existing method/field slicers operate on
 // actual Rust tokens. Quoted text, comments and inert macro token trees can
