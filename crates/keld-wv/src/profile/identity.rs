@@ -204,7 +204,16 @@ impl WebProfileSelection {
     }
 }
 
-fn validate_canonical_app_id(value: &str) -> Result<(), ProfileError> {
+/// Validates canonical application-ID syntax without minting a publisher identity.
+///
+/// Package metadata and authenticated profile identities share this one syntax
+/// predicate. Passing it establishes neither publisher authenticity nor access to
+/// a persistent profile.
+///
+/// # Errors
+///
+/// Returns `KELD-WV-009` for an empty, overlong, non-ASCII, or noncanonical ID.
+pub fn validate_canonical_app_id(value: &str) -> Result<(), ProfileError> {
     if value.is_empty() || value.len() > 255 || !value.is_ascii() {
         return Err(ProfileError::new(ProfileErrorKind::InvalidAppId));
     }
