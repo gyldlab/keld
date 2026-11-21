@@ -27,7 +27,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     result
 }
 
-fn policy<'a>(digest: &'a [u8; 32], role: WindowsD45HostRole) -> WindowsD45ProfilePolicy<'a> {
+fn policy(digest: &[u8; 32], role: WindowsD45HostRole) -> WindowsD45ProfilePolicy<'_> {
     WindowsD45ProfilePolicy {
         role,
         issuer_operation: WindowsD45IssuerOperation::UnchangedPolicy,
