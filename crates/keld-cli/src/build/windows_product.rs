@@ -4,7 +4,6 @@ use super::{
     BuildError, config, local_archive_command, local_images, local_source, windows_inputs,
 };
 use serde::Deserialize;
-use std::fs::File;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf, Prefix};
 const MAX_INPUT: u64 = 64 * 1024;
@@ -139,23 +138,36 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         ));
     }
     let root = std::env::current_dir().map_err(refuse)?;
-    let _project = windows_inputs::pin_input_root(&root)?;
+    run_at_root(&root, session_path)
+}
+
+fn run_at_root(root: &Path, session_path: &Path) -> Result<(), BuildError> {
+    let project_pins = windows_inputs::pin_input_root(root)?;
+    let root = windows_inputs::stable_local_path(&project_pins)?;
     let mut build = local_source::pin_file(&root.join("keld.build.ts"), MAX_INPUT)?;
     let bytes = read(&mut build)?;
     let recipe = config::parse_windows_build(std::str::from_utf8(&bytes).map_err(refuse)?)?;
     let parent = session_path
         .parent()
         .ok_or_else(|| refuse("session input parent missing"))?;
-    let _session_parents = windows_inputs::pin_input_root(parent)?;
-    let mut session_pin = local_source::pin_file(session_path, MAX_INPUT)?;
+    let session_parent_pins = windows_inputs::pin_input_root(parent)?;
+    let session_path = windows_inputs::stable_file_at_parent(session_path, &session_parent_pins)?;
+    let mut session_pin = local_source::pin_file(&session_path, MAX_INPUT)?;
     let session = parse_session(&read(&mut session_pin)?)?;
+    // Actual file and directory handles, not drive-letter syntax, own local-volume
+    // admission. Their stable DOS paths are retained before any child is launched.
     require_source_commit(&session.expected_source_commit, &recipe.source_commit)?;
     let out_dir = resolve(&root, &recipe.out_dir)?;
     // Existing output root is admitted, not silently created/repaired with a new
     // policy. Same source owner creates only the fresh transaction child below it.
-    let _output: Vec<File> = windows_inputs::pin_input_root(&out_dir)?;
+    let output_pins = windows_inputs::pin_input_root(&out_dir)?;
+    let out_dir = windows_inputs::stable_local_path(&output_pins)?;
+    let source_root = resolve(&root, &recipe.source_root)?;
+    let typescript_root = resolve(&root, &recipe.typescript_root)?;
+    let bun = resolve(&root, &recipe.bun.path)?;
+    let tsc = resolve(&root, &recipe.tsc.path)?;
     let source = local_source::Request {
-        source: resolve(&root, &recipe.source_root)?,
+        source: source_root,
         commit: recipe.source_commit,
         session: out_dir.join(format!("session-{}", session.output_nonce)),
         git: session.git,
@@ -178,10 +190,10 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
         publisher_scope: session.publisher_scope,
     };
     let compiler = local_archive_command::CompilerRequest {
-        typescript_root: resolve(&root, &recipe.typescript_root)?,
-        bun: resolve(&root, &recipe.bun.path)?,
+        typescript_root,
+        bun,
         bun_sha256: recipe.bun.sha256,
-        tsc: resolve(&root, &recipe.tsc.path)?,
+        tsc,
         tsc_sha256: recipe.tsc.sha256,
     };
     println!(
@@ -192,8 +204,30 @@ pub(super) fn run(session_path: &Path) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     fn session() -> serde_json::Value {
         serde_json::json!({"schema":"keld.windows-local-test-session/v1","expectedSourceCommit":"1".repeat(40),"git":"D:/git.exe","cargo":"D:/cargo.exe","rustc":"D:/rustc.exe","cargoHome":"D:/cache","outputNonce":"test-1","signTool":{"path":"D:/signtool.exe","sha256":"2".repeat(64)},"certificateThumbprint":"3".repeat(40),"publisherScope":"4".repeat(64),"releasePublicKey":"D:/public.raw","publishedAt":"2026-11-11T00:00:00Z","cacheMode":"mutable-developer"})
+    }
+    #[test]
+    fn session_file_name_refuses_trailing_dot_space_aliases() {
+        let root = tempfile::tempdir().expect("private Windows project");
+        let recipe = format!(
+            "export default {{target:'windows-x64',signing:'test-local-untimestamped',channel:'stable',outDir:'out',source:{{root:'source',commit:'{}'}},compiler:{{typescriptRoot:'typescript',bun:{{path:'bun.exe',sha256:'{}'}},tsc:{{path:'tsc.js',sha256:'{}'}}}},modules:['main.js']}} as const;",
+            "1".repeat(40),
+            "2".repeat(64),
+            "3".repeat(64),
+        );
+        fs::write(root.path().join("keld.build.ts"), recipe).expect("valid test recipe");
+        for leaf in ["session.json.", "session.json "] {
+            let error = run_at_root(root.path(), &root.path().join(leaf))
+                .expect_err("ambiguous session input must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("ambiguous trailing dot/space leaf"),
+                "session {leaf:?} failed for the wrong reason: {error}"
+            );
+        }
     }
     #[test]
     fn ephemeral_input_cannot_override_project_or_create_authority() {

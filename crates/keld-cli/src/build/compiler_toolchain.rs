@@ -57,6 +57,7 @@ impl CapturedCompilerToolchain {
         keld_guard::validate_windows_package_paths(&paths.into_iter().collect::<Vec<_>>())
             .map_err(refuse)?;
         let mut directories = windows_inputs::pin_input_root(package_root)?;
+        let package_root = windows_inputs::stable_local_path(&directories)?;
         let mut parents = BTreeSet::new();
         let mut files = Vec::new();
         for (name, expected) in manifest {
@@ -73,20 +74,23 @@ impl CapturedCompilerToolchain {
             }
             files.push(file);
         }
+        let mut stable_tools = Vec::with_capacity(2);
         for tool in [bun, parser] {
-            directories.extend(windows_inputs::pin_input_root(
+            let pins = windows_inputs::pin_input_root(
                 tool.parent().ok_or_else(|| refuse("tool parent missing"))?,
-            )?);
+            )?;
+            stable_tools.push(windows_inputs::stable_file_at_parent(tool, &pins)?);
+            directories.extend(pins);
         }
-        let bun = local_source::pin_file(bun, 256 * 1024 * 1024)?;
-        let parser = local_source::pin_file(parser, 256 * 1024 * 1024)?;
+        let bun = local_source::pin_file(&stable_tools[0], 256 * 1024 * 1024)?;
+        let parser = local_source::pin_file(&stable_tools[1], 256 * 1024 * 1024)?;
         if &bun.sha256 != expected_bun || &parser.sha256 != expected_parser {
             return Err(refuse("explicit compiler executable digest mismatch"));
         }
         Ok(Self {
             bun,
             parser,
-            package_root: package_root.to_owned(),
+            package_root: package_root.clone(),
             _files: files,
             _directories: directories,
         })
