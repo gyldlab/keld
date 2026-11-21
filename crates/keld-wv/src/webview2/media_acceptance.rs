@@ -1162,14 +1162,23 @@ mod tests {
         selection: crate::profile::WebProfileSelection,
         options: CoreWebView2EnvironmentOptions,
     ) -> Result<WebView2Engine, WvError> {
-        runtime_version()?;
+        // This native fixture owns an engine just like production does.
+        // Keep its actual preflight for both environment and controller
+        // failure diagnostics; never re-query Evergreen after a deadline.
+        let preflight_runtime_version = super::super::gh814_engine_preflight_version()?;
         let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_any_thread(true).with_dpi_aware(false);
         let event_loop = builder.build();
-        let environment =
-            super::super::create_environment_for_profile_with_options(&profile, options, None)?;
-        WebView2Engine::from_selected_environment(com, event_loop, environment, profile)
+        let environment = super::super::create_environment_for_profile_with_options(
+            &profile,
+            options,
+            preflight_runtime_version.as_deref(),
+        )?;
+        let mut engine =
+            WebView2Engine::from_selected_environment(com, event_loop, environment, profile)?;
+        engine.diagnostic_runtime_version = preflight_runtime_version;
+        Ok(engine)
     }
 
     fn run_profile_fixture(mut engine: WebView2Engine) -> Result<(), WvError> {
@@ -1579,6 +1588,31 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         }
     }
 
+    /// Check the real native profile-fixture constructor, not a synthetic
+    /// deadline child: it must retain the loader version it preflighted and
+    /// make that same bounded value available to controller startup.
+    fn gh814_assert_profile_fixture_preflight(
+        engine: &WebView2Engine,
+        observed_runtime: &str,
+        generation: &str,
+    ) -> Result<(), WvError> {
+        let expected = super::super::gh814_validated_preflight_version(observed_runtime)
+            .ok_or_else(|| failure("native Evergreen version failed diagnostic validation"))?;
+        let actual = engine
+            .diagnostic_runtime_version
+            .as_deref()
+            .ok_or_else(|| failure("GH814: fixture discarded the successful native preflight"))?;
+        if actual != expected {
+            return Err(failure(
+                "GH814: fixture did not retain this generation's actual Evergreen preflight",
+            ));
+        }
+        println!(
+            "KELD_GH814_FIXTURE_PREFLIGHT generation={generation} loader_runtime_version={actual}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn gh814_successor_apartment_phase_distinguishes_sta_mta_and_failed_query() {
         use windows::Win32::System::Com::{
@@ -1631,7 +1665,9 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let ephemeral = crate::profile::EphemeralProfile::from_host_random([93; 32])?;
             let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
             let plan = super::super::windows_profile_plan(&root, selection)?;
+            let initial_runtime = runtime_version()?;
             let engine = profile_fixture_engine(&root, selection)?;
+            gh814_assert_profile_fixture_preflight(&engine, &initial_runtime, "initial")?;
             observe_com_phase("initial-engine-ready");
             let (kind, qualifier) = apartment().map_err(failure)?;
             assert!(matches!(
@@ -1675,7 +1711,9 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let successor = crate::profile::EphemeralProfile::from_host_random([94; 32])?;
             let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
             let next_plan = super::super::windows_profile_plan(&root, successor)?;
+            let successor_runtime = runtime_version()?;
             let mut engine = profile_fixture_engine(&root, successor)?;
+            gh814_assert_profile_fixture_preflight(&engine, &successor_runtime, "successor")?;
             observe_com_phase("successor-engine-ready");
             // The old hosted failure occurred after engine-ready and before
             // controller-ready. Sample the existing COM apartment observer
