@@ -1530,8 +1530,14 @@ mod tests {
 
         worker.process_token = valid_token;
         assert!(
-            worker.revalidate().is_err(),
-            "replacing an invalid retained handle with the valid token must not revive the observation"
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "restoring a valid token must return the prior-invalidated refusal, not an unrelated OS error"
         );
     }
 
