@@ -1505,6 +1505,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn per_user_worker_preflight_rejects_a_live_non_token_handle_and_stays_invalidated() {
+        let retained = open_process_token().expect("open actual primary process token");
+        let session = token_session_id(&retained).expect("query actual process session");
+        let mut worker = worker_from_actual_os_for_negative_test(session, retained);
+
+        // Keep a *live* OS handle with the wrong object type. A closed or null
+        // handle alone cannot prove GetTokenInformation checked its token type.
+        let executable = std::env::current_exe().expect("locate this test executable");
+        let file = std::fs::File::open(executable).expect("open a live non-token file handle");
+        let non_token: OwnedHandle = file.into();
+        let valid_token = std::mem::replace(&mut worker.process_token, non_token);
+        assert!(
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "GetTokenInformation(TokenSessionId)",
+                    ..
+                })
+            ),
+            "the actual retained handle must be queried; a valid session from a fresh token is insufficient"
+        );
+
+        worker.process_token = valid_token;
+        assert!(
+            worker.revalidate().is_err(),
+            "replacing an invalid retained handle with the valid token must not revive the observation"
+        );
+    }
+
     fn worker_from_actual_os_for_negative_test(
         session: u32,
         process_token: OwnedHandle,
