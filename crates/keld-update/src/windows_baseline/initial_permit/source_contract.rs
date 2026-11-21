@@ -340,122 +340,124 @@ fn permit_boundary_is_one_use_thread_bound_and_checked_at_effect_time() {
     check_boundary(SOURCE).expect("closed D-46 source contract");
 }
 
+// Keep the negative controls as data rather than a long test function. Every
+// mutation has an exact source anchor and an independent refusal assertion.
+const SOURCE_MUTATIONS: &[(&str, &str, &str)] = &[
+    (
+        "journal permit replay",
+        "pub(super) fn consume_for_admission_journal(\n        self,",
+        "pub(super) fn consume_for_admission_journal(\n        &self,",
+    ),
+    (
+        "journal publication removed",
+        "self.issuer.publish_and_read_back_creation_armed()?;",
+        "let _ = &self.issuer;",
+    ),
+    (
+        "effect gate replay",
+        "pub(super) fn enter_bootstrap_effect(self, roots: &Roots)",
+        "pub(super) fn enter_bootstrap_effect(&mut self, roots: &Roots)",
+    ),
+    (
+        "durable fence readback removed",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = &self.issuer;",
+    ),
+    (
+        "durable fence replaced with inert ordinary string",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = \"self.issuer.require_durable_creation_armed()?;\";",
+    ),
+    (
+        "durable fence replaced with inert raw string",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = r#\"self.issuer.require_durable_creation_armed()?;\"#;",
+    ),
+    (
+        "durable fence replaced with inert byte string",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = b\"self.issuer.require_durable_creation_armed()?;\";",
+    ),
+    (
+        "durable fence replaced with inert multi-hash raw byte string",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = br##\"self.issuer.require_durable_creation_armed()?;\"##;",
+    ),
+    (
+        "durable fence replaced with inert stringify call",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = stringify!(self.issuer.require_durable_creation_armed()?;);",
+    ),
+    (
+        "durable fence replaced with inert stringify braces",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = stringify! { self.issuer.require_durable_creation_armed()?; };",
+    ),
+    (
+        "durable fence replaced with inert stringify brackets",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = stringify![self.issuer.require_durable_creation_armed()?;];",
+    ),
+    (
+        "durable fence replaced with whitespace-bang nested stringify",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = stringify ! ([{ self.issuer.require_durable_creation_armed()?; }]);",
+    ),
+    (
+        "durable fence replaced with comment-gap stringify",
+        "self.issuer.require_durable_creation_armed()?;",
+        "let _ = stringify /* inert macro */ ! { self.issuer.require_durable_creation_armed()?; };",
+    ),
+    (
+        "durable fence replaced with dormant macro definition",
+        "self.issuer.require_durable_creation_armed()?;",
+        "macro_rules! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
+    ),
+    (
+        "durable fence replaced with spaced dormant macro definition",
+        "self.issuer.require_durable_creation_armed()?;",
+        "macro_rules /* inert */ ! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
+    ),
+    (
+        "durable fence replaced with inert block comment",
+        "self.issuer.require_durable_creation_armed()?;",
+        "/* self.issuer.require_durable_creation_armed()?; */",
+    ),
+    (
+        "journal publication replaced with nested block comment",
+        "self.issuer.publish_and_read_back_creation_armed()?;",
+        "/* retired /* nested */ self.issuer.publish_and_read_back_creation_armed()?; */",
+    ),
+    (
+        "foreign scaffold unchecked",
+        "self.issuer.require_bound_existing_scaffold(roots)?;",
+        "let _ = roots;",
+    ),
+    (
+        "final recheck moved after creation",
+        "self.issuer.revalidate_under_repository_lease()?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
+        "let lock = initialize::acquire_bootstrap_lock(roots)?;\n        self.issuer.revalidate_under_repository_lease()?;",
+    ),
+    (
+        "bootstrap owned readback removed",
+        "self.issuer.publish_and_read_back_bootstrap_owned(&lock)?;",
+        "let _ = &lock;",
+    ),
+    (
+        "worker identity inversion at effect",
+        "thread::current().id() != self.worker {\n            return Err(error(\n                \"initial install admission\",\n                \"actual worker changed before first protected effect\"",
+        "thread::current().id() == self.worker {\n            return Err(error(\n                \"initial install admission\",\n                \"actual worker changed before first protected effect\"",
+    ),
+    (
+        "callback inserted after final revalidation",
+        "self.issuer.revalidate_under_repository_lease()?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
+        "self.issuer.revalidate_under_repository_lease()?;\n        unrelated_callback();\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
+    ),
+];
+
 #[test]
 fn single_fault_permit_mutations_fail_before_a_native_issuer_exists() {
-    let mutations = [
-        (
-            "journal permit replay",
-            "pub(super) fn consume_for_admission_journal(\n        self,",
-            "pub(super) fn consume_for_admission_journal(\n        &self,",
-        ),
-        (
-            "journal publication removed",
-            "self.issuer.publish_and_read_back_creation_armed()?;",
-            "let _ = &self.issuer;",
-        ),
-        (
-            "effect gate replay",
-            "pub(super) fn enter_bootstrap_effect(self, roots: &Roots)",
-            "pub(super) fn enter_bootstrap_effect(&mut self, roots: &Roots)",
-        ),
-        (
-            "durable fence readback removed",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = &self.issuer;",
-        ),
-        (
-            "durable fence replaced with inert ordinary string",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = \"self.issuer.require_durable_creation_armed()?;\";",
-        ),
-        (
-            "durable fence replaced with inert raw string",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = r#\"self.issuer.require_durable_creation_armed()?;\"#;",
-        ),
-        (
-            "durable fence replaced with inert byte string",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = b\"self.issuer.require_durable_creation_armed()?;\";",
-        ),
-        (
-            "durable fence replaced with inert multi-hash raw byte string",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = br##\"self.issuer.require_durable_creation_armed()?;\"##;",
-        ),
-        (
-            "durable fence replaced with inert stringify call",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = stringify!(self.issuer.require_durable_creation_armed()?;);",
-        ),
-        (
-            "durable fence replaced with inert stringify braces",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = stringify! { self.issuer.require_durable_creation_armed()?; };",
-        ),
-        (
-            "durable fence replaced with inert stringify brackets",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = stringify![self.issuer.require_durable_creation_armed()?;];",
-        ),
-        (
-            "durable fence replaced with whitespace-bang nested stringify",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = stringify ! ([{ self.issuer.require_durable_creation_armed()?; }]);",
-        ),
-        (
-            "durable fence replaced with comment-gap stringify",
-            "self.issuer.require_durable_creation_armed()?;",
-            "let _ = stringify /* inert macro */ ! { self.issuer.require_durable_creation_armed()?; };",
-        ),
-        (
-            "durable fence replaced with dormant macro definition",
-            "self.issuer.require_durable_creation_armed()?;",
-            "macro_rules! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
-        ),
-        (
-            "durable fence replaced with spaced dormant macro definition",
-            "self.issuer.require_durable_creation_armed()?;",
-            "macro_rules /* inert */ ! dormant_fence { () => { self.issuer.require_durable_creation_armed()?; }; }",
-        ),
-        (
-            "durable fence replaced with inert block comment",
-            "self.issuer.require_durable_creation_armed()?;",
-            "/* self.issuer.require_durable_creation_armed()?; */",
-        ),
-        (
-            "journal publication replaced with nested block comment",
-            "self.issuer.publish_and_read_back_creation_armed()?;",
-            "/* retired /* nested */ self.issuer.publish_and_read_back_creation_armed()?; */",
-        ),
-        (
-            "foreign scaffold unchecked",
-            "self.issuer.require_bound_existing_scaffold(roots)?;",
-            "let _ = roots;",
-        ),
-        (
-            "final recheck moved after creation",
-            "self.issuer.revalidate_under_repository_lease()?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
-            "let lock = initialize::acquire_bootstrap_lock(roots)?;\n        self.issuer.revalidate_under_repository_lease()?;",
-        ),
-        (
-            "bootstrap owned readback removed",
-            "self.issuer.publish_and_read_back_bootstrap_owned(&lock)?;",
-            "let _ = &lock;",
-        ),
-        (
-            "worker identity inversion at effect",
-            "thread::current().id() != self.worker {\n            return Err(error(\n                \"initial install admission\",\n                \"actual worker changed before first protected effect\"",
-            "thread::current().id() == self.worker {\n            return Err(error(\n                \"initial install admission\",\n                \"actual worker changed before first protected effect\"",
-        ),
-        (
-            "callback inserted after final revalidation",
-            "self.issuer.revalidate_under_repository_lease()?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
-            "self.issuer.revalidate_under_repository_lease()?;\n        unrelated_callback();\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
-        ),
-    ];
-
-    for (label, before, after) in mutations {
+    for &(label, before, after) in SOURCE_MUTATIONS {
         assert_eq!(
             SOURCE.matches(before).count(),
             1,
