@@ -819,6 +819,6 @@ mod tests;
 
 // Private additive D-WIRE v2 implementation. The shipping v1 entry points and
 // `.keldeai` parser do not call it; T-82 Pack API/wire approval is outstanding.
-#[cfg(feature = "kel270-dwire-v2")]
+#[cfg(any(feature = "kel270-dwire-v2", test))]
 #[allow(dead_code)] // Private v2 PE path has no product caller before T-82 review.
 mod v2;

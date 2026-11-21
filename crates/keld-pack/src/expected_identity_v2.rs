@@ -1,6 +1,7 @@
 //! Private KEL-270 D-4 expected-identity v2 *byte contract*.
 //!
-//! This module is compiled only with the opt-in `kel270-dwire-v2` feature.
+//! This module is compiled only with the opt-in `kel270-dwire-v2` feature
+//! or in crate-local tests. Shipping default builds do not include it.
 //! Neither encoding nor decoding authenticates an issuer, an Ed25519 key, an
 //! Authenticode signature, the commissioned profile, or installation authority.
 //! T-82 Pack API/wire review and Guard's independent native checks remain open.
