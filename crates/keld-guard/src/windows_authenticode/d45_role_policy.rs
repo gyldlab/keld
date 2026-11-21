@@ -24,17 +24,35 @@ enum WindowsD45HostRole {
     DedicatedRecovery,
 }
 
+/// Source and destination issuer policies serve different artifact roles.
+/// D-7 does not require the U2 candidate to be signed by a U1-eligible issuer:
+/// the admitted U1 source is independently checked under its source policy,
+/// and only the source-authorized transition selects the U2 destination policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsD45IssuerOperation {
+    UnchangedPolicy,
+    D7DestinationCandidate,
+}
+
+/// A canonical membership proof minted by the single D-WIRE codec from the
+/// same authenticated issuer-policy bytes. There is no variant or constructor
+/// until the approved Pack typed producer owns this exact binding. Hence an
+/// arbitrary pair of hash arrays can NEVER produce an issuer match today.
+#[derive(Debug)]
+enum WindowsD45DWireMembershipBinding {}
+
 /// Canonical issuer-policy bytes and its *independent* signed Host digest.
 /// D-WIRE must validate the closed JSON and bind these rows to D-9 metadata.
-/// All fields are private, and no production constructor exists until that
-/// authenticated typed decoder can create them together. In particular, a
-/// caller cannot widen root/issuer membership arrays under unchanged bytes.
+/// An authenticated byte digest alone does not authenticate separately
+/// supplied membership arrays. The uninhabited D-WIRE binding witness makes
+/// any logical positive impossible until the real typed producer exists.
 #[derive(Debug)]
 struct WindowsD45IssuerPolicy<'a> {
     bytes: &'a [u8],
     signed_digest: &'a [u8; 32],
     root_certificate_hashes: &'a [[u8; 32]],
     leaf_issuer_spki_hashes: &'a [[u8; 32]],
+    wire_membership_binding: Option<WindowsD45DWireMembershipBinding>,
 }
 
 /// The commissioned exact operation-policy cohort. All these fields must come
@@ -43,6 +61,7 @@ struct WindowsD45IssuerPolicy<'a> {
 #[derive(Debug)]
 struct WindowsD45ProfilePolicy<'a> {
     role: WindowsD45HostRole,
+    issuer_operation: WindowsD45IssuerOperation,
     app_id: &'a str,
     application_profile_oid: &'a str,
     source_recovery_profile_oid: &'a str,
@@ -95,6 +114,11 @@ fn require_issuer(
     // checks only the native root and immediate-issuer membership predicate.
     if policy.root_certificate_hashes.is_empty() || policy.leaf_issuer_spki_hashes.is_empty() {
         return Err(refusal("the authenticated issuer policy has no root or leaf issuer entries"));
+    }
+    if policy.wire_membership_binding.is_none() {
+        return Err(refusal(
+            "the issuer membership arrays are not bound to canonical authenticated D-WIRE policy bytes",
+        ));
     }
     if !policy.root_certificate_hashes.contains(&facts.root_certificate_sha256) {
         return Err(refusal("the native verified root certificate is outside the commissioned issuer policy"));
@@ -162,10 +186,30 @@ fn require_d45_issuer_profile_role(
     {
         return Err(refusal("the verified signer carries both application and recovery-only profile roles"));
     }
-    // Source and destination issuer restrictions are independent. A destination
-    // candidate may not use a valid chain from only one of the policy cohorts.
-    require_issuer(&policy.source_issuer, facts)?;
-    require_issuer(&policy.destination_issuer, facts)?;
+    match policy.issuer_operation {
+        WindowsD45IssuerOperation::UnchangedPolicy => {
+            // Ordinary/unchanged operations may reuse the installed issuer
+            // policy; without an authorized D-7 transition, different policy
+            // digests cannot silently widen the current cohort.
+            if policy.source_issuer.signed_digest != policy.destination_issuer.signed_digest {
+                return Err(refusal(
+                    "source and destination issuer policies differ without authenticated D-7 authorization",
+                ));
+            }
+            require_issuer(&policy.source_issuer, facts)?;
+            require_issuer(&policy.destination_issuer, facts)?;
+        }
+        WindowsD45IssuerOperation::D7DestinationCandidate => {
+            // The candidate's signer must match DESTINATION issuer policy
+            // only. U1 is separately verified against the admitted SOURCE
+            // policy; an authenticated transition plus U1/U2 proofs must be
+            // issued by the KEL-53/D-7 owner before this route can proceed.
+            // There is no such typed transition witness on this base.
+            return Err(refusal(
+                "D-7 candidate issuer rotation lacks authenticated source-transition and destination-policy authorization",
+            ));
+        }
+    }
     Ok(WindowsD45RolePolicyMatch { _non_authority: () })
 }
 
