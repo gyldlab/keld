@@ -26,9 +26,19 @@ use record_publication::{prepare_record, publish_prepared_record};
 mod activate;
 mod claimant;
 mod helper;
+// These private KEL-270 native seams compile together, but do not mint v2
+// admission: the commissioned KEL-53 repository lease/census and T82 native
+// writer are not yet available. In particular, the public v1 initializer
+// below must not infer v2 authority from these module declarations.
+#[allow(dead_code)]
+mod initial_admission_journal;
+#[allow(dead_code)]
+mod initial_permit;
 mod initialize;
 mod load;
 mod locate;
+#[allow(dead_code)]
+mod repository_census;
 
 #[cfg(test)]
 pub(crate) use activate::CRASH_CUT_HOOK;
