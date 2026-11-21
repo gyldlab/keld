@@ -13,6 +13,11 @@ use std::thread::{self, ThreadId};
 use super::error;
 use crate::UpdateError;
 
+// The native handle-identity denial can compile and exercise real directory
+// oracles before Guard commissions its OS-known-folder issuer. Until then no
+// legacy initializer uses this observation as an authority decision.
+pub(super) mod legacy_v2_denial;
+
 /// Private native issuer required before the first installation-tree mutation.
 ///
 /// The eventual KEL-53 implementation in this module must own the admitted
