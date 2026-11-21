@@ -15,6 +15,9 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 mod expected_identity;
+#[cfg(feature = "kel270-dwire-v2")]
+#[allow(dead_code)] // No production caller or public Pack API before exact T-82 wire approval.
+mod expected_identity_v2;
 mod host_identity;
 #[cfg(windows)]
 mod producer;
