@@ -634,6 +634,19 @@ fn wait_for_launcher_ready(
     let deadline = std::time::Instant::now() + BUBBLEWRAP_READY_TIMEOUT;
     let mut record = Vec::new();
     loop {
+        // Observe exit before reading the pipe. A short-lived target may exit
+        // immediately after the launcher published its Landlock record; in
+        // that case the pipe must be drained before classifying the exit.
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(source) => {
+                terminate_failed_start(child);
+                return Err(LinuxStrictError::new(
+                    "launcher readiness",
+                    source.to_string(),
+                ));
+            }
+        };
         let mut chunk = [0_u8; LAUNCHER_READY_MAX];
         match readiness.read(&mut chunk) {
             Ok(0) => {
@@ -648,6 +661,9 @@ fn wait_for_launcher_ready(
                         format!("record exceeds {LAUNCHER_READY_MAX} bytes"),
                     ));
                 }
+                // A complete record is valid only after pipe EOF. In
+                // particular, an exited target may leave unread bytes here.
+                continue;
             }
             Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(source) if source.kind() == std::io::ErrorKind::Interrupted => {}
@@ -655,16 +671,6 @@ fn wait_for_launcher_ready(
                 return Err(failed_readiness(child, source.to_string()));
             }
         }
-        let status = match child.try_wait() {
-            Ok(status) => status,
-            Err(source) => {
-                terminate_failed_start(child);
-                return Err(LinuxStrictError::new(
-                    "launcher readiness",
-                    source.to_string(),
-                ));
-            }
-        };
         if let Some(status) = status {
             let stderr = failed_child_stderr(child);
             return Err(LinuxStrictError::new(
