@@ -583,9 +583,14 @@ fn shipping_direct_host_capture_rejects_foreign_bun_after_host_attestation() {
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         cleanup.record_direct_host_groups(host_pid, outsider.0.id());
     }));
+    let refused = refused.expect_err("foreign Bun must fail the second ancestry gate");
+    let diagnostic = refused
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| refused.downcast_ref::<&str>().copied());
     assert!(
-        refused.is_err(),
-        "foreign Bun must fail the second ancestry gate"
+        diagnostic.is_some_and(|message| message.contains("direct Host must be Guardian")),
+        "expected native parentage rejection, got {diagnostic:?}"
     );
     assert_eq!(
         cleanup.host_group,
