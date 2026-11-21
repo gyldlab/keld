@@ -147,6 +147,11 @@ fn startup_eof_before_ready_reports_last_valid_phase_and_host_failure_output() {
         assert!(message.contains(expected), "missing {expected}: {message}");
     }
     assert!(
+        message.contains("observed child exited while awaiting READY")
+            && !message.contains("host exited while awaiting READY"),
+        "only the passed child HANDLE was observed; the Host has not been proven exited: {message}"
+    );
+    assert!(
         message.contains(&format!("child pid={child_pid}")),
         "missing actual child identity: {message}"
     );
