@@ -55,7 +55,7 @@ enum WindowsD45IssuerOperation {
     reason = "T82: Pack D-WIRE binding producer not commissioned"
 )]
 #[derive(Debug)]
-enum WindowsD45DWireMembershipBinding {}
+pub(super) enum WindowsD45DWireMembershipBinding {}
 
 /// Canonical issuer-policy bytes and its *independent* signed Host digest.
 /// D-WIRE must validate the closed JSON and bind these rows to D-9 metadata.
@@ -113,7 +113,7 @@ struct WindowsD45NativeSignerFacts<'a> {
 /// effect permit. No field is exported or usable as signer authority.
 #[allow(dead_code, reason = "T82: verified policy binding not commissioned")]
 #[must_use = "policy data consistency alone is never signer authority"]
-struct WindowsD45RolePolicyMatch {
+pub(super) struct WindowsD45RolePolicyMatch {
     _non_authority: (),
 }
 

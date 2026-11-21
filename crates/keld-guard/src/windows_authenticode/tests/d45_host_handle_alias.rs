@@ -18,7 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use super::{
     FILE_ATTRIBUTE_REPARSE_POINT, FixtureDirectory, WindowsAuthenticodeError,
-    WindowsAuthenticodeImage, WindowsD45DirectDiscoveryEligibility, sha256_retained_windows_image,
+    WindowsAuthenticodeImage, sha256_retained_windows_image,
 };
 
 /// Own only the junction leaves, never either target directory.
@@ -188,6 +188,8 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
     let visible = junctions.host_path();
     let pinned =
         WindowsAuthenticodeImage::open(&visible).expect("Guard retains the original signed file");
+    let pinned_preflight = WindowsAuthenticodeImage::open(&visible)
+        .expect("a separate local-only preflight retains the original signed hFile");
     let retained_identity = windows_file_identity(&pinned.image);
     let original_len = fs::metadata(&original)
         .expect("the original signed source has a known fixture length")
@@ -245,6 +247,22 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
         .expect_err("a trusted third-party signer still cannot mint the Keld app identity");
     assert_authenticated_non_keld_refusal(&pinned_refusal);
 
+    let offline_refusal = pinned_preflight
+        .observe_preflight()
+        .expect_err("cache-only WinTrust on the original hFile must not grant a foreign app ID");
+    assert!(
+        matches!(
+            offline_refusal.detail(),
+            "the verified Authenticode signature has no Keld app-id description"
+                | "the verified signature has no authenticated Keld app-id attribute"
+        ) || offline_refusal.detail().contains("during the cache-only preflight"),
+        "a genuinely signed foreign Host must fail closed if local trust is not cached or the app-id is not Keld: {offline_refusal}"
+    );
+    assert!(
+        offline_refusal.close_failure().is_none(),
+        "the offline WinTrust provider state must close on every refusal: {offline_refusal}"
+    );
+
     let reopened_refusal = WindowsAuthenticodeImage::open(&visible)
         .expect("foreign pathname remains a regular file")
         .verify()
@@ -301,22 +319,22 @@ fn d45_trusted_signed_host_verifies_original_hfile_after_path_substitution() {
     junctions.substitute(&foreign_dir);
     assert_ne!(original_id, path_identity(&visible));
 
-    // This ignored operator case is restricted to a genuinely commissioned
-    // Keld-signed carrier. It exercises source continuity only; it supplies no
-    // D-43 Direct decision or v2 issuer/profile commissioning evidence.
+    // This ignored operator case exercises independent cache-only then full
+    // WinTrust with the EXACT same retained original hFile. It is NOT a D-43
+    // Direct decision or v2 issuer/profile commissioning receipt. The actual
+    // D-45 bound entry stays nonconstructible until those native approvals.
     let preflight = pinned
         .observe_preflight()
         .expect("local offline WinTrust must accept the signed original Host");
     assert_eq!(windows_file_identity(preflight.file()), original_id);
-    let mut independently_pinned_digest = [0_u8; 32];
-    independently_pinned_digest.copy_from_slice(&original_sha);
+    let offline_publisher = *preflight.observed_publisher_scope();
+    let offline_app = preflight.observed_app_id().to_owned();
     let verified = preflight
-        .verify_full_bound(&WindowsD45DirectDiscoveryEligibility {
-            original_host_sha256: independently_pinned_digest,
-            expected_host_bytes: u64::try_from(original_bytes.len())
-                .expect("the signed fixture length fits u64"),
-        })
-        .expect("full WinTrust must independently verify the same retained signed hFile");
+        .source
+        .verify()
+        .expect("the legacy full-chain verifier must verify the same retained signed hFile");
+    assert_eq!(verified.identity().publisher_scope(), &offline_publisher);
+    assert_eq!(verified.identity().app_id(), offline_app.as_str());
     assert_eq!(verified.identity().app_id(), expected_app);
     let actual_publisher = hex_bytes(verified.identity().publisher_scope());
     assert_eq!(actual_publisher, expected_publisher);

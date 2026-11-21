@@ -149,6 +149,14 @@ struct WindowsD45DirectDiscoveryEligibility {
     original_host_sha256: [u8; 32],
     // Exact signed-catalogue host.bytes, never from the filesystem or request.
     expected_host_bytes: u64,
+    // These private nonconstructible requirements are independent of the
+    // source digest and the D-43 Direct observation. The Pack D-WIRE decoder
+    // must bind issuer membership to authenticated canonical policy bytes,
+    // and Guard must inspect the native signer's EKUs/issuer chain before any
+    // D-45 v2 fully verified image can be returned. Neither producer exists
+    // on this T-82-gated implementation base.
+    _dwire_issuer_membership: d45_role_policy::WindowsD45DWireMembershipBinding,
+    _native_role_policy: d45_role_policy::WindowsD45RolePolicyMatch,
 }
 
 impl WindowsPreflightImage {
@@ -185,14 +193,11 @@ impl WindowsPreflightImage {
     ) -> Result<VerifiedWindowsImage, WindowsAuthenticodeError> {
         // The Direct witness must bind an exact authenticated byte count and
         // digest before any full-file read; preflight performs no such scan.
-        let exact_digest =
-            sha256_retained_windows_image(&self.source.image, direct.expected_host_bytes)?;
-        if exact_digest != direct.original_host_sha256 {
-            return Err(windows_identity_error(
-                "the Direct discovery source differs from the retained offline Host",
-                "Repeat authenticated owner discovery against the original signed Host.",
-            ));
-        }
+        require_retained_host_source(
+            &self.source.image,
+            direct.expected_host_bytes,
+            &direct.original_host_sha256,
+        )?;
         let full = self.source.verify()?;
         if full.identity.publisher_scope != self.observed_publisher_scope
             || full.identity.app_id != self.observed_app_id
@@ -204,6 +209,24 @@ impl WindowsPreflightImage {
         }
         Ok(full)
     }
+}
+
+/// Compare the exact authenticated Host length and SHA-256 to the original
+/// retained file object. This read-only comparison is NOT a signer, Direct
+/// discovery, D-WIRE issuer-policy, or installation-authorization grant.
+fn require_retained_host_source(
+    image: &File,
+    expected_bytes: u64,
+    expected_sha256: &[u8; 32],
+) -> Result<(), WindowsAuthenticodeError> {
+    let actual = sha256_retained_windows_image(image, expected_bytes)?;
+    if &actual != expected_sha256 {
+        return Err(windows_identity_error(
+            "the Direct discovery source differs from the retained offline Host",
+            "Repeat authenticated owner discovery against the original signed Host.",
+        ));
+    }
+    Ok(())
 }
 
 /// Computes a complete byte digest through one retained file object. No path is
@@ -950,26 +973,18 @@ mod tests {
 
     #[test]
     fn d45_foreign_direct_source_refuses_before_full_wintrust() {
-        // This deliberately fabricated *test-only* preflight state cannot
-        // authenticate anything. It isolates the independent native-source
-        // identity check that must precede full WinTrust after D-43 discovery.
+        // Test only the byte-custody subcondition before WinTrust. Do not
+        // fabricate an authenticated Direct or issuer-policy witness: the
+        // T-82-gated D-45 full-verification path remains nonconstructible.
         let directory = FixtureDirectory::new("d45-foreign-source-witness");
         let path = directory.path().join("unsigned-host.exe");
         fs::write(&path, b"bounded owner mismatch fixture").expect("write source fixture");
         let source =
             WindowsAuthenticodeImage::open(&path).expect("retain the test's original regular file");
-        let preflight = WindowsPreflightImage {
-            source,
-            observed_publisher_scope: [0x22; 32],
-            observed_app_id: "com.example.app".into(),
-        };
-        let error = preflight
-            .verify_full_bound(&WindowsD45DirectDiscoveryEligibility {
-                original_host_sha256: [0_u8; 32],
-                expected_host_bytes: u64::try_from(b"bounded owner mismatch fixture".len())
-                    .expect("fixture source size fits u64"),
-            })
-            .expect_err("a different Direct source digest cannot reach full WinTrust");
+        let expected_bytes = u64::try_from(b"bounded owner mismatch fixture".len())
+            .expect("fixture source size fits u64");
+        let error = require_retained_host_source(&source.image, expected_bytes, &[0_u8; 32])
+            .expect_err("a different Host source digest must refuse before any WinTrust grant");
         assert!(
             error
                 .detail()
