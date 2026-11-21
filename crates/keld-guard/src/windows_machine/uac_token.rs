@@ -8,10 +8,15 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::io;
+use std::marker::PhantomData;
 use std::mem::{offset_of, size_of};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::ptr::{addr_of, null, null_mut};
+use std::rc::Rc;
+use std::thread::{self, ThreadId};
 
+use windows_permissions::Sid;
+use windows_permissions::utilities::current_process_sid;
 use windows_sys::Win32::Foundation::{
     ERROR_INSUFFICIENT_BUFFER, ERROR_NO_TOKEN, GetLastError, LUID,
 };
@@ -33,8 +38,231 @@ use windows_sys::Win32::System::Threading::{
 const ADMINISTRATORS_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 5];
 const ADMINISTRATORS_SUB_AUTHORITIES: [u32; 2] = [32, 544];
 const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
+const MAX_SID_BYTES: usize = 8 + 15 * size_of::<u32>();
 mod refusals;
 pub use refusals::WindowsTokenError;
+
+/// Bounded value-only copy of the current process's OS-observed `TokenUser` SID.
+///
+/// The existing safe process-SID reader opens its own process token. Thus this
+/// copy cannot establish the SID of the *retained* D-42 token, and must never
+/// be converted into a descriptor owner or installer authorization.
+#[allow(
+    dead_code,
+    reason = "staged D-42 observation awaits T-82 retained-token grant"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ObservedUserSid {
+    bytes: [u8; MAX_SID_BYTES],
+    used: usize,
+}
+
+#[allow(
+    dead_code,
+    reason = "staged D-42 observation awaits T-82 retained-token grant"
+)]
+impl ObservedUserSid {
+    fn from_sid(sid: &Sid) -> io::Result<Self> {
+        let count = usize::from(sid.sub_authority_count());
+        if !(1..=15).contains(&count) {
+            return Err(io::Error::other(
+                "TokenUser SID subauthority count is invalid",
+            ));
+        }
+        let used = 8usize
+            .checked_add(count * size_of::<u32>())
+            .ok_or_else(|| io::Error::other("TokenUser SID length overflow"))?;
+        let mut bytes = [0u8; MAX_SID_BYTES];
+        bytes[0] = 1;
+        bytes[1] =
+            u8::try_from(count).map_err(|_| io::Error::other("TokenUser SID count overflow"))?;
+        bytes[2..8].copy_from_slice(sid.id_authority());
+        for index in 0..count {
+            let sub = sid
+                .sub_authority(
+                    u8::try_from(index)
+                        .map_err(|_| io::Error::other("TokenUser SID index overflow"))?,
+                )
+                .ok_or_else(|| io::Error::other("TokenUser SID subauthority is absent"))?;
+            let start = 8 + index * size_of::<u32>();
+            bytes[start..start + size_of::<u32>()].copy_from_slice(&sub.to_le_bytes());
+        }
+        Ok(Self { bytes, used })
+    }
+
+    fn is_builtin_service(&self) -> bool {
+        self.used == 12
+            && self.bytes[0..8]
+                .iter()
+                .copied()
+                .eq([1u8, 1, 0, 0, 0, 0, 0, 5])
+            && matches!(
+                u32::from_le_bytes([self.bytes[8], self.bytes[9], self.bytes[10], self.bytes[11]]),
+                18..=20
+            )
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "staged D-42 observation awaits T-82 retained-token grant"
+)]
+fn observe_current_user_sid() -> Result<ObservedUserSid, WindowsTokenError> {
+    const OP: &str = "current_process_sid(TokenUser)";
+    let sid = current_process_sid().map_err(|error| WindowsTokenError::os(OP, &error))?;
+    let observed =
+        ObservedUserSid::from_sid(&sid).map_err(|error| WindowsTokenError::os(OP, &error))?;
+    if observed.is_builtin_service() {
+        return Err(WindowsTokenError::os(
+            OP,
+            &io::Error::other(
+                "SYSTEM, LocalService and NetworkService are not PerUserDirect callers",
+            ),
+        ));
+    }
+    Ok(observed)
+}
+
+#[allow(
+    dead_code,
+    reason = "staged D-42 observation awaits T-82 retained-token grant"
+)]
+fn require_same_observed_sid(expected: &ObservedUserSid) -> Result<(), WindowsTokenError> {
+    if observe_current_user_sid()? == *expected {
+        Ok(())
+    } else {
+        Err(WindowsTokenError::os(
+            "D-42 current-process TokenUser",
+            &io::Error::other("the observed current-process user SID changed"),
+        ))
+    }
+}
+
+/// Read-only native observation of the actual Windows filesystem worker.
+///
+/// This is deliberately **not** D-42 installation admission or a permit. The
+/// existing native grant can establish the absence of thread impersonation and
+/// compare process-token sessions, but cannot establish `TokenUser`, token
+/// identity, Medium integrity, restriction history, or the other D-42 flags.
+/// None of those missing predicates may be inferred from this observation.
+/// It has no method that authorizes a filesystem effect.
+///
+/// The retained token is query-only, and the observation cannot cross threads.
+// T-82 has not granted the remaining token information classes. Keep this
+// non-authorizing native observation private until a real D-42 consumer can
+// enforce the complete profile; constructing it for the existing v1 writer
+// would silently suggest that partial preflight grants installation access.
+#[allow(dead_code, reason = "KEL-270 T-82 blocks production D-42 admission")]
+#[must_use = "a worker observation is not installation authorization"]
+pub(crate) struct WindowsPerUserWorkerPreflight {
+    worker_thread: ThreadId,
+    process_token: OwnedHandle,
+    observed_user_sid: ObservedUserSid,
+    initiating_session: u32,
+    invalidated: bool,
+    _thread_only: PhantomData<Rc<()>>,
+}
+
+#[allow(dead_code, reason = "KEL-270 T-82 blocks production D-42 admission")]
+impl WindowsPerUserWorkerPreflight {
+    /// Observe the executing worker after dispatch, without minting authority.
+    ///
+    /// # Errors
+    /// Refuses any impersonation, token-open/query failure, or process session
+    /// different from the initiating session. The complete D-42 token profile
+    /// remains unavailable until its native owner grant and implementation.
+    pub(crate) fn observe(initiating_session: u32) -> Result<Self, WindowsTokenError> {
+        require_unimpersonated_worker()?;
+        let process_token = open_process_token()
+            .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
+        own_session_result(initiating_session, token_session_id(&process_token)?)?;
+        require_not_elevated(&process_token)?;
+        let observed_user_sid = observe_current_user_sid()?;
+        // TokenUser is available only through the existing safe current-process
+        // reader. Bind that reading to a second query-only process-token open,
+        // and recheck the thread after every OS observation has completed.
+        revalidate_process_observation(&process_token, initiating_session, &observed_user_sid)?;
+        require_unimpersonated_worker()?;
+        Ok(Self {
+            worker_thread: thread::current().id(),
+            process_token,
+            observed_user_sid,
+            initiating_session,
+            invalidated: false,
+            _thread_only: PhantomData,
+        })
+    }
+
+    /// Recheck the available native predicates on the executing worker.
+    ///
+    /// A mismatch or query failure permanently invalidates this observation,
+    /// including when a later query appears clean. A successful recheck is still
+    /// only a read-only preflight; it is not D-42 admission.
+    ///
+    /// # Errors
+    /// Refuses another worker, impersonation, a wrong session, any token query
+    /// failure, or an observation already invalidated by a previous failure.
+    pub(crate) fn revalidate(&mut self) -> Result<(), WindowsTokenError> {
+        if self.invalidated {
+            return Err(WindowsTokenError::os(
+                "D-42 worker preflight",
+                &io::Error::other("previous worker observation was invalidated"),
+            ));
+        }
+        let result = self.revalidate_current();
+        if result.is_err() {
+            self.invalidated = true;
+        }
+        result
+    }
+
+    fn revalidate_current(&self) -> Result<(), WindowsTokenError> {
+        if self.worker_thread != thread::current().id() {
+            return Err(WindowsTokenError::os(
+                "D-42 actual worker ThreadId",
+                &io::Error::other("the executing worker thread changed"),
+            ));
+        }
+        require_unimpersonated_worker()?;
+        revalidate_process_observation(
+            &self.process_token,
+            self.initiating_session,
+            &self.observed_user_sid,
+        )?;
+        require_unimpersonated_worker()
+    }
+}
+
+#[allow(dead_code, reason = "used by staged private D-42 worker preflight")]
+fn revalidate_process_observation(
+    retained: &OwnedHandle,
+    initiating_session: u32,
+    observed_user_sid: &ObservedUserSid,
+) -> Result<(), WindowsTokenError> {
+    // The retained handle and the current process's freshly opened token
+    // must independently satisfy the same observable session and elevation
+    // predicates. TokenId/ModifiedId and retained TokenUser remain unavailable
+    // without T-82: matching these facts must never be treated as token identity.
+    own_session_result(initiating_session, token_session_id(retained)?)?;
+    let current = open_process_token()
+        .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
+    own_session_result(initiating_session, token_session_id(&current)?)?;
+    require_same_observed_sid(observed_user_sid)?;
+    require_not_elevated(retained)?;
+    require_not_elevated(&current)
+}
+
+#[allow(dead_code, reason = "used by staged private D-42 worker preflight")]
+fn require_unimpersonated_worker() -> Result<(), WindowsTokenError> {
+    match thread_is_impersonating() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(WindowsTokenError::ThreadImpersonating),
+        Err(error) => Err(WindowsTokenError::os(
+            "OpenThreadToken(TOKEN_QUERY, TRUE)",
+            &error,
+        )),
+    }
+}
 
 /// Requires an elevated, non-impersonating process token that owns objects for the
 /// built-in Administrators group.
@@ -120,6 +348,31 @@ fn open_process_token() -> io::Result<OwnedHandle> {
 }
 
 fn require_elevated(token: &OwnedHandle) -> io::Result<()> {
+    if token_elevation(token)? == 0 {
+        Err(io::Error::other("installer process token is not elevated"))
+    } else {
+        Ok(())
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "staged D-42 observation awaits T-82 retained-token grant"
+)]
+fn require_not_elevated(token: &OwnedHandle) -> Result<(), WindowsTokenError> {
+    const OP: &str = "GetTokenInformation(TokenElevation)";
+    let observed = token_elevation(token).map_err(|error| WindowsTokenError::os(OP, &error))?;
+    if observed == 0 {
+        Ok(())
+    } else {
+        Err(WindowsTokenError::os(
+            OP,
+            &io::Error::other("the actual worker's process token is elevated"),
+        ))
+    }
+}
+
+fn token_elevation(token: &OwnedHandle) -> io::Result<u32> {
     let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
     let capacity = u32::try_from(size_of::<TOKEN_ELEVATION>())
         .map_err(|_| io::Error::other("token-elevation buffer size overflow"))?;
@@ -141,10 +394,10 @@ fn require_elevated(token: &OwnedHandle) -> io::Result<()> {
             unsafe { GetLastError() }.cast_signed(),
         ));
     }
-    if returned < capacity || elevation.TokenIsElevated == 0 {
-        return Err(io::Error::other("installer process token is not elevated"));
+    if returned != capacity {
+        return Err(io::Error::other("token-elevation returned size is invalid"));
     }
-    Ok(())
+    Ok(elevation.TokenIsElevated)
 }
 
 fn require_administrators_owner_group(token: &OwnedHandle) -> io::Result<()> {
@@ -1146,6 +1399,8 @@ mod tests {
 
     #[test]
     fn production_thread_check_rejects_a_live_self_impersonation_token() {
+        let token = open_process_token().expect("query actual process token");
+        let session = token_session_id(&token).expect("query actual process session");
         // SAFETY: ImpersonateSelf operates on the current test thread and does not
         // transfer or retain caller pointers. The drop guard always reverts it.
         assert_ne!(
@@ -1158,5 +1413,291 @@ mod tests {
             require_no_thread_impersonation().is_err(),
             "the production OpenThreadToken check must refuse impersonation"
         );
+        assert!(
+            matches!(
+                WindowsPerUserWorkerPreflight::observe(session),
+                Err(WindowsTokenError::ThreadImpersonating)
+            ),
+            "the actual-worker preflight must refuse an impersonating thread at observation"
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_refuses_an_actual_wrong_session() {
+        let token = open_process_token().expect("query own process token");
+        let actual_session = token_session_id(&token).expect("query own session");
+        let error = WindowsPerUserWorkerPreflight::observe(actual_session.wrapping_add(1))
+            .err()
+            .expect("a different initiating session must refuse");
+        assert_eq!(
+            error,
+            WindowsTokenError::SessionMismatch {
+                expected: actual_session.wrapping_add(1),
+                actual: actual_session,
+            }
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_wrong_thread_invalidates_permanently() {
+        let token = open_process_token().expect("query own process token");
+        let session = token_session_id(&token).expect("query own session");
+        // The OS runner may itself be elevated. Build a local negative-control
+        // fixture from real process observations so this test exercises the
+        // earlier actual-thread rejection on either eligible or elevated CI.
+        let mut preflight = worker_from_actual_os_for_negative_test(session, token);
+
+        let original_worker = thread::current().id();
+        let foreign_worker = thread::spawn(|| thread::current().id())
+            .join()
+            .expect("obtain a distinct actual thread identity");
+        assert_ne!(foreign_worker, original_worker);
+        preflight.worker_thread = foreign_worker;
+        assert!(
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 actual worker ThreadId",
+                    ..
+                })
+            ),
+            "a foreign worker must refuse at the actual-thread check"
+        );
+        preflight.worker_thread = original_worker;
+        assert!(
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "a clean thread replay must return prior invalidation, not an unrelated token error"
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_live_impersonation_revokes_observation() {
+        let token = open_process_token().expect("query own process token");
+        let session = token_session_id(&token).expect("query own session");
+        let mut preflight = worker_from_actual_os_for_negative_test(session, token);
+
+        // SAFETY: test-only self impersonation is confined to this thread and
+        // RevertThreadToken restores it on every exit path after this call.
+        assert_ne!(unsafe { ImpersonateSelf(SecurityImpersonation) }, 0);
+        let revert = RevertThreadToken;
+        assert_eq!(
+            preflight.revalidate(),
+            Err(WindowsTokenError::ThreadImpersonating)
+        );
+        drop(revert);
+        assert!(
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "reverting impersonation must return prior invalidation, not an unrelated token error"
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_session_mismatch_permanently_invalidates_observation() {
+        let token = open_process_token().expect("query actual process token");
+        let actual_session = token_session_id(&token).expect("query actual process session");
+        let mut preflight = worker_from_actual_os_for_negative_test(actual_session, token);
+        let other_session = actual_session.wrapping_add(1);
+
+        preflight.initiating_session = other_session;
+        assert_eq!(
+            preflight.revalidate(),
+            Err(WindowsTokenError::SessionMismatch {
+                expected: other_session,
+                actual: actual_session,
+            }),
+            "the retained OS token's session must be checked on every revalidation"
+        );
+        preflight.initiating_session = actual_session;
+        assert!(
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "restoring the session must return prior invalidation, not an unrelated token error"
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_rejects_a_live_non_token_handle_and_stays_invalidated() {
+        let retained = open_process_token().expect("open actual primary process token");
+        let session = token_session_id(&retained).expect("query actual process session");
+        let mut worker = worker_from_actual_os_for_negative_test(session, retained);
+
+        // Keep a *live* OS handle with the wrong object type. A closed or null
+        // handle alone cannot prove GetTokenInformation checked its token type.
+        let executable = std::env::current_exe().expect("locate this test executable");
+        let file = std::fs::File::open(executable).expect("open a live non-token file handle");
+        let non_token: OwnedHandle = file.into();
+        let valid_token = std::mem::replace(&mut worker.process_token, non_token);
+        assert!(
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "GetTokenInformation(TokenSessionId)",
+                    ..
+                })
+            ),
+            "the actual retained handle must be queried; a valid session from a fresh token is insufficient"
+        );
+
+        worker.process_token = valid_token;
+        assert!(
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "restoring a valid token must return the prior-invalidated refusal, not an unrelated OS error"
+        );
+    }
+
+    fn worker_from_actual_os_for_negative_test(
+        session: u32,
+        process_token: OwnedHandle,
+    ) -> WindowsPerUserWorkerPreflight {
+        let sid = current_process_sid().expect("query actual process TokenUser");
+        WindowsPerUserWorkerPreflight {
+            worker_thread: thread::current().id(),
+            process_token,
+            observed_user_sid: ObservedUserSid::from_sid(&sid).expect("valid actual process SID"),
+            initiating_session: session,
+            invalidated: false,
+            _thread_only: PhantomData,
+        }
+    }
+
+    #[test]
+    fn native_worker_observer_refuses_elevation_using_the_actual_os_token() {
+        let token = open_process_token().expect("query own process token");
+        let session = token_session_id(&token).expect("query own session");
+        let elevated = token_elevation(&token).expect("query real token elevation");
+        let sid = current_process_sid().expect("query real current process TokenUser");
+        let sid = ObservedUserSid::from_sid(&sid).expect("bounded process SID");
+        let expected = elevated == 0 && !sid.is_builtin_service();
+        let observed = WindowsPerUserWorkerPreflight::observe(session);
+        assert_eq!(
+            observed.is_ok(),
+            expected,
+            "the private observer must enforce native non-elevation and service-account refusal"
+        );
+        if let Ok(mut worker) = observed {
+            assert_eq!(
+                worker.revalidate(),
+                Ok(()),
+                "the actual worker must survive a fresh process-token and SID recheck"
+            );
+            assert_eq!(
+                worker.revalidate(),
+                Ok(()),
+                "a second native recheck must retain the same observed identity"
+            );
+        }
+        assert_eq!(
+            require_not_elevated(&token).is_ok(),
+            elevated == 0,
+            "native elevation is independently observable on the owned process token"
+        );
+    }
+
+    #[test]
+    fn actual_os_sid_reread_rejects_a_foreign_observation() {
+        let actual = current_process_sid().expect("read current TokenUser");
+        let actual = ObservedUserSid::from_sid(&actual).expect("bounded SID");
+        let foreign: windows_permissions::LocalBox<Sid> = "S-1-5-21-100-200-300-400"
+            .parse()
+            .expect("foreign SID fixture");
+        let mut other = ObservedUserSid::from_sid(&foreign).expect("bounded foreign SID");
+        if other == actual {
+            other.bytes[8] ^= 1;
+        }
+        assert_ne!(other, actual);
+        let error = require_same_observed_sid(&other)
+            .expect_err("a foreign SID must be refused by a fresh OS-backed TokenUser");
+        if !actual.is_builtin_service() {
+            assert!(
+                error
+                    .to_string()
+                    .contains("observed current-process user SID changed"),
+                "the worker SID mismatch must be the refusal, got: {error}"
+            );
+        }
+
+        let token = open_process_token().expect("query actual process token");
+        let session = token_session_id(&token).expect("query actual process session");
+        let mut worker = worker_from_actual_os_for_negative_test(session, token);
+        worker.observed_user_sid = other;
+        // A service process refuses the observed user before comparing SIDs.
+        // An ordinary process must reach the actual SID mismatch. Neither
+        // path may be mistaken for an unrelated elevation failure.
+        let expected_operation = if actual.is_builtin_service() {
+            "current_process_sid(TokenUser)"
+        } else {
+            "D-42 current-process TokenUser"
+        };
+        assert!(
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os { operation, .. }) if operation == expected_operation
+            ),
+            "a foreign SID must trigger the observed user check before elevation"
+        );
+        worker.observed_user_sid = actual;
+        assert!(
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "restoring the original SID must return prior invalidation"
+        );
+    }
+
+    #[test]
+    fn sid_copy_is_bounded_and_service_account_predicate_is_exact() {
+        for rid in [18, 19, 20] {
+            let text = format!("S-1-5-{rid}");
+            let sid: windows_permissions::LocalBox<Sid> =
+                text.parse().expect("well-known service SID");
+            let observed = ObservedUserSid::from_sid(&sid).expect("service SID");
+            assert!(observed.is_builtin_service(), "{text}");
+            assert_eq!(observed.used, 12);
+        }
+        for text in ["S-1-5-21-18", "S-1-5-18-21", "S-1-5-32-544"] {
+            let sid: windows_permissions::LocalBox<Sid> =
+                text.parse().expect("well-formed non-service SID");
+            assert!(
+                !ObservedUserSid::from_sid(&sid)
+                    .expect("bounded SID")
+                    .is_builtin_service(),
+                "{text}"
+            );
+        }
+        let maximum: windows_permissions::LocalBox<Sid> =
+            "S-1-5-1-2-3-4-5-6-7-8-9-10-11-12-13-14-15"
+                .parse()
+                .expect("15 subauthorities are permitted");
+        let observed = ObservedUserSid::from_sid(&maximum).expect("maximum bounded SID");
+        assert_eq!(observed.used, 68);
+        assert_eq!(observed.bytes[1], 15);
+        assert_eq!(&observed.bytes[64..68], &15u32.to_le_bytes());
     }
 }

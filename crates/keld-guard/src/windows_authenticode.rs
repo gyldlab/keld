@@ -24,9 +24,10 @@ use windows_sys::Win32::Security::Cryptography::{
 use windows_sys::Win32::Security::WinTrust::{
     CRYPT_PROVIDER_SGNR, SPC_SP_OPUS_INFO, SPC_SP_OPUS_INFO_OBJID, SPC_SP_OPUS_INFO_STRUCT,
     WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
-    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CHOICE_FILE,
-    WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
-    WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
+    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CACHE_ONLY_URL_RETRIEVAL,
+    WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOCATION_CHECK_NONE,
+    WTD_REVOKE_NONE, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+    WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
     WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -34,6 +35,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 mod refusals;
+// Pure D-45 issuer/profile/role predicates only. The owning native producer
+// remains closed until T-82 grants the exact certificate/PE observations.
+mod d45_role_policy;
 pub use refusals::WindowsAuthenticodeError;
 use refusals::{parse_windows_signed_program_name, windows_identity_error};
 
@@ -42,6 +46,17 @@ const WINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS: usize = WINDOWS_SIGNED_APP_ID_PREFI
 const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.windows/v1\0";
 const WINDOWS_SIGNER_SPKI_MAX_BYTES: u32 = 64 * 1024;
 const WINDOWS_OPUS_INFO_MAX_BYTES: u32 = 4 * 1024;
+
+/// Hash one retained file in fixed chunks. Host size is never an allocation size.
+const WINDOWS_HOST_DIGEST_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Two distinct trust policies over the same retained, read-only image handle.
+/// Cache-only observation never substitutes for full revocation verification.
+#[derive(Clone, Copy)]
+enum WindowsTrustPolicy {
+    Full,
+    OfflinePreflight,
+}
 
 /// An executable image held open for KEL-135 Authenticode verification.
 ///
@@ -88,6 +103,186 @@ impl WindowsAuthenticodeImage {
             identity,
         })
     }
+
+    /// Observes a signed image using only cached local trust data, before any
+    /// discovery/network decision. Retains the original file handle and returns
+    /// a distinct, non-authority type; it does not check revocation status.
+    ///
+    /// # Errors
+    /// Refuses an absent or untrusted local chain, ambiguous signatures, missing
+    /// or invalid signed program-name facts, and any `WinTrust` CLOSE failure.
+    pub fn observe_preflight(self) -> Result<WindowsPreflightImage, WindowsAuthenticodeError> {
+        let observed = windows_identity_from_image_with_policy(
+            &self.path,
+            &self.image,
+            WindowsTrustPolicy::OfflinePreflight,
+        )?;
+        Ok(WindowsPreflightImage {
+            source: self,
+            observed_publisher_scope: observed.publisher_scope,
+            observed_app_id: observed.app_id,
+        })
+    }
+}
+
+/// A D-45 cache-only signed-image observation retaining the exact source file.
+///
+/// The observed values are for local read-only Direct/Managed discovery only.
+/// Neither the type nor its fields can mint `VerifiedWindowsImage`, bypass
+/// revocation, or grant installation authority. A later approved Direct-decision
+/// adapter must independently perform full verification on this retained file.
+#[derive(Debug)]
+pub struct WindowsPreflightImage {
+    source: WindowsAuthenticodeImage,
+    observed_publisher_scope: [u8; 32],
+    observed_app_id: Box<str>,
+}
+
+/// Native D-43 Direct-discovery eligibility required before D-45 full verification.
+///
+/// KEL-53/T-82 has not qualified an issuer for authenticated publisher,
+/// profile OID, issuer policy, repository census, or old-reader evidence.
+/// This type has no production constructor and does not accept a caller
+/// Boolean, pathname, or digest as an authority grant.
+#[allow(dead_code)] // T-82 has not commissioned a native Direct-discovery issuer.
+struct WindowsD45DirectDiscoveryEligibility {
+    original_host_sha256: [u8; 32],
+    // Exact signed-catalogue host.bytes, never from the filesystem or request.
+    expected_host_bytes: u64,
+    // These private nonconstructible requirements are independent of the
+    // source digest and the D-43 Direct observation. The Pack D-WIRE decoder
+    // must bind issuer membership to authenticated canonical policy bytes,
+    // and Guard must inspect the native signer's EKUs/issuer chain before any
+    // D-45 v2 fully verified image can be returned. Neither producer exists
+    // on this T-82-gated implementation base.
+    _dwire_issuer_membership: d45_role_policy::WindowsD45DWireMembershipBinding,
+    _native_role_policy: d45_role_policy::WindowsD45RolePolicyMatch,
+}
+
+impl WindowsPreflightImage {
+    /// Locally observed publisher scope. No current revocation status is implied.
+    #[must_use]
+    pub const fn observed_publisher_scope(&self) -> &[u8; 32] {
+        &self.observed_publisher_scope
+    }
+
+    /// Locally observed legacy `keld.app-id/v1:` signed program-name app ID.
+    /// The v2 D-WIRE policy/role check is a separate pending Guard boundary.
+    #[must_use]
+    pub fn observed_app_id(&self) -> &str {
+        &self.observed_app_id
+    }
+
+    /// The retained file supplying read-only discovery bytes. No path reopen.
+    /// Only the future Direct-decision owner may promote this observation.
+    #[must_use]
+    pub const fn file(&self) -> &File {
+        &self.source.image
+    }
+
+    /// Revalidate the exact same retained image using full chain revocation.
+    ///
+    /// Kept private and requires a non-forgeable, current-lease Direct-discovery
+    /// witness. No production witness constructor exists before T-82 grants
+    /// the native issuer/profile/role checks and the KEL-53 repository census.
+    /// Neither a preflight value nor a caller Boolean can authorize conversion.
+    #[allow(dead_code)] // T-82 pending: no production Direct-discovery witness exists yet.
+    fn verify_full_bound(
+        self,
+        direct: &WindowsD45DirectDiscoveryEligibility,
+    ) -> Result<VerifiedWindowsImage, WindowsAuthenticodeError> {
+        // The Direct witness must bind an exact authenticated byte count and
+        // digest before any full-file read; preflight performs no such scan.
+        require_retained_host_source(
+            &self.source.image,
+            direct.expected_host_bytes,
+            &direct.original_host_sha256,
+        )?;
+        let full = self.source.verify()?;
+        if full.identity.publisher_scope != self.observed_publisher_scope
+            || full.identity.app_id != self.observed_app_id
+        {
+            return Err(windows_identity_error(
+                "the authenticated signer or app ID differs from the retained offline preflight",
+                "Restore the original signed Host and repeat discovery and full verification.",
+            ));
+        }
+        Ok(full)
+    }
+}
+
+/// Compare the exact authenticated Host length and SHA-256 to the original
+/// retained file object. This read-only comparison is NOT a signer, Direct
+/// discovery, D-WIRE issuer-policy, or installation-authorization grant.
+fn require_retained_host_source(
+    image: &File,
+    expected_bytes: u64,
+    expected_sha256: &[u8; 32],
+) -> Result<(), WindowsAuthenticodeError> {
+    let actual = sha256_retained_windows_image(image, expected_bytes)?;
+    if &actual != expected_sha256 {
+        return Err(windows_identity_error(
+            "the Direct discovery source differs from the retained offline Host",
+            "Repeat authenticated owner discovery against the original signed Host.",
+        ));
+    }
+    Ok(())
+}
+
+/// Computes a complete byte digest through one retained file object. No path is
+/// opened or trusted here, and this digest alone cannot authorize a signed Host.
+fn sha256_retained_windows_image(
+    image: &File,
+    expected_bytes: u64,
+) -> Result<[u8; 32], WindowsAuthenticodeError> {
+    use std::os::windows::fs::FileExt as _;
+
+    let length = image
+        .metadata()
+        .map_err(|source| {
+            windows_identity_error(
+                format!("the retained signed Host length cannot be read: {source}"),
+                "Restore the signed Host file and restart read-only verification.",
+            )
+        })?
+        .len();
+    if expected_bytes == 0 || length != expected_bytes {
+        return Err(windows_identity_error(
+            "the retained signed Host byte count differs from the authenticated expected length",
+            "Restore the exact signed Host and repeat authenticated source selection.",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    // Keep the 64-KiB bounded source-read buffer on the heap. A signed Host
+    // cannot force a large stack allocation in this verifier.
+    let mut bytes = vec![0_u8; WINDOWS_HOST_DIGEST_CHUNK_BYTES];
+    let mut offset = 0_u64;
+    while offset < expected_bytes {
+        let remaining = expected_bytes - offset;
+        let take = usize::try_from(remaining)
+            .unwrap_or(WINDOWS_HOST_DIGEST_CHUNK_BYTES)
+            .min(WINDOWS_HOST_DIGEST_CHUNK_BYTES);
+        let count = image
+            .seek_read(&mut bytes[..take], offset)
+            .map_err(|source| {
+                windows_identity_error(
+                    format!("the retained signed Host read failed: {source}"),
+                    "Restore the signed Host file and restart read-only verification.",
+                )
+            })?;
+        if count == 0 {
+            return Err(windows_identity_error(
+                "the retained signed Host ended before its handle-derived length",
+                "Restore the signed Host file and restart read-only verification.",
+            ));
+        }
+        hasher.update(&bytes[..count]);
+        offset += count as u64;
+    }
+    let digest = hasher.finalize();
+    let mut exact = [0_u8; 32];
+    exact.copy_from_slice(&digest);
+    Ok(exact)
 }
 
 /// A pinned executable image and the identity that verifying that handle proved.
@@ -178,11 +373,30 @@ fn open_windows_trust_image(executable: &Path) -> Result<File, WindowsAuthentico
     Ok(image)
 }
 
-#[allow(unsafe_code, clippy::too_many_lines)] // one linear VERIFY/extract/CLOSE state owner avoids a leaked trust handle
 fn verified_windows_identity_from_image(
     executable: &Path,
     image: &File,
 ) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
+    windows_identity_from_image_with_policy(executable, image, WindowsTrustPolicy::Full)
+}
+
+#[allow(unsafe_code, clippy::too_many_lines)] // one shared VERIFY/extract/CLOSE state owner for full and offline policies
+fn windows_identity_from_image_with_policy(
+    executable: &Path,
+    image: &File,
+    policy: WindowsTrustPolicy,
+) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
+    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);
+    let (revocation_checks, provider_flags) = match policy {
+        WindowsTrustPolicy::Full => (
+            WTD_REVOKE_WHOLECHAIN,
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        ),
+        WindowsTrustPolicy::OfflinePreflight => (
+            WTD_REVOKE_NONE,
+            WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL,
+        ),
+    };
     let mut executable_wide: Vec<u16> = executable.as_os_str().encode_wide().collect();
     if executable_wide.contains(&0) {
         return Err(windows_identity_error(
@@ -231,7 +445,7 @@ fn verified_windows_identity_from_image(
         pPolicyCallbackData: std::ptr::null_mut(),
         pSIPClientData: std::ptr::null_mut(),
         dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_WHOLECHAIN,
+        fdwRevocationChecks: revocation_checks,
         dwUnionChoice: WTD_CHOICE_FILE,
         Anonymous: WINTRUST_DATA_0 {
             pFile: &raw mut file_info,
@@ -239,7 +453,7 @@ fn verified_windows_identity_from_image(
         dwStateAction: WTD_STATEACTION_VERIFY,
         hWVTStateData: std::ptr::null_mut(),
         pwszURLReference: std::ptr::null_mut(),
-        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        dwProvFlags: provider_flags,
         dwUIContext: WTD_UICONTEXT_EXECUTE,
         pSignatureSettings: &raw mut signature_settings,
     };
@@ -256,13 +470,23 @@ fn verified_windows_identity_from_image(
         )
     };
     if trust_status != 0 {
-        let primary = windows_identity_error(
+        let failure_detail = if offline {
+            format!(
+                "WinVerifyTrust rejected the current executable with status 0x{:08x} during the cache-only preflight",
+                u32::from_ne_bytes(trust_status.to_ne_bytes())
+            )
+        } else {
             format!(
                 "WinVerifyTrust rejected the current executable with status 0x{:08x}",
                 u32::from_ne_bytes(trust_status.to_ne_bytes())
-            ),
-            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status.",
-        );
+            )
+        };
+        let fix = if offline {
+            "Install a package signed by a locally trusted Authenticode publisher; do not bypass signature verification."
+        } else {
+            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status."
+        };
+        let primary = windows_identity_error(failure_detail, fix);
         if !trust_data.hWVTStateData.is_null() {
             trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
             // SAFETY: this closes only state created by the VERIFY call above
@@ -629,6 +853,8 @@ mod tests {
 
     use super::*;
 
+    mod d45_host_handle_alias;
+
     /// One isolated trust-image fixture directory under the system temporary directory.
     struct FixtureDirectory(PathBuf);
 
@@ -716,6 +942,131 @@ mod tests {
         );
         drop(image);
         fs::rename(&image_path, &moved).expect("a released image can move");
+    }
+
+    #[test]
+    fn d45_retained_host_digest_matches_independent_sha256_literal() {
+        let directory = FixtureDirectory::new("d45-retained-digest");
+        let path = directory.path().join("host-source.exe");
+        fs::write(&path, b"abc").expect("write exact fixed hash vector");
+        let image = WindowsAuthenticodeImage::open(&path)
+            .expect("unsigned synthetic image may be held for read-only hashing");
+        assert_eq!(
+            sha256_retained_windows_image(&image.image, 3)
+                .expect("read all source bytes through the pinned hFile"),
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+                0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+                0xf2, 0x00, 0x15, 0xad,
+            ],
+            "the digest must cover the exact original bytes"
+        );
+        let error = sha256_retained_windows_image(&image.image, 4)
+            .expect_err("a different expected size must refuse before a file scan");
+        assert!(
+            error
+                .detail()
+                .contains("differs from the authenticated expected length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn d45_retained_source_accepts_exact_bytes_and_refuses_equal_length_foreign_host() {
+        // This is a source-byte subcondition, not a fabricated authenticated
+        // Direct or issuer-policy witness. Full D-45 v2 remains T-82-gated.
+        // The independent SHA-256("abc") vector prevents an always-refuse
+        // implementation from making a negative-only test appear to pass.
+        let expected_digest = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
+        ];
+        let directory = FixtureDirectory::new("d45-foreign-source-witness");
+        let original_path = directory.path().join("original-host.exe");
+        let foreign_path = directory.path().join("foreign-host.exe");
+        fs::write(&original_path, b"abc").expect("write original source fixture");
+        fs::write(&foreign_path, b"abd").expect("write same-length foreign source fixture");
+        let original = WindowsAuthenticodeImage::open(&original_path)
+            .expect("retain the original regular file");
+        let foreign =
+            WindowsAuthenticodeImage::open(&foreign_path).expect("retain the foreign regular file");
+        require_retained_host_source(&original.image, 3, &expected_digest)
+            .expect("the original retained Host satisfies the exact source-byte check");
+        let error = require_retained_host_source(&foreign.image, 3, &expected_digest)
+            .expect_err("same-length foreign bytes must refuse before any WinTrust grant");
+        assert!(
+            error
+                .detail()
+                .contains("Direct discovery source differs from the retained offline Host"),
+            "{error}"
+        );
+        assert!(error.close_failure().is_none(), "{error}");
+        let error = require_retained_host_source(&original.image, 2, &expected_digest)
+            .expect_err("a wrong authenticated length must refuse before digest comparison");
+        assert!(
+            error
+                .detail()
+                .contains("differs from the authenticated expected length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn d45_cache_only_preflight_refuses_unsigned_source() {
+        let directory = FixtureDirectory::new("d45-offline-unsigned");
+        let host_path = directory.path().join("unsigned-keld-host.exe");
+        fs::write(&host_path, b"unsigned synthetic source").expect("write unsigned image");
+
+        let error = WindowsAuthenticodeImage::open(&host_path)
+            .expect("a regular unsigned fixture opens for a read-only observation")
+            .observe_preflight()
+            .expect_err("offline preflight must refuse an unsigned image");
+        assert!(
+            error.detail().contains("cache-only preflight"),
+            "preflight must report its separate offline trust policy: {error}"
+        );
+        assert!(error.close_failure().is_none(), "{error}");
+    }
+
+    #[test]
+    fn d45_host_path_copy_substitution_waits_for_image_handle_release() {
+        use std::os::windows::fs::FileExt as _;
+
+        let directory = FixtureDirectory::new("d45-host-copy-substitution");
+        let host_path = directory.path().join("keld-host.exe");
+        let foreign_path = directory.path().join("foreign-host.exe");
+        let original = b"original host image: unsigned custody fixture";
+        let foreign = b"foreign host image: unsigned custody fixture";
+        fs::write(&host_path, original).expect("create the original Host fixture");
+        fs::write(&foreign_path, foreign).expect("create the foreign Host fixture");
+
+        let pinned = WindowsAuthenticodeImage::open(&host_path)
+            .expect("open the original Host image with Guard's production source owner");
+        let error = fs::copy(&foreign_path, &host_path)
+            .expect_err("a foreign image cannot replace a pinned Host pathname");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(32),
+            "Windows must refuse foreign byte replacement through the pinned source"
+        );
+
+        let mut observed = vec![0; original.len()];
+        let bytes_read = pinned
+            .image
+            .seek_read(&mut observed, 0)
+            .expect("read from the retained original image handle");
+        assert_eq!(bytes_read, original.len());
+        assert_eq!(&observed[..], &original[..]);
+        assert_eq!(fs::read(&host_path).unwrap(), &original[..]);
+        assert_eq!(fs::read(&foreign_path).unwrap(), &foreign[..]);
+
+        drop(pinned);
+        assert_eq!(
+            fs::copy(&foreign_path, &host_path).expect("replace the Host path after release"),
+            u64::try_from(foreign.len()).unwrap()
+        );
+        assert_eq!(fs::read(&host_path).unwrap(), &foreign[..]);
     }
 
     #[test]

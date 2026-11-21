@@ -8,7 +8,27 @@ use crate::UpdateError;
 use crate::windows_extraction::ensure_regular;
 use crate::windows_fs::{create_file_relative_with_profile, publish_new};
 use cap_std::fs::{Dir, File as CapFile};
+use std::io;
 use std::io::Write as _;
+
+/// Opens an optional protected record through the retained parent. The initial
+/// nofollow metadata probe decides only whether a name is absent. Any present
+/// record is re-opened and admitted by `read_record` through its actual handle,
+/// with exact descriptor, type and same-volume checks before bytes are used.
+pub(super) fn read_optional_record(
+    parent: &Dir,
+    leaf: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> Result<Option<Vec<u8>>, UpdateError> {
+    match parent.symlink_metadata(leaf) {
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(cause) => Err(error("protected record probe", cause)),
+        Ok(_) => {
+            let (_pinned, bytes) = read_record(parent, leaf, profile)?;
+            Ok(Some(bytes))
+        }
+    }
+}
 
 /// Prepares one protected record sibling, then publishes it only at an absent target.
 ///

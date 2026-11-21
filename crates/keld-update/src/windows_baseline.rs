@@ -26,9 +26,34 @@ use record_publication::{prepare_record, publish_prepared_record};
 mod activate;
 mod claimant;
 mod helper;
+// These private KEL-270 native seams compile together, but do not mint v2
+// admission: the commissioned KEL-53 repository lease/census and T82 native
+// writer are not yet available. In particular, the public v1 initializer
+// below must not infer v2 authority from these module declarations.
+#[allow(dead_code)]
+mod initial_admission_journal;
+#[allow(dead_code)]
+mod initial_permit;
 mod initialize;
 mod load;
 mod locate;
+// This native D-23 store I/O requires the unconstructible D-90 eligibility
+// witness until the established KEL-53 owner qualifies its repository lease.
+#[allow(dead_code)]
+mod repository_census;
+#[allow(dead_code)]
+mod repository_metadata;
+// A missing D-68 pointer cannot make an unpointed D-64 journal disappear.
+// This is a negative retained-directory observation, NOT D-90 completeness.
+#[allow(dead_code)]
+mod repository_member_diagnostics;
+// Real KEL-53 installed-source and per-install writer observations are useful
+// for negative D-89/D-90 admission, but neither is the missing repository-wide
+// metadata lease or a qualified v1/v2 reader census producer.
+#[allow(dead_code)]
+mod repository_source_reader;
+#[allow(dead_code)]
+mod repository_writer_scope;
 
 #[cfg(test)]
 pub(crate) use activate::CRASH_CUT_HOOK;

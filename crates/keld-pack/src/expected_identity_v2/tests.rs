@@ -2,7 +2,7 @@
 //! A successful test does not verify Ed25519, `WinTrust`, or commissioned signing.
 
 use super::{DOMAIN, ExpectedAppIdentityV2, V2IdentityFields};
-use crate::ExpectedAppIdentityPayload;
+use crate::{ExpectedAppIdentityPayload, PackError};
 
 const APP: &str = "com.example.app";
 const OID: &str = "1.2.840.113556.1.8000.2554";

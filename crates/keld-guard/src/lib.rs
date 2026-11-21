@@ -57,7 +57,7 @@ pub mod capability {
 #[cfg(windows)]
 pub use windows_authenticode::{
     VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeIdentity,
-    WindowsAuthenticodeImage,
+    WindowsAuthenticodeImage, WindowsPreflightImage,
 };
 
 #[cfg(windows)]

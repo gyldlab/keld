@@ -348,6 +348,23 @@ fn await_phases(
                     std::sync::mpsc::RecvTimeoutError::Disconnected => "observer-disconnected",
                 };
                 persist_phase_status(project, status, &diagnostic_phases)?;
+                // The temporary no-graphics project is removed on failure.
+                // Emit only fixed, allowlisted phase names and presence flags;
+                // never expose the raw observation, endpoint or CLI output.
+                let last_phase = diagnostic_phases
+                    .last()
+                    .and_then(|phase| phase["phase"].as_str())
+                    .unwrap_or("none");
+                eprintln!(
+                    "KELD_KEL89_PRE_QUIT_BOUNDARY case={} status={} app_ready={} page_ready={} result_ready={} observed_phases={} last_phase={} quit_released=false",
+                    case.name,
+                    status,
+                    app_ready.is_some(),
+                    page_ready.is_some(),
+                    result.is_some(),
+                    diagnostic_phases.len(),
+                    last_phase,
+                );
                 return Err(error.into());
             }
         };

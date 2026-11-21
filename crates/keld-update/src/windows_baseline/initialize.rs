@@ -260,17 +260,16 @@ fn initialize_with_authority_and_token_check(
         publication::ValidatedBaselineStageSource::open_legacy(verified, archive)?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
-    let update_name = trust
-        .installation
-        .update_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| error("topology", "update name absent"))?;
-    let mut lock = acquire_bootstrap_lock(&roots, update_name)?;
+    let mut lock = acquire_bootstrap_lock(&roots)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
+    recheck_bootstrap_scaffold(&roots)?;
     seed_activation_lock(&roots)?;
     observe(BaselineBoundary::ActivationLockCreated)
         .map_err(|cause| error("activation lock boundary", cause))?;
+    // A callback or another writer can change a retained directory between
+    // the bootstrap reread and stage creation. Refuse foreign entries before
+    // the next installation effect, preserving the incomplete first attempt.
+    recheck_activation_scaffold(&roots)?;
 
     // Keep the admitted source's read-only share through commit and the exact
     // seed reread. Readback opens the installed copy, not the source pathname.
@@ -295,11 +294,18 @@ fn initialize_with_authority_and_token_check(
 mod publication;
 use publication::{publish_baseline_version, seed_baseline_pointers};
 
-fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, UpdateError> {
+pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError> {
     let profile = roots.profile();
     let install = roots
         .install()
         .map_err(|cause| error("install root", cause))?;
+    let update_name = roots
+        .trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("topology", "update name absent"))?;
     exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
     exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
     exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
@@ -315,6 +321,56 @@ fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, Upda
     lock.sync_all()
         .map_err(|cause| error("bootstrap lock flush", cause))?;
     Ok(lock)
+}
+
+/// Rereads the retained KEL-53 scaffold immediately after the bootstrap cut.
+///
+/// A new sibling or stage appearing between the pre-create census and the
+/// next effect must stop the transaction as incomplete. This check neither
+/// proves D-90 repository-wide vacancy nor grants an initial-install permit.
+pub(super) fn recheck_bootstrap_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    recheck_scaffold(roots, ScaffoldCut::Bootstrap)
+}
+
+fn recheck_activation_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    recheck_scaffold(roots, ScaffoldCut::Activation)
+}
+
+#[derive(Clone, Copy)]
+enum ScaffoldCut {
+    Bootstrap,
+    Activation,
+}
+
+fn recheck_scaffold(roots: &Roots, cut: ScaffoldCut) -> Result<(), UpdateError> {
+    let (root_step, install_step, update_step, versions_step, expected) = match cut {
+        ScaffoldCut::Bootstrap => (
+            "bootstrap scaffold root",
+            "bootstrap scaffold install reread",
+            "bootstrap scaffold update reread",
+            "bootstrap scaffold versions reread",
+            &["versions", "bootstrap.lock"][..],
+        ),
+        ScaffoldCut::Activation => (
+            "activation scaffold root",
+            "activation scaffold install reread",
+            "activation scaffold update reread",
+            "activation scaffold versions reread",
+            &["versions", "bootstrap.lock", "activation.lock"][..],
+        ),
+    };
+    let update_name = roots
+        .trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("topology", "update name absent"))?;
+    let install = roots.install().map_err(|cause| error(root_step, cause))?;
+    exact_entries(install, &[update_name]).map_err(|cause| error(install_step, cause))?;
+    exact_entries(&roots.update, expected).map_err(|cause| error(update_step, cause))?;
+    exact_entries(&roots.versions, &[]).map_err(|cause| error(versions_step, cause))?;
+    Ok(())
 }
 
 fn seed_activation_lock(roots: &Roots) -> Result<(), UpdateError> {

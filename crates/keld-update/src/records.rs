@@ -20,12 +20,32 @@ pub(crate) const MAX_LOCAL_RECORD_BYTES: usize = 64 * 1024;
 #[allow(dead_code)]
 mod initial_admission;
 
+// Private native KEL-53 journal implementation consumes these types only as
+// bounded records. Re-exporting them inside this crate grants no lease,
+// installation permission, or authenticated OS observation.
+#[cfg(windows)]
+pub(crate) use initial_admission::{
+    AdmissionInspection, InitialAdmissionPhase, InitialAdmissionRecord, PendingOperationKind,
+    PendingRepositoryOperation, RepositoryAnchor, decode_initial_admission_record,
+    decode_pending_repository_operation, encode_initial_admission_record,
+    encode_pending_repository_operation, inspect_initial_admission,
+};
+
 // KEL-270 D-23 contains only canonical metadata *record bytes*.
 // T20 owns signed TUF verification; KEL-53 T82 owns protected-native handles,
 // ledger census, writer leases and publication. None are implemented here.
 #[cfg(any(windows, test))]
 #[allow(dead_code)]
 mod metadata_store;
+
+// Private canonical D-23 bytes used only by the retained native KEL-53
+// repository owner. These types do not mint ReadyRevision or writer authority.
+#[cfg(windows)]
+pub(crate) use metadata_store::{
+    AnchorRecord, CurrentRecord, EnrollmentState, GenerationPhase, GenerationRecord,
+    decode_metadata_anchor, decode_metadata_current, decode_metadata_generation,
+    encode_metadata_anchor, encode_metadata_current, encode_metadata_generation,
+};
 
 const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";
