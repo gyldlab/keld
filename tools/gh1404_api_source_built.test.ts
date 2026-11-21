@@ -57,6 +57,56 @@ function run(argv: string[], cwd = repo): string {
   return new TextDecoder().decode(result.stdout).trim();
 }
 
+/**
+ * A receipt is not authority merely because its digests match the current
+ * checkout. The selected commit itself must be a real reachable ancestor,
+ * and both source/producer trees must be those of that exact commit.
+ *
+ * This gate is intentionally limited to the authoritative repo checkout:
+ * the independent fault fixture below uses its own unrelated temporary Git.
+ */
+function selectedCommitProblems(
+  selectedCommit: string,
+  gitRoot = repo,
+): string[] {
+  if (!/^[0-9a-f]{40}$/.test(selectedCommit)) {
+    return ["selected-commit-format"];
+  }
+  function gitCheck(args: string[]): { code: number | null; text: string } {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd: gitRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10_000,
+    });
+    return {
+      code: result.exitCode,
+      text: new TextDecoder().decode(result.stdout).trim(),
+    };
+  }
+  if (gitCheck(["cat-file", "-e", `${selectedCommit}^{commit}`]).code !== 0) {
+    return ["selected-commit-missing"];
+  }
+  const problems: string[] = [];
+  if (
+    gitCheck(["merge-base", "--is-ancestor", selectedCommit, "HEAD"]).code !== 0
+  ) {
+    problems.push("selected-commit-not-ancestor");
+  }
+  for (const [treePath, expected, kind] of [
+    ["packages/@keld/api/src", receipt.sourceGitTree, "selected-api-tree"],
+    [
+      "packages/@keld/kipc/scripts",
+      receipt.producerGitTree,
+      "selected-producer-tree",
+    ],
+  ] as const) {
+    const actual = gitCheck(["rev-parse", `${selectedCommit}:${treePath}`]);
+    if (actual.code !== 0 || actual.text !== expected) problems.push(kind);
+  }
+  return problems;
+}
+
 function emittedSourceFacts(root: string): string[] {
   const problems: string[] = [];
   const tree = run(["git", "rev-parse", "HEAD:packages/@keld/api/src"], root);
@@ -136,6 +186,7 @@ function validateArchive(archive: string, extractedRoot: string): string[] {
 
 test("selected source and canonical compiler/producer yield identical API bytes, modes and lock SRI", () => {
   expect(receipt.schema).toBe("keld.api.gh1404-source-built/v1");
+  expect(selectedCommitProblems(receipt.selectedSourceCommit)).toEqual([]);
   expect(receipt.scope).toContain("source-only");
   expect(receipt.api.files.length).toBe(37);
   expect(Bun.version).toBe(receipt.toolchain.bun);
@@ -252,6 +303,16 @@ test("selected source and canonical compiler/producer yield identical API bytes,
   }
 });
 
+test("receipt selected commit must exist, be ancestral and bind the API and producer trees", () => {
+  expect(selectedCommitProblems(receipt.selectedSourceCommit)).toEqual([]);
+  expect(selectedCommitProblems("0".repeat(40))).toEqual([
+    "selected-commit-missing",
+  ]);
+  expect(selectedCommitProblems("not-a-git-sha")).toEqual([
+    "selected-commit-format",
+  ]);
+});
+
 test("a different committed Git source HEAD cannot reuse the unchanged selected TGZ", () => {
   const scratch = mkdtempSync(
     join(tmpdir(), "keld-gh1404-row6-source-negative-"),
@@ -309,6 +370,27 @@ test("a different committed Git source HEAD cannot reuse the unchanged selected 
     expect(run(["git", "rev-parse", "HEAD"], scratch)).not.toBe(healthyHead);
     expect(emittedSourceFacts(scratch)).toEqual(["source-tree", "source-app"]);
     expect(receipt.api.sha256).toBe(unchangedArchive);
+
+    // A second real root commit with identical bytes is still a foreign
+    // source generation when it is not in the selected commit's ancestry.
+    const foreignHead = run(
+      [
+        "git",
+        "-c",
+        "user.name=Keld Source Test",
+        "-c",
+        "user.email=source-test@example.invalid",
+        "commit-tree",
+        "-m",
+        "unrelated committed source",
+        "HEAD^{tree}",
+      ],
+      scratch,
+    );
+    run(["git", "update-ref", "HEAD", foreignHead], scratch);
+    expect(selectedCommitProblems(healthyHead, scratch)).toContain(
+      "selected-commit-not-ancestor",
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
