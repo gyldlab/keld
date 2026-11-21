@@ -163,6 +163,10 @@ use crate::profile::{
 /// Returns [`WvError::WebView2RuntimeMissing`] when the runtime is absent, too
 /// old, or the loader reports any other failure.
 pub fn runtime_version() -> Result<String, WvError> {
+    #[cfg(test)]
+    if std::env::var_os("KELD_GH814_FORBID_LATE_RUNTIME_PROBE").is_some() {
+        panic!("GH814: unbounded loader version probe reached after the launch deadline");
+    }
     use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::core::{PCWSTR, PWSTR};

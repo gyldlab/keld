@@ -229,6 +229,41 @@ fn expired_launch_reports_callback_channel_without_changing_refusal() {
     );
 }
 
+/// Fault injection proves that an already-expired WebView2 launch does not
+/// call the synchronous Evergreen version API as a prerequisite for WV-009.
+/// In this dedicated child a late call traps immediately instead of allowing
+/// an unbounded loader query to mask the original failure.
+#[test]
+fn expired_launch_preserves_refusal_when_runtime_probe_is_unavailable() {
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current keld-wv test executable"),
+    )
+    .args([
+        "--exact",
+        "webview2::tests::gh814_launch_timeout_log_child",
+        "--nocapture",
+    ])
+    .env("KELD_GH814_LAUNCH_LOG_PHASE", "controller")
+    .env("KELD_GH814_FORBID_LATE_RUNTIME_PROBE", "1")
+    .output()
+    .expect("launch synthetic expired-WV child with an unusable loader query");
+    assert!(
+        output.status.success(),
+        "an expired WV-009 refusal must survive a blocked diagnostic version probe: {output:?}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("bounded diagnostic stderr");
+    let emitted = stderr
+        .lines()
+        .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+        .expect("typed timeout must be emitted independently of the loader query");
+    assert!(
+        emitted.contains("phase=controller")
+            && emitted.contains("callback_channel_state=not_observed")
+            && emitted.contains("loader_runtime_version=unavailable"),
+        "failure-only observables must stay bounded and fail closed: {emitted}"
+    );
+}
+
 /// Synthetic monotonic enqueue timestamps independently falsify attribution:
 /// an already queued pre-deadline completion must be distinguished from one
 /// whose callback only ran after the deadline. Both MUST still refuse WV-009.
