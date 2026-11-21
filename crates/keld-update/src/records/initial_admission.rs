@@ -365,7 +365,7 @@ fn validate_record(record: &InitialAdmissionRecord) -> Result<(), UpdateError> {
     Ok(())
 }
 
-fn validate_app(value: &str) -> Result<(), UpdateError> {
+pub(super) fn validate_app(value: &str) -> Result<(), UpdateError> {
     // Exact KEL-135 CanonicalAppId grammar, as owned by
     // keld-wv/src/profile/identity.rs::validate_canonical_app_id.
     // That owner-local validator is private and updater cannot import keld-wv
@@ -397,7 +397,7 @@ fn validate_app(value: &str) -> Result<(), UpdateError> {
     Ok(())
 }
 
-fn validate_sid(sid: &str) -> Result<(), UpdateError> {
+pub(super) fn validate_sid(sid: &str) -> Result<(), UpdateError> {
     if sid.len() > 184 || !sid.is_ascii() || !sid.starts_with("S-1-") {
         return Err(invalid(
             "owner SID must be canonical ASCII within 184 bytes",
