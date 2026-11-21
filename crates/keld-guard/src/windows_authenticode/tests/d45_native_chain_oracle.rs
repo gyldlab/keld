@@ -10,7 +10,7 @@
 //! .NET `X509Chain.Build` returned true with exactly three certificates, while
 //! Windows SDK `signtool verify /pa /all /v` selected FOUR certificates for
 //! the primary signature: Brave -> G4 code-signing CA -> G4 root cross-signed
-//! by Assured ID -> self-signed DigiCert Assured ID Root CA. This native
+//! by Assured ID -> self-signed `DigiCert` Assured ID Root CA. This native
 //! selected path is different from .NET's shorter self-signed G4 root path.
 //! The expected native root DER SHA-256 is independently computed from the
 //! unmodified `Cert:\LocalMachine\Root` Assured ID certificate `RawData`,
@@ -23,13 +23,13 @@
 //! Git for Windows uses an unrelated four-element chain. The locally installed
 //! Git image had a valid embedded timestamped signature; the leaf is expired
 //! at the present date, so independent .NET `X509Chain.Build` was also checked
-//! at the leaf's NotBefore + one day (true, four certificates) for DER bytes.
+//! at the leaf's `NotBefore` + one day (true, four certificates) for DER bytes.
 //! A different binary or a different selected `WinTrust` chain must fail.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{
-    WINDOWS_D45_TEST_PROBE, WindowsAuthenticodeImage, WindowsD45TestProbe,
+    WINDOWS_D45_TEST_PROBE, WindowsAuthenticodeImage, WindowsD45ChainFacts, WindowsD45TestProbe,
     sha256_retained_windows_image,
 };
 
@@ -70,7 +70,7 @@ const GIT_LEAF_ISSUER_SPKI_SHA256: [u8; 32] = [
 #[ignore = "requires exact external embedded-signed Brave binary and native Windows trust"]
 fn brave_embedded_signer_chain_matches_independent_root_and_issuer_oracles() {
     verify_foreign_native_chain(
-        installed_foreign_fixture(
+        &installed_foreign_fixture(
             "KELD_D45_BRAVE_CERT_ORACLE",
             "BraveSoftware/Brave-Browser/Application/brave.exe",
         ),
@@ -86,7 +86,7 @@ fn brave_embedded_signer_chain_matches_independent_root_and_issuer_oracles() {
 #[ignore = "requires exact external embedded-signed Git binary and native Windows trust"]
 fn git_embedded_signer_chain_matches_independent_root_and_issuer_oracles() {
     verify_foreign_native_chain(
-        installed_foreign_fixture("KELD_D45_GIT_CERT_ORACLE", "Git/cmd/git.exe"),
+        &installed_foreign_fixture("KELD_D45_GIT_CERT_ORACLE", "Git/cmd/git.exe"),
         GIT_IMAGE_SHA256,
         GIT_TRUST_ROOT_DER_SHA256,
         GIT_LEAF_ISSUER_SPKI_SHA256,
@@ -122,7 +122,7 @@ impl WindowsD45ProbeScope {
         Self
     }
 
-    fn take(&mut self) -> WindowsD45TestProbe {
+    fn take() -> WindowsD45TestProbe {
         WINDOWS_D45_TEST_PROBE.with(|probe| {
             std::mem::replace(&mut *probe.borrow_mut(), WindowsD45TestProbe::Disabled)
         })
@@ -160,12 +160,12 @@ fn native_chain_test_probe_releases_armed_state_on_unwind() {
 }
 
 fn verify_foreign_native_chain(
-    path: PathBuf,
+    path: &Path,
     expected_image_sha256: [u8; 32],
     expected_root_der_sha256: [u8; 32],
     expected_issuer_spki_sha256: [u8; 32],
 ) {
-    let image = WindowsAuthenticodeImage::open(&path)
+    let image = WindowsAuthenticodeImage::open(path)
         .expect("open the original existing embedded-signed binary once");
     let length = image.image.metadata().expect("retained image length").len();
     assert_eq!(
@@ -175,7 +175,7 @@ fn verify_foreign_native_chain(
         "the independent signed-binary fixture changed; re-pin after reviewing its signer"
     );
 
-    let mut probe = WindowsD45ProbeScope::arm();
+    let _probe = WindowsD45ProbeScope::arm();
 
     // This is the exact production VERIFY→provider read→CLOSE ceremony with
     // whole-chain revocation. The test-only probe reads chain facts before
@@ -183,7 +183,7 @@ fn verify_foreign_native_chain(
     let refusal = image
         .verify()
         .expect_err("a valid foreign signer never grants Keld Host identity");
-    let captured = probe.take();
+    let captured = WindowsD45ProbeScope::take();
     assert!(
         matches!(
             refusal.detail(),
@@ -207,11 +207,11 @@ fn verify_foreign_native_chain(
         }
     };
     assert_eq!(
-        facts._root_certificate_sha256, expected_root_der_sha256,
-        "root DER must match the independently observed selected root certificate"
-    );
-    assert_eq!(
-        facts._leaf_issuer_spki_sha256, expected_issuer_spki_sha256,
-        "immediate issuer SPKI must match independent certificate DER re-encoding"
+        facts,
+        WindowsD45ChainFacts {
+            _root_certificate_sha256: expected_root_der_sha256,
+            _leaf_issuer_spki_sha256: expected_issuer_spki_sha256,
+        },
+        "native selected root DER and immediate issuer SPKI must match independent certificate bytes"
     );
 }
