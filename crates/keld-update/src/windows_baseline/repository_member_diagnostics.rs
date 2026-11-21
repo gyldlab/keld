@@ -11,6 +11,7 @@ use cap_std::fs::Dir;
 
 use super::error;
 use crate::UpdateError;
+use crate::records::{PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor};
 
 /// Refuse an unpointed D-64 journal, unknown leaf or incomplete publication
 /// in the retained KEL-53 admissions directory.
@@ -64,6 +65,98 @@ pub(super) fn require_no_unpointed_admissions(admissions: &Dir) -> Result<(), Up
         "an unexpected admission object or partial publication blocks ordinary metadata selection",
     ))
 }
+
+/// Refuse unexplained D-64/D-65/D-68 operation members in all three retained
+/// operation directories before accepting an exact pointed repository operation.
+///
+/// The caller must first authenticate the D-68 pointer and all three retained
+/// directory handles as part of its existing KEL-53 repository owner. The
+/// owner must retain its SINGLE exclusive metadata lease across this check,
+/// record readback, and any decision. Directory traversal cannot substitute
+/// for that lease or prove coverage of other v1/v2 installations.
+///
+/// With a pointed operation, exactly its derived journal leaf must occur in
+/// the corresponding directory. A second admission (even same channel), an
+/// unpointed recovery/transition journal, a different-case alias, a pending
+/// temporary sibling or a missing pointed leaf refuses. The exact pointed
+/// journal's type, DACL, bytes, phase and owner still require an independent
+/// retained-handle read and the recorded recovery owner; a matching name is
+/// not an authenticated journal.
+///
+/// Without a pointer, any observed operation member refuses. An empty local
+/// operation set is ONLY a negative observation: this function neither mints
+/// `RepositoryLedgerCensus` nor attests that every supported historic root,
+/// retained permit, old reader, or in-flight process has been enumerated.
+/// A writer racing after an unlocked observation requires a recheck under the
+/// real repository lease; the local directory scan is never a lock.
+///
+/// # Errors
+/// Refuses foreign pointer identity, absent pointed member, unexpected or
+/// unreadable name, or enumeration error. It makes no changes to any record.
+pub(super) fn require_only_pointed_repository_member(
+    admissions: &Dir,
+    recoveries: &Dir,
+    transitions: &Dir,
+    anchor: &RepositoryAnchor,
+    pending: Option<&PendingRepositoryOperation>,
+) -> Result<(), UpdateError> {
+    if pending.is_some_and(|pointer| {
+        pointer.repository_id != anchor.repository_id
+            || pointer.app_id != anchor.app_id
+            || pointer.owner_sid != anchor.owner_sid
+    }) {
+        return Err(error(
+            "repository member identity",
+            "pending operation differs from the authenticated repository, app or owner SID",
+        ));
+    }
+
+    let expected = pending.map(|pointer| {
+        (
+            pointer.kind,
+            format!("{}.json", crate::error::hex_digest(&pointer.attempt_id)),
+        )
+    });
+    let mut found = false;
+    for (kind, parent) in [
+        (PendingOperationKind::InitialAdmission, admissions),
+        (PendingOperationKind::ManualRecovery, recoveries),
+        (PendingOperationKind::PlannedTransition, transitions),
+    ] {
+        for entry in parent
+            .entries()
+            .map_err(|cause| error("repository member observation", cause))?
+        {
+            let entry = entry.map_err(|cause| error("repository member observation", cause))?;
+            let name = entry.file_name().into_string().map_err(|_| {
+                error(
+                    "repository member namespace",
+                    "non-UTF-8 operation entry blocks repository admission",
+                )
+            })?;
+            let is_pointed = expected
+                .as_ref()
+                .is_some_and(|(expected_kind, leaf)| *expected_kind == kind && leaf == &name);
+            if !is_pointed || found {
+                return Err(error(
+                    "repository member namespace",
+                    "unpointed or excess repository operation entry blocks the exact owner",
+                ));
+            }
+            found = true;
+        }
+    }
+    if expected.is_some() && !found {
+        return Err(error(
+            "repository pointed membership",
+            "pending pointer names no corresponding journal in its retained directory",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pointed_tests;
 
 #[cfg(test)]
 mod tests {
