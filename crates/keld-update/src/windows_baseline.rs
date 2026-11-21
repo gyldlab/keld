@@ -43,6 +43,10 @@ mod locate;
 mod repository_census;
 #[allow(dead_code)]
 mod repository_metadata;
+// A missing D-68 pointer cannot make an unpointed D-64 journal disappear.
+// This is a negative retained-directory observation, NOT D-90 completeness.
+#[allow(dead_code)]
+mod repository_member_diagnostics;
 // Real KEL-53 installed-source and per-install writer observations are useful
 // for negative D-89/D-90 admission, but neither is the missing repository-wide
 // metadata lease or a qualified v1/v2 reader census producer.

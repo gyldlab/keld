@@ -122,7 +122,16 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 record: Box::new(record),
                 disposition,
             }),
-            None => self.inspect().map(NativeRepositoryRestart::Metadata),
+            None => {
+                // D-64 publishes `admitted` before D-68 publishes the pointer.
+                // A crash between those durable cuts leaves a real orphan;
+                // absence of the pointer is not permission to select metadata.
+                // The retained admissions parent and D-90 witness remain live.
+                // An empty local directory is only a negative diagnostic, not
+                // a repository-wide member or old-reader completeness proof.
+                super::repository_member_diagnostics::require_no_unpointed_admissions(admissions)?;
+                self.inspect().map(NativeRepositoryRestart::Metadata)
+            }
         }
     }
 
