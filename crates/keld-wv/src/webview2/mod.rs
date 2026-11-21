@@ -402,6 +402,7 @@ impl WebView2LaunchPhase {
 /// It does not claim the earlier, unobservable OS/COM event-queue time.
 struct LaunchCallback<T> {
     captured_at: Instant,
+    captured_on_thread: std::thread::ThreadId,
     value: T,
 }
 
@@ -409,6 +410,7 @@ impl<T> LaunchCallback<T> {
     fn captured(value: T) -> Self {
         Self {
             captured_at: Instant::now(),
+            captured_on_thread: std::thread::current().id(),
             value,
         }
     }
@@ -648,6 +650,9 @@ fn wait_for_launch_with_message_pump_until<T>(
     phase: WebView2LaunchPhase,
     phase_started: Instant,
 ) -> Result<T, WvError> {
+    // Only compare thread identity with the thread running the COM pump.
+    // A match is not an independent proof of the OS apartment type.
+    let pump_thread = std::thread::current().id();
     let mut last_pump_returned_at: Option<Instant> = None;
     loop {
         let observed_at = Instant::now();
@@ -655,23 +660,31 @@ fn wait_for_launch_with_message_pump_until<T>(
             // Bounded, non-sensitive failure-only telemetry. The stable typed
             // error remains KELD-WV-009; a queued completion is inspected
             // only for evidence and can NEVER rescue an expired launch.
-            let (callback_channel_state, callback_captured_ms) = match receiver.try_recv() {
-                Ok(callback) => (
-                    if callback.captured_at < deadline {
-                        "captured_before_deadline"
-                    } else {
-                        "captured_at_or_after_deadline"
-                    },
-                    Some(
-                        callback
-                            .captured_at
-                            .saturating_duration_since(phase_started)
-                            .as_millis(),
+            let (callback_channel_state, callback_captured_ms, callback_thread_relation) =
+                match receiver.try_recv() {
+                    Ok(callback) => (
+                        if callback.captured_at < deadline {
+                            "captured_before_deadline"
+                        } else {
+                            "captured_at_or_after_deadline"
+                        },
+                        Some(
+                            callback
+                                .captured_at
+                                .saturating_duration_since(phase_started)
+                                .as_millis(),
+                        ),
+                        if callback.captured_on_thread == pump_thread {
+                            "matches_pump"
+                        } else {
+                            "different_thread"
+                        },
                     ),
-                ),
-                Err(TryRecvError::Empty) => ("not_observed", None),
-                Err(TryRecvError::Disconnected) => ("sender_disconnected", None),
-            };
+                    Err(TryRecvError::Empty) => ("not_observed", None, "not_observed"),
+                    Err(TryRecvError::Disconnected) => {
+                        ("sender_disconnected", None, "not_observed")
+                    }
+                };
             let callback_captured_ms = callback_captured_ms
                 .map_or_else(|| String::from("none"), |elapsed| elapsed.to_string());
             let pump_returned_ms = last_pump_returned_at.map_or_else(
@@ -701,7 +714,7 @@ fn wait_for_launch_with_message_pump_until<T>(
                 })
                 .unwrap_or_else(|| String::from("unavailable"));
             eprintln!(
-                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
+                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} callback_thread_relation={callback_thread_relation} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
                 phase.name(),
             );
             return Err(profile_failure_with(
@@ -4117,15 +4130,30 @@ mod tests {
             "before" => sender
                 .send(LaunchCallback {
                     captured_at: started + std::time::Duration::from_millis(250),
+                    captured_on_thread: std::thread::current().id(),
                     value: (),
                 })
                 .expect("queue synthetic pre-deadline callback"),
             "after" => sender
                 .send(LaunchCallback {
                     captured_at: started + std::time::Duration::from_millis(750),
+                    captured_on_thread: std::thread::current().id(),
                     value: (),
                 })
                 .expect("queue synthetic late callback"),
+            "foreign_before" => {
+                std::thread::spawn(move || {
+                    sender
+                        .send(LaunchCallback {
+                            captured_at: started + std::time::Duration::from_millis(250),
+                            captured_on_thread: std::thread::current().id(),
+                            value: (),
+                        })
+                        .expect("queue cross-thread pre-deadline callback");
+                })
+                .join()
+                .expect("capture and send on an independent real thread");
+            }
             "disconnected" => drop(sender),
             "none" => {}
             _ => panic!("unknown test-owned callback case"),

@@ -234,10 +234,15 @@ fn expired_launch_reports_callback_channel_without_changing_refusal() {
 /// These synthetic timestamps do not assert when `WebView2` posted an OS event.
 #[test]
 fn expired_launch_distinguishes_callback_enqueue_order_without_accepting_late_ready() {
-    for (case, expected_state) in [
-        ("before", "captured_before_deadline"),
-        ("after", "captured_at_or_after_deadline"),
-        ("disconnected", "sender_disconnected"),
+    for (case, expected_state, expected_thread) in [
+        ("before", "captured_before_deadline", "matches_pump"),
+        ("after", "captured_at_or_after_deadline", "matches_pump"),
+        (
+            "foreign_before",
+            "captured_before_deadline",
+            "different_thread",
+        ),
+        ("disconnected", "sender_disconnected", "not_observed"),
     ] {
         let output = std::process::Command::new(
             std::env::current_exe().expect("current keld-wv test executable"),
@@ -265,12 +270,19 @@ fn expired_launch_distinguishes_callback_enqueue_order_without_accepting_late_re
             "{case}: {emitted}"
         );
         assert!(
+            emitted.contains(&format!("callback_thread_relation={expected_thread}")),
+            "{case}: callback thread must be compared with the actual pump thread: {emitted}"
+        );
+        assert!(
             emitted.contains("callback_captured_ms=") && emitted.contains("pump_observed_ms="),
             "{case}: missing monotonic phase-only timestamps: {emitted}"
         );
         assert!(
-            !emitted.contains("http") && !emitted.contains("profile=") && !emitted.contains("pid="),
-            "diagnostics may not disclose URLs, profiles or PIDs: {emitted}"
+            !emitted.contains("http")
+                && !emitted.contains("profile=")
+                && !emitted.contains("pid=")
+                && !emitted.contains("ThreadId("),
+            "diagnostics may not disclose URLs, profiles, PIDs or raw thread ids: {emitted}"
         );
     }
 }
