@@ -8,7 +8,10 @@ use std::fs;
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use super::{require_empty_generation_namespace, require_established_ready_generation};
+use super::{
+    require_empty_generation_namespace, require_established_ready_generation,
+    require_only_genesis_and_successor, require_only_genesis_generation,
+};
 use crate::UpdateError;
 use crate::records::decode_metadata_generation;
 
@@ -40,6 +43,97 @@ fn absent_anchor_must_not_overlook_non_genesis_or_interrupted_generation() {
         assert_eq!(
             fs::read(&orphan).expect("retain the exact orphan for operator diagnosis"),
             b"interrupted-generation-residue",
+        );
+    }
+}
+
+#[test]
+fn committed_genesis_must_not_hide_unreferenced_successor_or_pending_sibling() {
+    // This is the D-24 restart cut after a durable Ready genesis and before
+    // a successor publication/retirement. Without the whole-directory
+    // negative check, a valid hash of 1.json would hide an orphan 2.json.
+    // The fixture intentionally uses a real retained parent; it does not
+    // pretend to qualify an OS-protected D-90 repository lease.
+    for foreign_name in ["2.json", "pending-uncommitted", "3.json", "unknown"] {
+        let fixture = tempfile::tempdir().expect("isolated committed genesis");
+        let genesis = fixture.path().join("1.json");
+        let foreign = fixture.path().join(foreign_name);
+        let genesis_bytes = b"unchanged-committed-genesis";
+        let foreign_bytes = b"unaccounted-preparation";
+        fs::write(&genesis, genesis_bytes).expect("persist committed genesis leaf");
+        let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+            .expect("retain exact native generation parent");
+        require_only_genesis_generation(&retained)
+            .expect("one genesis leaf passes only this negative namespace check");
+
+        fs::write(&foreign, foreign_bytes)
+            .expect("persist a distinct orphan generation or partial publication");
+        let error = require_only_genesis_generation(&retained)
+            .expect_err("successor residue cannot be bypassed by initial current or new write");
+        assert_eq!(refusal_step(error), "metadata generation residue");
+        assert_eq!(
+            fs::read(&genesis).expect("read unchanged committed generation"),
+            genesis_bytes,
+            "negative census must not rewrite the committed predecessor",
+        );
+        assert_eq!(
+            fs::read(&foreign).expect("read orphan for recovery"),
+            foreign_bytes,
+            "negative census must preserve every unaccounted object for D-24 recovery",
+        );
+    }
+}
+
+#[test]
+fn missing_genesis_is_not_a_valid_selected_generation_namespace() {
+    let fixture = tempfile::tempdir().expect("isolated generation directory");
+    let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+        .expect("retain the empty native directory handle");
+    assert_eq!(
+        refusal_step(
+            require_only_genesis_generation(&retained)
+                .expect_err("missing 1.json cannot satisfy the established-current census")
+        ),
+        "metadata generation residue",
+    );
+}
+
+#[test]
+fn postpublication_census_refuses_extra_generation_without_retiring_any_bytes() {
+    // The latest approved writer can prepare exactly one N=2 successor from a
+    // committed N=1 genesis; an unexpected N=3 or pending sibling is not
+    // evidence that N=2 has been committed or that cleanup can run.
+    for unexpected in ["3.json", "pending-leftover"] {
+        let fixture = tempfile::tempdir().expect("isolated published successor");
+        let genesis = fixture.path().join("1.json");
+        let successor = fixture.path().join("2.json");
+        let foreign = fixture.path().join(unexpected);
+        fs::write(&genesis, b"committed-n1").expect("persist native genesis fixture");
+        fs::write(&successor, b"prepared-n2").expect("persist native successor fixture");
+        let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+            .expect("retain native generations parent");
+        require_only_genesis_and_successor(&retained)
+            .expect("one committed genesis plus one prepared successor is a local shape only");
+        fs::write(&foreign, b"unknown-n3").expect("persist unexplained third member");
+
+        assert_eq!(
+            refusal_step(
+                require_only_genesis_and_successor(&retained)
+                    .expect_err("an unexplained third generation blocks publication readback")
+            ),
+            "metadata generation residue",
+        );
+        assert_eq!(
+            fs::read(&genesis).expect("genesis preserved"),
+            b"committed-n1"
+        );
+        assert_eq!(
+            fs::read(&successor).expect("successor preserved"),
+            b"prepared-n2"
+        );
+        assert_eq!(
+            fs::read(&foreign).expect("foreign preserved"),
+            b"unknown-n3"
         );
     }
 }

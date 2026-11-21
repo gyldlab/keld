@@ -227,6 +227,11 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                         "genesis current differs from the anchor initial-generation digest",
                     ));
                 }
+                // Even a correctly hashed Ready genesis is not a clean
+                // restart while an unreferenced successor or interrupted
+                // publication sibling remains. Do not silently select past
+                // D-24's ordinary-retirement recovery boundary.
+                require_only_genesis_generation(self.generations)?;
                 Ok(NativeMetadataInspection::Established {
                     anchor,
                     current,
@@ -303,6 +308,10 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                         "initial generation disagrees with pending anchor or current exists",
                     ));
                 }
+                // The anchor was published before this generation. A crash
+                // or foreign writer may have left another generation or a
+                // prepared sibling in the meantime: refuse before creation.
+                require_empty_generation_namespace(self.generations)?;
             }
             EnrollmentState::Established => {
                 let current = self.read_current()?.ok_or_else(|| {
@@ -321,6 +330,10 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 }
                 let previous = self.require_selected_generation(&current)?;
                 require_established_ready_generation(&previous)?;
+                // A previous uncommitted N+1, foreign generation or pending
+                // record sibling requires D-24's exact retirement owner. It
+                // cannot be bypassed by publishing another generation.
+                require_only_genesis_generation(self.generations)?;
                 if current.sequence.checked_add(1) != Some(generation.sequence)
                     || generation.previous_generation_sha256 != Some(current.generation_sha256)
                     || generation.recovery_epoch != previous.recovery_epoch
@@ -358,6 +371,15 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 "protected immutable generation differs",
             ));
         }
+        // Check the complete retained namespace again after publication, not
+        // only the candidate leaf. This is a negative check under the caller's
+        // existing writer lease, never a repository-wide D-90 witness.
+        match anchor.enrollment_state {
+            EnrollmentState::Pending => require_only_genesis_generation(self.generations)?,
+            EnrollmentState::Established => {
+                require_only_genesis_and_successor(self.generations)?;
+            }
+        }
         Ok(digest)
     }
 
@@ -384,6 +406,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         if self.read_current()?.is_some() {
             return Err(error("metadata initial current", "current already exists"));
         }
+        // A valid genesis does not authorize initial Current while another
+        // prepared, foreign or unreferenced generation is still present.
+        require_only_genesis_generation(self.generations)?;
         let generation = self.require_selected_generation(current)?;
         if generation.phase != GenerationPhase::Ready
             || current.generation_sha256 != anchor.initial_generation_sha256
@@ -539,6 +564,24 @@ fn require_empty_generation_namespace(generations: &Dir) -> Result<(), UpdateErr
             "a retained generation or pending publication sibling blocks fresh enrollment",
         )),
     }
+}
+
+/// A negative exact-name census of the one supported committed genesis.
+///
+/// The selected leaf is still read separately by the native protected-record
+/// reader for canonical bytes, DACL, type and SHA-256. This directory shape
+/// cannot mint D-90 repository eligibility or authenticate an unknown writer.
+fn require_only_genesis_generation(generations: &Dir) -> Result<(), UpdateError> {
+    super::exact_entries(generations, &["1.json"])
+        .map_err(|cause| error("metadata generation residue", cause))
+}
+
+/// Negative readback census after the only currently supported N=1 to N=2
+/// preparation. No third, foreign, or pending sibling can be silently ignored.
+/// Publishing Current=N+2 is still unavailable without T-82 native replacement.
+fn require_only_genesis_and_successor(generations: &Dir) -> Result<(), UpdateError> {
+    super::exact_entries(generations, &["1.json", "2.json"])
+        .map_err(|cause| error("metadata generation residue", cause))
 }
 
 /// An established D-23 current pointer must select a full ready generation.
