@@ -4,8 +4,6 @@
 //! It keeps byte offsets intact and refuses unexpected syntax rather than
 //! accepting an inert string, character, comment or macro as live Rust code.
 
-use std::ops::Range;
-
 pub(super) fn hide_inert_text(source: &str) -> Result<String, &'static str> {
     let bytes = source.as_bytes();
     let mut visible = bytes.to_vec();

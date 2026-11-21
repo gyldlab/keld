@@ -246,7 +246,16 @@ fn check_native_chain_observations(guard: &str) -> Result<(), &'static str> {
         "ifis_terminal_root&&(provider.fTrustedRoot==0||provider.fSelfSigned==0)",
         "D-45 trusted self-signed root",
     )?;
-    needs(&hashes, "root.pbCertEncoded", "D-45 original root DER")?;
+    needs(
+        &hashes,
+        "root.pbCertEncoded.is_null()",
+        "D-45 original root DER",
+    )?;
+    needs(
+        &hashes,
+        "std::slice::from_raw_parts(root.pbCertEncoded,root_len)",
+        "D-45 original root DER",
+    )?;
     needs(
         &hashes,
         "windows_encoded_spki(&issuer_info.SubjectPublicKeyInfo,",
