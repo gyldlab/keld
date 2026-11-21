@@ -83,8 +83,12 @@ enum UnissuedRepositoryOwnerWitness {}
 #[derive(Debug)]
 #[must_use = "the native writer must retain eligibility until the protected operation is finished"]
 pub(crate) struct RepositoryLedgerCensus {
-    _native_owner_only: UnissuedRepositoryOwnerWitness,
+    native_owner_only: UnissuedRepositoryOwnerWitness,
 }
+
+// This anonymous compile-time contract rejects an inhabited native-owner
+// field even in non-test builds. It constructs no census or repository lease.
+const _: fn(RepositoryLedgerCensus) -> ! = |census| match census.native_owner_only {};
 
 fn refuse(step: &'static str, detail: impl Into<String>) -> UpdateError {
     UpdateError::Baseline {
@@ -168,7 +172,7 @@ pub(crate) fn require_windows_repository_eligibility(
 #[cfg(test)]
 mod tests {
     use super::{
-        RepositoryLedgerCensus, WindowsRepositoryEligibilityRequest, WindowsRepositoryOperation,
+        WindowsRepositoryEligibilityRequest, WindowsRepositoryOperation,
         require_windows_repository_eligibility,
     };
     use crate::{Channel, UpdateError};
@@ -195,13 +199,6 @@ mod tests {
             UpdateError::Baseline { step, .. } => step,
             other => panic!("unexpected repository error: {other}"),
         }
-    }
-
-    #[test]
-    fn repository_witness_has_no_constructible_native_owner_before_t82() {
-        // The empty match compiles only while this field has zero variants.
-        // Replacing it with a unit field makes this test fail to compile.
-        let _proof: fn(RepositoryLedgerCensus) -> ! = |census| match census._native_owner_only {};
     }
 
     #[test]
