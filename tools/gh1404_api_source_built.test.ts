@@ -21,9 +21,9 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
-import receipt from "./gh1404-row6-source-built.receipt.json";
+import receipt from "./fixtures/gh1404_api_source_built.receipt.json";
 
-const repo = resolve(import.meta.dir, "../../../..");
+const repo = resolve(import.meta.dir, "..");
 const api = join(repo, "packages/@keld/api");
 const producer = join(repo, "packages/@keld/kipc/scripts/package-artifacts.ts");
 const originalSource = join(api, "src");
