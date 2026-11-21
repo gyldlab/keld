@@ -119,17 +119,15 @@ fn hide_non_code(source: &str) -> Result<String, &'static str> {
     String::from_utf8(visible).map_err(|_| "invalid D-46 source encoding")
 }
 
-// Exclude the argument tokens of macro invocations: `stringify!(call)` contains
-// valid Rust call tokens but never executes the call. This is deliberately a
-// source-only lexical check, not a macro expander or a control-flow proof.
+// Exclude the argument tokens of macro invocations: `stringify !(call)` contains
+// valid Rust call tokens but never executes the call. Rust allows whitespace
+// and comments before `!`, so conservatively exclude any `!`-delimited group,
+// even a parenthesized unary negation. This can refuse a valid future source
+// edit; it cannot manufacture a positive effect proof.
 fn hide_macro_token_trees(visible: &mut [u8]) -> Result<(), &'static str> {
     let mut at = 0;
     while at < visible.len() {
-        if visible[at] != b'!'
-            || at == 0
-            || !(visible[at - 1].is_ascii_alphanumeric()
-                || matches!(visible[at - 1], b'_' | b']' | b')'))
-        {
+        if visible[at] != b'!' {
             at += 1;
             continue;
         }
@@ -381,6 +379,16 @@ fn single_fault_permit_mutations_fail_before_a_native_issuer_exists() {
             "durable fence replaced with inert stringify brackets",
             "self.issuer.require_durable_creation_armed()?;",
             "let _ = stringify![self.issuer.require_durable_creation_armed()?;];",
+        ),
+        (
+            "durable fence replaced with whitespace-bang nested stringify",
+            "self.issuer.require_durable_creation_armed()?;",
+            "let _ = stringify ! ([{ self.issuer.require_durable_creation_armed()?; }]);",
+        ),
+        (
+            "durable fence replaced with comment-gap stringify",
+            "self.issuer.require_durable_creation_armed()?;",
+            "let _ = stringify /* inert macro */ ! { self.issuer.require_durable_creation_armed()?; };",
         ),
         (
             "durable fence replaced with inert block comment",
