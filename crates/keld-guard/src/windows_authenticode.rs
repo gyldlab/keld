@@ -1241,6 +1241,9 @@ mod tests {
 
     mod d45_host_handle_alias;
     mod d45_native_chain_oracle;
+    mod d45_source_contract;
+    mod d45_source_lex;
+    mod d45_source_mutations;
 
     /// One isolated trust-image fixture directory under the system temporary directory.
     struct FixtureDirectory(PathBuf);
