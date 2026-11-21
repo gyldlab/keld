@@ -4,7 +4,7 @@
 // tests pin the narrower operations that WindowsFS currently permits; they do
 // not mint a repository writer, perform retirement or qualify D90's census.
 
-use super::super::{RecordSlot, publish_new};
+use super::super::{RecordSlot, publish_new, replace_record_slot};
 use super::support::retained_directory;
 use std::fs;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
@@ -93,6 +93,47 @@ fn absent_publication_never_replaces_existing_d64_or_d68_record() {
         assert_eq!(
             fs::read(&control).expect("successful control target remains intact"),
             b"control record"
+        );
+    }
+}
+
+/// A D64 journal or D68 pointer is a retained repository record, never the
+/// generated temporary sibling accepted by the activation replacement API.
+///
+/// Negative control: removing the generated-source check in
+/// `replace_record_slot` permits the native rename to consume one of these
+/// records and replace the independently planted activation slot.
+#[test]
+fn repository_records_cannot_be_activation_replacement_sources() {
+    for (namespace, repository_leaf) in [
+        ("admissions", format!("{}.json", "2a".repeat(32))),
+        ("repository", "pending-operation.json".to_owned()),
+    ] {
+        let fixture = tempfile::tempdir().expect("isolated repository record fixture");
+        let directory = fixture.path().join(namespace);
+        fs::create_dir(&directory).expect("isolated retained directory");
+        let parent = retained_directory(&directory);
+        let repository_record = directory.join(&repository_leaf);
+        let activation_record = directory.join(RecordSlot::Journal.leaf());
+        fs::write(&repository_record, b"frozen repository evidence")
+            .expect("persist original D64 or D68 evidence");
+        fs::write(&activation_record, b"unrelated activation state")
+            .expect("persist independent target");
+
+        let refused = replace_record_slot(&parent, &repository_leaf, RecordSlot::Journal)
+            .expect_err("D64/D68 cannot be a prepared activation replacement sibling");
+        assert_eq!(
+            refused.kind(),
+            std::io::ErrorKind::Unsupported,
+            "reject the foreign source type before any native rename"
+        );
+        assert_eq!(
+            fs::read(&repository_record).expect("retained D64/D68 evidence"),
+            b"frozen repository evidence"
+        );
+        assert_eq!(
+            fs::read(&activation_record).expect("unmodified activation slot"),
+            b"unrelated activation state"
         );
     }
 }
