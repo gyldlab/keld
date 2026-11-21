@@ -181,6 +181,7 @@ fn verify_foreign_native_chain(
             refusal.detail(),
             "the verified Authenticode signature has no Keld app-id description"
                 | "the verified signature has no authenticated Keld app-id attribute"
+                | "the authenticated Authenticode description has no program name"
         ),
         "foreign signer must fail at the authenticated Keld app-ID boundary: {refusal}"
     );
