@@ -25,11 +25,10 @@ mod initial_admission;
 // installation permission, or authenticated OS observation.
 #[cfg(windows)]
 pub(crate) use initial_admission::{
-    AdmissionInspection, InitialAdmissionPhase, InitialAdmissionRecord,
-    PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor,
-    decode_initial_admission_record, decode_pending_repository_operation,
-    encode_initial_admission_record, encode_pending_repository_operation,
-    inspect_initial_admission,
+    AdmissionInspection, InitialAdmissionPhase, InitialAdmissionRecord, PendingOperationKind,
+    PendingRepositoryOperation, RepositoryAnchor, decode_initial_admission_record,
+    decode_pending_repository_operation, encode_initial_admission_record,
+    encode_pending_repository_operation, inspect_initial_admission,
 };
 
 // KEL-270 D-23 contains only canonical metadata *record bytes*.
