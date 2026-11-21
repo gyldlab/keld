@@ -79,6 +79,22 @@ fn absent_native_and_signed_policy_evidence_always_refuse() {
 }
 
 #[test]
+fn separately_widened_policy_arrays_without_native_and_dwire_producers_never_grant() {
+    // A caller could try to add a foreign root to a separately supplied array
+    // while keeping the signed issuer bytes unchanged. Production cannot build
+    // this private policy type at all; a fabricated test-only value with an
+    // added root must still be refused when native evidence is unavailable.
+    let digest = sha256(POLICY_BYTES);
+    let mut unbound = policy(&digest, WindowsD45HostRole::Ordinary);
+    let widened = [ROOTS[0], ROOTS[1], OTHER_ROOTS[0]];
+    unbound.source_issuer.root_certificate_hashes = &widened;
+    let eku = [CODE_SIGNING_OID, PUBLIC_TRUST_OID, APP_PROFILE];
+    assert!(rejection(Some(&unbound), None).contains("native WinTrust issuer"));
+    // A separate list without an authenticated D-WIRE object is also refused.
+    assert!(rejection(None, Some(&signer(&eku))).contains("policy is unavailable"));
+}
+
+#[test]
 fn exact_role_issuer_cohorts_agree_as_data_only() {
     // A synthetic logical pass cannot construct Guard's verified image or an
     // Update permission. It only proves the independent role predicate.

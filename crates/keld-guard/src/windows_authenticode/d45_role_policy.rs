@@ -19,51 +19,53 @@ const MAX_ISSUER_POLICY_BYTES: usize = 65_536;
 
 /// The operation selected by an authenticated owner, never by the incoming Host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum WindowsD45HostRole {
+enum WindowsD45HostRole {
     Ordinary,
     DedicatedRecovery,
 }
 
 /// Canonical issuer-policy bytes and its *independent* signed Host digest.
-/// D-WIRE must validate the closed JSON and bind these rows to D-9 metadata;
-/// this comparison cannot accept a caller-created policy as authenticated.
+/// D-WIRE must validate the closed JSON and bind these rows to D-9 metadata.
+/// All fields are private, and no production constructor exists until that
+/// authenticated typed decoder can create them together. In particular, a
+/// caller cannot widen root/issuer membership arrays under unchanged bytes.
 #[derive(Debug)]
-pub(super) struct WindowsD45IssuerPolicy<'a> {
-    pub(super) bytes: &'a [u8],
-    pub(super) signed_digest: &'a [u8; 32],
-    pub(super) root_certificate_hashes: &'a [[u8; 32]],
-    pub(super) leaf_issuer_spki_hashes: &'a [[u8; 32]],
+struct WindowsD45IssuerPolicy<'a> {
+    bytes: &'a [u8],
+    signed_digest: &'a [u8; 32],
+    root_certificate_hashes: &'a [[u8; 32]],
+    leaf_issuer_spki_hashes: &'a [[u8; 32]],
 }
 
 /// The commissioned exact operation-policy cohort. All these fields must come
 /// from authenticated source, destination and issuer-policy records, not from
 /// a candidate's self-asserted profile or a request.
 #[derive(Debug)]
-pub(super) struct WindowsD45ProfilePolicy<'a> {
-    pub(super) role: WindowsD45HostRole,
-    pub(super) app_id: &'a str,
-    pub(super) application_profile_oid: &'a str,
-    pub(super) source_recovery_profile_oid: &'a str,
-    pub(super) destination_recovery_profile_oid: &'a str,
-    pub(super) source_issuer: WindowsD45IssuerPolicy<'a>,
-    pub(super) destination_issuer: WindowsD45IssuerPolicy<'a>,
+struct WindowsD45ProfilePolicy<'a> {
+    role: WindowsD45HostRole,
+    app_id: &'a str,
+    application_profile_oid: &'a str,
+    source_recovery_profile_oid: &'a str,
+    destination_recovery_profile_oid: &'a str,
+    source_issuer: WindowsD45IssuerPolicy<'a>,
+    destination_issuer: WindowsD45IssuerPolicy<'a>,
 }
 
 /// Observations to be issued only by Guard's future `WinTrust` leaf and chain
 /// decoder while the verified provider state remains live. No arbitrary public
 /// Boolean for "`WinTrust` succeeded" or "profile valid" is admitted.
 #[derive(Debug)]
-pub(super) struct WindowsD45NativeSignerFacts<'a> {
-    pub(super) signed_app_id: &'a str,
-    pub(super) leaf_eku_oids: &'a [&'a str],
-    pub(super) root_certificate_sha256: [u8; 32],
-    pub(super) leaf_issuer_spki_sha256: [u8; 32],
+struct WindowsD45NativeSignerFacts<'a> {
+    signed_app_id: &'a str,
+    leaf_eku_oids: &'a [&'a str],
+    root_certificate_sha256: [u8; 32],
+    leaf_issuer_spki_sha256: [u8; 32],
 }
 
 /// D-45 pure comparison result. Cannot create `VerifiedWindowsImage` or a D-46
 /// effect permit. No field is exported or usable as signer authority.
 #[must_use = "policy data consistency alone is never signer authority"]
-pub(super) struct WindowsD45RolePolicyMatch {
+struct WindowsD45RolePolicyMatch {
     _non_authority: (),
 }
 
@@ -108,7 +110,7 @@ fn require_issuer(
 /// Missing native evidence or authenticated D-WIRE facts always refuses. A
 /// result cannot be used by Guard's existing legacy verify or KEL-53 writer:
 /// no native producer, public constructor or privilege conversion exists.
-pub(super) fn require_d45_issuer_profile_role(
+fn require_d45_issuer_profile_role(
     policy: Option<&WindowsD45ProfilePolicy<'_>>,
     native: Option<&WindowsD45NativeSignerFacts<'_>>,
 ) -> Result<WindowsD45RolePolicyMatch, WindowsAuthenticodeError> {
