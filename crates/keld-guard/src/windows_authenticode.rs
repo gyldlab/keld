@@ -24,9 +24,10 @@ use windows_sys::Win32::Security::Cryptography::{
 use windows_sys::Win32::Security::WinTrust::{
     CRYPT_PROVIDER_SGNR, SPC_SP_OPUS_INFO, SPC_SP_OPUS_INFO_OBJID, SPC_SP_OPUS_INFO_STRUCT,
     WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
-    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CHOICE_FILE,
-    WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
-    WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
+    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CACHE_ONLY_URL_RETRIEVAL,
+    WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOCATION_CHECK_NONE,
+    WTD_REVOKE_NONE, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+    WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
     WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -70,8 +71,10 @@ impl WindowsAuthenticodeImage {
         Ok(Self { path, image })
     }
 
-    /// Verifies the pinned image once and binds its authenticated publisher and app id
-    /// to the same open handle.
+    /// First checks the pinned image locally with cache-only, no-revocation
+    /// `WinVerifyTrust` flags. Then independently verifies chain revocation and
+    /// binds the same signed publisher and app id to the same open handle.
+    /// Neither the local preflight nor a cache hit grants caller authority.
     ///
     /// Any `WinTrust` state it creates is closed, or its close failure reported, before
     /// it returns. A refused image's handle is closed with it.
@@ -231,7 +234,7 @@ fn verified_windows_identity_from_image(
         pPolicyCallbackData: std::ptr::null_mut(),
         pSIPClientData: std::ptr::null_mut(),
         dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_WHOLECHAIN,
+        fdwRevocationChecks: WTD_REVOKE_NONE,
         dwUnionChoice: WTD_CHOICE_FILE,
         Anonymous: WINTRUST_DATA_0 {
             pFile: &raw mut file_info,
@@ -239,11 +242,78 @@ fn verified_windows_identity_from_image(
         dwStateAction: WTD_STATEACTION_VERIFY,
         hWVTStateData: std::ptr::null_mut(),
         pwszURLReference: std::ptr::null_mut(),
-        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        // D-45 offline preflight: 0x0010 | 0x1000, with no network retrieval.
+        dwProvFlags: WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL,
         dwUIContext: WTD_UICONTEXT_EXECUTE,
         pSignatureSettings: &raw mut signature_settings,
     };
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    // First authenticate the local signature, signer count and bounded identity
+    // without any URL retrieval. Neither this observation nor a cached chain
+    // supplies revocation clearance or installation authority.
+    // SAFETY: the exact retained read-only hFile, NUL-terminated descriptive
+    // pathname, signature settings, and WinTrust input remain live until CLOSE.
+    let preflight_status = unsafe {
+        WinVerifyTrust(
+            std::ptr::null_mut(),
+            &raw mut action,
+            (&raw mut trust_data).cast(),
+        )
+    };
+    let preflight_result = if preflight_status == 0 {
+        validate_windows_signature_cardinality(
+            signature_settings.cSecondarySigs,
+            signature_settings.dwVerifiedSigIndex,
+        )
+        .and_then(|()| windows_identity_from_verified_trust_state(&trust_data))
+    } else {
+        Err(windows_identity_error(
+            format!(
+                "WinVerifyTrust rejected the current executable with status 0x{:08x} during the cache-only preflight",
+                u32::from_ne_bytes(preflight_status.to_ne_bytes())
+            ),
+            "Install a package signed by a locally trusted Authenticode publisher; do not bypass signature verification.",
+        ))
+    };
+    // A VERIFY failure may still allocate provider state. Close any such state
+    // before reporting either the primary refusal or a cleanup failure.
+    let preflight_close_result = if trust_data.hWVTStateData.is_null() {
+        Ok(())
+    } else {
+        trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
+        // SAFETY: this closes the state from the preceding VERIFY while the
+        // same action, hFile, path, and signature settings remain live.
+        let status = unsafe {
+            WinVerifyTrust(
+                std::ptr::null_mut(),
+                &raw mut action,
+                (&raw mut trust_data).cast(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(windows_trust_close_error(status))
+        }
+    };
+    let preflight_identity = match (preflight_result, preflight_close_result) {
+        (Ok(identity), Ok(())) => identity,
+        (Ok(_), Err(cleanup)) => return Err(cleanup),
+        (Err(primary), Ok(())) => return Err(primary),
+        (Err(primary), Err(cleanup)) => return Err(primary.with_close_failure(cleanup)),
+    };
+
+    // The preflight has no public constructor or authority conversion. Run the
+    // original revocation-checked policy independently against this same hFile.
+    // Reinitialize mutable provider output fields and state after CLOSE.
+    signature_settings.dwIndex = 0;
+    signature_settings.dwFlags = WSS_GET_SECONDARY_SIG_COUNT;
+    signature_settings.cSecondarySigs = 0;
+    signature_settings.dwVerifiedSigIndex = 0;
+    trust_data.dwStateAction = WTD_STATEACTION_VERIFY;
+    trust_data.hWVTStateData = std::ptr::null_mut();
+    trust_data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    trust_data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
     // SAFETY: `file_info`, its NUL-terminated path, the borrowed open trust-image
     // handle, and `signature_settings` remain live and unmoved with `trust_data`
     // until the matching CLOSE call. Other optional pointers are null and the selected
@@ -286,7 +356,17 @@ fn verified_windows_identity_from_image(
         signature_settings.cSecondarySigs,
         signature_settings.dwVerifiedSigIndex,
     )
-    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data));
+    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data))
+    .and_then(|identity| {
+        if identity == preflight_identity {
+            Ok(identity)
+        } else {
+            Err(windows_identity_error(
+                "the signed publisher or app identity changed between local preflight and full verification",
+                "Restore the signed Host image and restart verification from the retained file.",
+            ))
+        }
+    });
     trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
     // SAFETY: this is the mandatory CLOSE for the successful VERIFY call;
     // action/data storage and every referenced input remain live here.
@@ -629,6 +709,8 @@ mod tests {
 
     use super::*;
 
+    mod d45_host_handle_alias;
+
     /// One isolated trust-image fixture directory under the system temporary directory.
     struct FixtureDirectory(PathBuf);
 
@@ -716,6 +798,46 @@ mod tests {
         );
         drop(image);
         fs::rename(&image_path, &moved).expect("a released image can move");
+    }
+
+    #[test]
+    fn d45_host_path_copy_substitution_waits_for_image_handle_release() {
+        use std::os::windows::fs::FileExt as _;
+
+        let directory = FixtureDirectory::new("d45-host-copy-substitution");
+        let host_path = directory.path().join("keld-host.exe");
+        let foreign_path = directory.path().join("foreign-host.exe");
+        let original = b"original host image: unsigned custody fixture";
+        let foreign = b"foreign host image: unsigned custody fixture";
+        fs::write(&host_path, original).expect("create the original Host fixture");
+        fs::write(&foreign_path, foreign).expect("create the foreign Host fixture");
+
+        let pinned = WindowsAuthenticodeImage::open(&host_path)
+            .expect("open the original Host image with Guard's production source owner");
+        let error = fs::copy(&foreign_path, &host_path)
+            .expect_err("a foreign image cannot replace a pinned Host pathname");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(32),
+            "Windows must refuse foreign byte replacement through the pinned source"
+        );
+
+        let mut observed = vec![0; original.len()];
+        let bytes_read = pinned
+            .image
+            .seek_read(&mut observed, 0)
+            .expect("read from the retained original image handle");
+        assert_eq!(bytes_read, original.len());
+        assert_eq!(&observed[..], &original[..]);
+        assert_eq!(fs::read(&host_path).unwrap(), &original[..]);
+        assert_eq!(fs::read(&foreign_path).unwrap(), &foreign[..]);
+
+        drop(pinned);
+        assert_eq!(
+            fs::copy(&foreign_path, &host_path).expect("replace the Host path after release"),
+            u64::try_from(foreign.len()).unwrap()
+        );
+        assert_eq!(fs::read(&host_path).unwrap(), &foreign[..]);
     }
 
     #[test]
