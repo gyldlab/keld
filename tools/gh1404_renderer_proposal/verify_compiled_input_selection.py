@@ -2,6 +2,7 @@
 """Pinned original Ant source-input proof. Never approves a compiled release."""
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -61,10 +62,37 @@ def git_blob(data):
 
 
 def physical(path):
-    """No-follow bounded physical read plus path/FD identity recheck."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
-                 getattr(os, "O_CLOEXEC", 0))
-    try:
+    """Read one regular inode through a no-follow walk of every path component.
+
+    Leaf-only O_NOFOLLOW is insufficient: a swapped ancestor directory can
+    otherwise redirect a byte-identical source outside the selected root.
+    Keep the directory handles alive and rewalk the full name before success.
+    """
+    path = Path(os.path.abspath(path))
+    require(path.is_absolute() and path.name not in ("", ".", ".."),
+            "unsafe physical input path")
+    directory_flags = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                       getattr(os, "O_CLOEXEC", 0))
+    file_flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
+                  getattr(os, "O_CLOEXEC", 0))
+    require(bool(os.O_DIRECTORY and os.O_NOFOLLOW), "no-follow filesystem required")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mode,
+                info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
+
+    with ExitStack() as stack:
+        root_fd = os.open(path.anchor, directory_flags)
+        stack.callback(os.close, root_fd)
+        parent_fd = root_fd
+        retained_directories = []
+        for part in path.parts[1:-1]:
+            opened = os.open(part, directory_flags, dir_fd=parent_fd)
+            stack.callback(os.close, opened)
+            retained_directories.append(opened)
+            parent_fd = opened
+        fd = os.open(path.name, file_flags, dir_fd=parent_fd)
+        stack.callback(os.close, fd)
         start = os.fstat(fd)
         require(stat.S_ISREG(start.st_mode) and start.st_nlink == 1 and
                 0 < start.st_size <= 8 * 1024 * 1024, "unsafe source inode: " + path.name)
@@ -74,14 +102,26 @@ def physical(path):
             if not part:
                 break
             data.extend(part)
-        identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
-                                 info.st_mode, info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
-        require(len(data) == start.st_size and
-                identity(start) == identity(os.fstat(fd)) == identity(os.lstat(path)),
+        require(len(data) == start.st_size and identity(start) == identity(os.fstat(fd)),
+                "source path or content changed while reading: " + path.name)
+
+        # The second walk starts at the original anchored root, not at a
+        # retained parent which might have been renamed in the meantime.
+        live_parent = root_fd
+        for part, retained in zip(path.parts[1:-1], retained_directories):
+            live_dir = os.open(part, directory_flags, dir_fd=live_parent)
+            stack.callback(os.close, live_dir)
+            pinned_stat, live_stat = os.fstat(retained), os.fstat(live_dir)
+            require((pinned_stat.st_dev, pinned_stat.st_ino) ==
+                    (live_stat.st_dev, live_stat.st_ino),
+                    "source parent directory changed: " + path.name)
+            live_parent = live_dir
+        live_fd = os.open(path.name, file_flags, dir_fd=live_parent)
+        stack.callback(os.close, live_fd)
+        require(identity(start) == identity(os.fstat(live_fd)) and
+                identity(start) == identity(os.fstat(fd)),
                 "source path or content changed while reading: " + path.name)
         return bytes(data)
-    finally:
-        os.close(fd)
 
 
 def pinned(root, file):
@@ -194,7 +234,13 @@ def inspect(inputs, staged, original, *, candidate_precompiled=None, require_com
         ordered.update(str(index).encode() + b"\0" + path.encode() + b"\0" +
                        bytes.fromhex(chosen) + b"\0")
     if candidate_precompiled is not None:
-        candidate = physical(Path(candidate_precompiled))
+        try:
+            candidate = physical(Path(candidate_precompiled))
+        except OSError as error:
+            # An optional compiled candidate is never self-authorizing. In
+            # particular, do not resolve an untrusted /var or source-parent
+            # symlink just to print a more specific comparison result.
+            raise Refusal("COMPILED_PROVENANCE_UNQUALIFIED: unsafe candidate input name") from error
         if sha(candidate) == PINS["drawio-mxgraph-COMPILED-ORIGINAL-mxClient.js"]:
             raise Refusal("PRISTINE_PRECOMPILED_REUSED: raw G1 leaves never reach the Ant input")
         raise Refusal("COMPILED_PROVENANCE_UNQUALIFIED: missing physical 131-source precompile, "

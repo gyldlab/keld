@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -176,6 +178,58 @@ class SourceToCompiledInputTests(unittest.TestCase):
             (OSError, check.Refusal), "symbolic links|symlink|unsafe|source"
         ):
             self.audit(staged=staged)
+
+    def test_symlinked_stage_parent_with_identical_bytes_refuses(self):
+        staged = self.copy_stage()
+        parent = staged / "src"
+        outside = Path(self.temp.name) / "foreign-stage-src"
+        parent.rename(outside)
+        parent.symlink_to(outside, target_is_directory=True)
+        # The two JS files remain byte-identical, but their namespace is no
+        # longer anchored under the selected source-stage root.
+        with self.assertRaises((OSError, check.Refusal)):
+            self.audit(staged=staged)
+
+    def test_symlinked_original_parent_with_identical_bytes_refuses(self):
+        original = self.copy_original()
+        parent = original / "src"
+        outside = Path(self.temp.name) / "foreign-original-src"
+        parent.rename(outside)
+        parent.symlink_to(outside, target_is_directory=True)
+        # Do not claim either original leaf is physically selected merely
+        # because a foreign directory contains the matching pinned bytes.
+        with self.assertRaises((OSError, check.Refusal)):
+            check.inspect(self.inputs, self.staged, original)
+
+    def test_cli_refuses_symlinked_stage_parent_without_success_receipt(self):
+        staged = self.copy_stage()
+        parent = staged / "src"
+        outside = Path(self.temp.name) / "redirected-stage-src"
+        parent.rename(outside)
+        parent.symlink_to(outside, target_is_directory=True)
+        result = subprocess.run(
+            [sys.executable, str(TOOL), "--owner-inputs", str(self.inputs),
+             "--g1-stage", str(staged), "--pristine-two-source-root", str(self.original)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("GH1404_G1_COMPILED_INPUT_REFUSED", result.stderr)
+
+    def test_cli_refuses_symlinked_original_parent_without_success_receipt(self):
+        original = self.copy_original()
+        parent = original / "src"
+        outside = Path(self.temp.name) / "redirected-original-src"
+        parent.rename(outside)
+        parent.symlink_to(outside, target_is_directory=True)
+        result = subprocess.run(
+            [sys.executable, str(TOOL), "--owner-inputs", str(self.inputs),
+             "--g1-stage", str(self.staged), "--pristine-two-source-root", str(original)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("GH1404_G1_COMPILED_INPUT_REFUSED", result.stderr)
 
     def test_missing_unapproved_source_toolchain_cannot_be_minted_by_two_raw_patches(self):
         result = self.audit()
