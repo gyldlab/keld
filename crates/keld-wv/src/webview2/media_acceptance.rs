@@ -1560,7 +1560,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
     /// the fixture's existing non-mutating apartment query and discloses no
     /// thread ID, process ID, HRESULT, directory or profile identity.
     fn gh814_successor_apartment_phase(
-        observation: windows::core::Result<(
+        observation: &windows::core::Result<(
             windows::Win32::System::Com::APTTYPE,
             windows::Win32::System::Com::APTTYPEQUALIFIER,
         )>,
@@ -1569,8 +1569,8 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
 
         match observation {
             Ok((kind, qualifier))
-                if matches!(kind, APTTYPE_STA | APTTYPE_MAINSTA)
-                    && qualifier == APTTYPEQUALIFIER_NONE =>
+                if matches!(*kind, APTTYPE_STA | APTTYPE_MAINSTA)
+                    && *qualifier == APTTYPEQUALIFIER_NONE =>
             {
                 "successor-apartment-sta-observed"
             }
@@ -1587,16 +1587,16 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
 
         for kind in [APTTYPE_STA, APTTYPE_MAINSTA] {
             assert_eq!(
-                gh814_successor_apartment_phase(Ok((kind, APTTYPEQUALIFIER_NONE))),
+                gh814_successor_apartment_phase(&Ok((kind, APTTYPEQUALIFIER_NONE))),
                 "successor-apartment-sta-observed"
             );
         }
         assert_eq!(
-            gh814_successor_apartment_phase(Ok((APTTYPE_MTA, APTTYPEQUALIFIER_NONE))),
+            gh814_successor_apartment_phase(&Ok((APTTYPE_MTA, APTTYPEQUALIFIER_NONE))),
             "successor-apartment-other-observed"
         );
         assert_eq!(
-            gh814_successor_apartment_phase(Err(windows::core::Error::from(
+            gh814_successor_apartment_phase(&Err(windows::core::Error::from(
                 windows::Win32::Foundation::E_POINTER,
             ))),
             "successor-apartment-query-failed"
@@ -1681,7 +1681,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             // controller-ready. Sample the existing COM apartment observer
             // at that exact boundary, before the original launch deadline.
             // This is a point observation, not proof of later callback delivery.
-            observe_com_phase(gh814_successor_apartment_phase(apartment()));
+            observe_com_phase(gh814_successor_apartment_phase(&apartment()));
             observe_com_phase("successor-create-start");
             let id = engine.create(&blank_spec())?;
             observe_com_phase("successor-create-ready");
