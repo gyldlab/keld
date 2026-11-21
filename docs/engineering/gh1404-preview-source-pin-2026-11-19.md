@@ -18,10 +18,12 @@ The packager must check out commit **b9eb5dba583d5075fdb5e43aa1e4ef255be9ac86**,
 
 For a new task-owned checkout, use these commands with an unused, privately owned destination:
 
-    git fetch origin
-    git worktree add --detach /path/to/task-owned-source b9eb5dba583d5075fdb5e43aa1e4ef255be9ac86
-    git -C /path/to/task-owned-source rev-parse HEAD
-    git -C /path/to/task-owned-source rev-parse HEAD^{tree}
+```sh
+git fetch origin
+git worktree add --detach /path/to/task-owned-source b9eb5dba583d5075fdb5e43aa1e4ef255be9ac86
+git -C /path/to/task-owned-source rev-parse HEAD
+git -C /path/to/task-owned-source rev-parse HEAD^{tree}
+```
 
 The printed SHAs must match the #1576 row.
 
