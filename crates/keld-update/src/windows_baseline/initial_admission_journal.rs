@@ -134,6 +134,109 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         Ok(Some((record, disposition)))
     }
 
+    /// Inspects one exact attempt ID found by D-90's retained-directory census
+    /// after a crash before the D-68 pointer was durably published.
+    ///
+    /// The caller must still prove full directory membership and the physical
+    /// absence of installation effects. A valid admitted orphan alone never
+    /// authorizes deletion, re-enrollment or an automatic terminal abort.
+    pub(super) fn inspect_known_unpointed_attempt(
+        &self,
+        attempt: &[u8; 32],
+    ) -> Result<(InitialAdmissionRecord, AdmissionInspection), UpdateError> {
+        if self.read_pending()?.is_some() {
+            return Err(error(
+                "unpointed admission diagnosis",
+                "a repository pending pointer exists; use exact pointed recovery",
+            ));
+        }
+        let record = self.read_attempt(attempt)?.ok_or_else(|| {
+            error(
+                "unpointed admission diagnosis",
+                "D-90 named an absent admission journal",
+            )
+        })?;
+        let disposition = inspect_initial_admission(self.anchor, Some(&record), None, &[])?;
+        if !matches!(
+            disposition,
+            AdmissionInspection::OrphanAdmittedNeedsIndependentNoEffectProof
+                | AdmissionInspection::RetainedTerminalDiagnostic
+        ) {
+            return Err(error(
+                "unpointed admission diagnosis",
+                "effectful or ambiguous journal has no D-68 pointer",
+            ));
+        }
+        Ok((record, disposition))
+    }
+
+    /// Rechecks a complete, already persisted D-64 journal and D-68 pointer.
+    ///
+    /// This is an exact native readback boundary used by the existing journal
+    /// writer and by the future D-46 issuer before its protected effect. It
+    /// never issues a permit or converts a diagnostic into effect authority.
+    fn require_pointed_phase(
+        &self,
+        expected: &InitialAdmissionRecord,
+        phase: InitialAdmissionPhase,
+    ) -> Result<(), UpdateError> {
+        if expected.phase != phase {
+            return Err(error(
+                "initial admission phase readback",
+                "caller expected the wrong journal phase",
+            ));
+        }
+        let (observed, disposition) = self.inspect_pointed_attempt()?.ok_or_else(|| {
+            error(
+                "initial admission phase readback",
+                "no pending D-68 operation owns the expected attempt",
+            )
+        })?;
+        if observed != *expected {
+            return Err(error(
+                "initial admission phase readback",
+                "journal or pending attempt differs from the exact frozen input",
+            ));
+        }
+        let expected_disposition = match phase {
+            InitialAdmissionPhase::Admitted => AdmissionInspection::AdmittedUnarmed,
+            InitialAdmissionPhase::CreationArmed => {
+                AdmissionInspection::CreationArmedOperatorDispositionRequired
+            }
+            InitialAdmissionPhase::BootstrapOwned | InitialAdmissionPhase::ProvenancePublished => {
+                AdmissionInspection::BoundRecoveryRequired
+            }
+            InitialAdmissionPhase::Complete | InitialAdmissionPhase::Aborted => {
+                AdmissionInspection::TerminalCoherenceProofRequired
+            }
+        };
+        if disposition != expected_disposition {
+            return Err(error(
+                "initial admission phase readback",
+                "journal state is not coherent with the pending pointer",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Verifies that D-46's exact CreationArmed journal was durably reread
+    /// before the first installation-specific native effect.
+    pub(super) fn require_creation_armed(
+        &self,
+        expected: &InitialAdmissionRecord,
+    ) -> Result<(), UpdateError> {
+        self.require_pointed_phase(expected, InitialAdmissionPhase::CreationArmed)
+    }
+
+    /// Verifies an exact BootstrapOwned journal under the still-retained
+    /// repository and bootstrap leases before the metadata lease may release.
+    pub(super) fn require_bootstrap_owned(
+        &self,
+        expected: &InitialAdmissionRecord,
+    ) -> Result<(), UpdateError> {
+        self.require_pointed_phase(expected, InitialAdmissionPhase::BootstrapOwned)
+    }
+
     /// Publishes and rereads `admitted` after the parent KEL-53 owner has proved
     /// full ledger vacancy, complete D-9 evidence, and an exact D-46 admission.
     /// The D-46 owner decides when its one-shot permit is consumed; this record
@@ -173,10 +276,13 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
             &bytes,
             self.profile,
         )?;
-        if self.read_attempt(&record.attempt_id)?.as_ref() != Some(&record) {
+        let (observed, disposition) = self.inspect_known_unpointed_attempt(&record.attempt_id)?;
+        if observed != record
+            || disposition != AdmissionInspection::OrphanAdmittedNeedsIndependentNoEffectProof
+        {
             return Err(error(
                 "initial journal readback",
-                "published journal differs",
+                "published unpointed admission differs from its durable D-64 record",
             ));
         }
         Ok(record)
@@ -223,13 +329,7 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         };
         let bytes = encode_pending_repository_operation(&pointer)?;
         publish_new_record(self.repository, PENDING_OPERATION, &bytes, self.profile)?;
-        if self.read_pending()?.as_ref() != Some(&pointer) {
-            return Err(error(
-                "repository pending readback",
-                "published pointer differs",
-            ));
-        }
-        Ok(())
+        self.require_pointed_phase(record, InitialAdmissionPhase::Admitted)
     }
 }
 
