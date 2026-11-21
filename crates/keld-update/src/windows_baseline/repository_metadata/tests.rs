@@ -11,6 +11,7 @@ use cap_std::fs::Dir;
 use super::{
     require_empty_generation_namespace, require_established_ready_generation,
     require_only_genesis_and_successor, require_only_genesis_generation,
+    require_pending_generation_namespace,
 };
 use crate::UpdateError;
 use crate::records::decode_metadata_generation;
@@ -46,6 +47,66 @@ fn absent_anchor_must_not_overlook_non_genesis_or_interrupted_generation() {
             fs::read(&orphan).expect("retain the exact orphan for operator diagnosis"),
             b"interrupted-generation-residue",
         );
+    }
+}
+
+#[test]
+fn pending_enrollment_retains_exact_empty_or_genesis_crash_cuts() {
+    // A pending anchor may precede its first generation or have exactly
+    // genesis 1.json. Current, if published, requires that same genesis.
+    for (genesis_present, has_current) in [(false, false), (true, false), (true, true)] {
+        let fixture = tempfile::tempdir().expect("isolated pending enrollment");
+        if genesis_present {
+            fs::write(fixture.path().join("1.json"), b"unchanged-genesis")
+                .expect("persist original genesis");
+        }
+        let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+            .expect("retain pending generations parent");
+        require_pending_generation_namespace(&retained, has_current)
+            .expect("legitimate pending crash-cut namespace passes only a negative check");
+        if genesis_present {
+            assert_eq!(
+                fs::read(fixture.path().join("1.json")).expect("read original genesis"),
+                b"unchanged-genesis",
+            );
+        }
+    }
+}
+
+#[test]
+fn pending_enrollment_rejects_orphaned_generation_members_without_retirement() {
+    for (names, has_current) in [
+        (&[][..], true),
+        (&["2.json"][..], false),
+        (&["pending-uncommitted"][..], false),
+        (&["1.json", "2.json"][..], false),
+        (&["1.json", "3.json"][..], true),
+        (&["1.json", "pending-leftover"][..], true),
+        (&["1.json", "unknown"][..], false),
+        (&["1.JSON"][..], false),
+        (&["01.json"][..], true),
+    ] {
+        let fixture = tempfile::tempdir().expect("isolated pending generation residue");
+        for &name in names {
+            fs::write(fixture.path().join(name), b"unchanged-pending-member")
+                .expect("persist original crash-cut member");
+        }
+        let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+            .expect("retain original pending directory");
+        assert_eq!(
+            refusal_step(
+                require_pending_generation_namespace(&retained, has_current)
+                    .expect_err("missing or foreign pending generation must refuse")
+            ),
+            "metadata generation residue",
+        );
+        for &name in names {
+            assert_eq!(
+                fs::read(fixture.path().join(name)).expect("retain original evidence"),
+                b"unchanged-pending-member",
+                "refusal must not retire or replace source evidence",
+            );
+        }
     }
 }
 

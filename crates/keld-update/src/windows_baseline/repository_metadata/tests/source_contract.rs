@@ -12,6 +12,7 @@ mod lex;
 const SOURCE: &str = include_str!("../../repository_metadata.rs");
 const EMPTY: &str = "require_empty_generation_namespace(self.generations)?;";
 const GENESIS: &str = "require_only_genesis_generation(self.generations)?;";
+const PENDING: &str = "require_pending_generation_namespace(self.generations, current.is_some())?;";
 const GENESIS_MATCH: &str = "require_only_genesis_generation(self.generations)?,";
 const SUCCESSOR: &str = "require_only_genesis_and_successor(self.generations)?;";
 
@@ -42,12 +43,15 @@ fn inspect_contract(visible: &str) -> Result<(), &'static str> {
     let actual = body(visible, "inspect")?;
     exactly(&actual, EMPTY, 1)?;
     exactly(&actual, GENESIS, 1)?;
+    exactly(&actual, PENDING, 1)?;
     ordered(
         &actual,
         &[
             "None if current.is_none() => {",
             EMPTY,
             "Some(anchor) if anchor.enrollment_state == EnrollmentState::Pending",
+            PENDING,
+            "Ok(NativeMetadataInspection::EnrollmentPending {",
             "Some(anchor) => {",
             GENESIS,
             "Ok(NativeMetadataInspection::Established {",
@@ -145,6 +149,7 @@ fn every_single_d23_guard_removal_goes_red() {
     const SITES: &[(&str, &str)] = &[
         ("inspect", EMPTY),
         ("inspect", GENESIS),
+        ("inspect", PENDING),
         ("publish_pending_anchor", EMPTY),
         ("publish_immutable_generation", EMPTY),
         ("publish_immutable_generation", GENESIS),

@@ -181,6 +181,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 "current or genesis generation exists without an authenticated enrollment anchor",
             )),
             Some(anchor) if anchor.enrollment_state == EnrollmentState::Pending => {
+                // Pending enrollment cannot ignore unreferenced generation
+                // members. This negative check does not mint D-90 authority.
+                require_pending_generation_namespace(self.generations, current.is_some())?;
                 if let Some(current) = &current {
                     let generation = self.require_selected_generation(current)?;
                     if current.sequence != 1
@@ -562,6 +565,45 @@ fn require_empty_generation_namespace(generations: &Dir) -> Result<(), UpdateErr
         Some(Ok(_)) => Err(error(
             "metadata generation residue",
             "a retained generation or pending publication sibling blocks fresh enrollment",
+        )),
+    }
+}
+
+/// Pending enrollment permits only an empty pre-genesis namespace or one
+/// exact genesis leaf. A published Current additionally requires that leaf.
+///
+/// This one-pass retained-parent check refuses unknown or interrupted siblings.
+/// Only D-90's future authenticated repository owner can grant eligibility.
+fn require_pending_generation_namespace(
+    generations: &Dir,
+    has_current: bool,
+) -> Result<(), UpdateError> {
+    let mut entries = generations
+        .entries()
+        .map_err(|cause| error("metadata generation listing", cause))?;
+    let first = match entries.next() {
+        None if !has_current => return Ok(()),
+        None => {
+            return Err(error(
+                "metadata generation residue",
+                "pending current has no genesis generation",
+            ));
+        }
+        Some(Err(cause)) => return Err(error("metadata generation listing", cause)),
+        Some(Ok(entry)) => entry,
+    };
+    if first.file_name().as_os_str() != std::ffi::OsStr::new("1.json") {
+        return Err(error(
+            "metadata generation residue",
+            "pending enrollment has a foreign generation or publication sibling",
+        ));
+    }
+    match entries.next() {
+        None => Ok(()),
+        Some(Err(cause)) => Err(error("metadata generation listing", cause)),
+        Some(Ok(_)) => Err(error(
+            "metadata generation residue",
+            "pending enrollment contains another generation or publication sibling",
         )),
     }
 }
