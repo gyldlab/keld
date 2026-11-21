@@ -19,6 +19,14 @@ pub(crate) const MAX_LOCAL_RECORD_BYTES: usize = 64 * 1024;
 #[cfg(any(windows, test))]
 #[allow(dead_code)]
 mod initial_admission;
+
+// KEL-270 D-23 contains only canonical metadata *record bytes*.
+// T20 owns signed TUF verification; KEL-53 T82 owns protected-native handles,
+// ledger census, writer leases and publication. None are implemented here.
+#[cfg(any(windows, test))]
+#[allow(dead_code)]
+mod metadata_store;
+
 const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";
 const FLOOR_SCHEMA: &str = "keld.version-floor/v1";
