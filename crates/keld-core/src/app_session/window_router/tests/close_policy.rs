@@ -2,7 +2,7 @@
 use super::{Fixture, TestResult, fact, install_successor, reply, snapshot, verdict};
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::link::read_frame;
-use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRequest, WindowResponse};
+use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRef, WindowRequest, WindowResponse};
 use keld_ipc::{CorrelationId, FrameKind, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleResponse};
 use keld_wv::{AppWindowCommand, AppWindowEvent, WebviewId};
 use std::time::Duration;
@@ -291,5 +291,152 @@ fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answe
     reply(&mut fixture, 5, WindowResponse::ReplyApplied)?;
     assert!(fixture.commands.try_recv().is_err());
     fixture.retire_reader(2)?;
+    Ok(())
+}
+
+fn build_session_budget_windows(fixture: &mut Fixture) -> TestResult<Vec<WindowRef>> {
+    let mut windows = Vec::with_capacity(17);
+    for index in 0..17u32 {
+        windows.push(fixture.build(index + 1, index + 100)?);
+    }
+    Ok(windows)
+}
+
+fn admit_aggregate_destroy_calls(fixture: &mut Fixture, windows: &[WindowRef]) -> TestResult {
+    for window_index in 0..16u32 {
+        let window = windows[usize::try_from(window_index)?];
+        for offset in 0..64u32 {
+            let correlation = 10_000 + window_index * 64 + offset;
+            fixture.call(&WindowRequest::Destroy { window }, correlation)?;
+            if offset == 0 {
+                assert_eq!(
+                    fixture.commands.recv_timeout(Duration::from_secs(3))?,
+                    AppWindowCommand::DestroyWindow {
+                        view: WebviewId(window_index + 100),
+                    }
+                );
+            } else {
+                assert!(
+                    fixture.commands.try_recv().is_err(),
+                    "all admitted Destroy calls share one physical teardown"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn request_close_on_budget_target(fixture: &mut Fixture, target: WindowRef) -> TestResult {
+    fixture.call(&WindowRequest::RequestClose { window: target }, 50_001)?;
+    fact(
+        fixture,
+        WindowEvent::CloseRequested {
+            window: target,
+            close_seq: 1,
+        },
+    )?;
+    reply(
+        fixture,
+        50_001,
+        WindowResponse::CloseRequested { close_seq: 1 },
+    )
+}
+
+fn refuse_destroy_and_preserve_close(fixture: &mut Fixture, target: WindowRef) -> TestResult {
+    fixture.call(&WindowRequest::Destroy { window: target }, 50_002)?;
+    fixture.error(50_002, "KELD-CORE-048")?;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "session-cap refusal must not issue a native command"
+    );
+    verdict(fixture, target, 1, CloseVerdict::Veto, 50_003)?;
+    reply(fixture, 50_003, WindowResponse::ReplyApplied)
+}
+
+fn release_first_window_and_reply_accepted_calls(
+    fixture: &mut Fixture,
+    windows: &[WindowRef],
+) -> TestResult {
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowReleased {
+            view: WebviewId(100),
+        })?;
+    fact(fixture, WindowEvent::Destroyed { window: windows[0] })?;
+    for offset in 0..64u32 {
+        reply(fixture, 10_000 + offset, WindowResponse::Destroyed)?;
+    }
+    Ok(())
+}
+
+fn destroy_target_after_release_slot(fixture: &mut Fixture, target: WindowRef) -> TestResult {
+    fixture.call(&WindowRequest::Destroy { window: target }, 50_004)?;
+    assert_eq!(
+        fixture.commands.recv_timeout(Duration::from_secs(3))?,
+        AppWindowCommand::DestroyWindow {
+            view: WebviewId(116),
+        }
+    );
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowReleased {
+            view: WebviewId(116),
+        })?;
+    fact(fixture, WindowEvent::Destroyed { window: target })?;
+    reply(fixture, 50_004, WindowResponse::Destroyed)
+}
+
+fn release_remaining_budget_windows(fixture: &mut Fixture, windows: &[WindowRef]) -> TestResult {
+    for window_index in 1..16u32 {
+        fixture
+            .handle
+            .window_native_event(AppWindowEvent::WindowReleased {
+                view: WebviewId(window_index + 100),
+            })?;
+        fact(
+            fixture,
+            WindowEvent::Destroyed {
+                window: windows[usize::try_from(window_index)?],
+            },
+        )?;
+        if window_index == 15 {
+            let (header, bytes) = read_frame(&mut fixture.peer)?;
+            assert_eq!(
+                (header.kind, header.channel),
+                (FrameKind::Event, LIFECYCLE_CHANNEL)
+            );
+            assert_eq!(
+                decode::<LifecycleEvent>(&bytes)?,
+                LifecycleEvent::LastWindowClosed
+            );
+        }
+        for offset in 0..64u32 {
+            reply(
+                fixture,
+                10_000 + window_index * 64 + offset,
+                WindowResponse::Destroyed,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn session_destroy_budget_refuses_1025th_call_without_effect_and_reuses_release_slot() -> TestResult
+{
+    let mut fixture = Fixture::new(Some(true))?;
+    fixture.subscribe()?;
+    fixture.ready()?;
+    let windows = build_session_budget_windows(&mut fixture)?;
+    admit_aggregate_destroy_calls(&mut fixture, &windows)?;
+
+    let target = windows[16];
+    request_close_on_budget_target(&mut fixture, target)?;
+    refuse_destroy_and_preserve_close(&mut fixture, target)?;
+    release_first_window_and_reply_accepted_calls(&mut fixture, &windows)?;
+    destroy_target_after_release_slot(&mut fixture, target)?;
+    release_remaining_budget_windows(&mut fixture, &windows)?;
+    assert!(fixture.commands.try_recv().is_err());
+    fixture.retire_reader(1)?;
     Ok(())
 }

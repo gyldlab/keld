@@ -6403,6 +6403,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
 - fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
+## KELD-CORE-048
+
+- crate: keld-core
+- message: The Host session has reached its limit of 1,024 outstanding Destroy correlations across all windows
+- fix: Wait for native Released to retire admitted correlations, or retire the owning primary role; do not retry Destroy in a loop while the session budget is exhausted.
+
 ## KELD-UPDATE-001
 
 - crate: keld-update
