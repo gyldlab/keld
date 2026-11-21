@@ -344,17 +344,17 @@ fn accept_control_until_with_host(
             Err(error) => panic!("product control accept failed: {error}"),
         }
         if let Some(child) = child.as_mut()
-            && let Some(status) = child.try_wait().expect("observe early host exit")
+            && let Some(status) = child.try_wait().expect("observe early child exit")
         {
             if let Some(host) = host {
                 fail_with_actual_host_evidence(
                     host,
                     child,
-                    &format!("host exited before control bind: {status}"),
+                    &format!("observed child exited before control bind: {status}"),
                 );
             }
             panic!(
-                "host exited before control bind: {status}\n{}",
+                "observed child exited before control bind: {status}\n{}",
                 exited_child_output(child)
             );
         }
@@ -464,9 +464,9 @@ fn read_control_line_or_host_failure_after_phase(
         result => {
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
-                if let Some(status) = child.try_wait().expect("observe failed host") {
+                if let Some(status) = child.try_wait().expect("observe failed child") {
                     panic!(
-                        "host exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\n{}",
+                        "observed child exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\n{}",
                         child.id(),
                         exited_child_output(child),
                     );
