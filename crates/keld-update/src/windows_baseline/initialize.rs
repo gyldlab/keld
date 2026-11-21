@@ -228,7 +228,7 @@ fn initialize_with_authority(
 
 /// Reobserve the existing v1 mode predicates against the current Windows token.
 ///
-/// This does not bind an exact TokenId or owner SID, supply D-42 worker
+/// This does not bind an exact `TokenId` or owner SID, supply D-42 worker
 /// admission, or grant D-46 v2 authority. It is repeated at KEL-53's first
 /// write boundary so a stale initial mode result cannot bypass a changed
 /// native SYSTEM/non-SYSTEM or UAC mode predicate at creation time.

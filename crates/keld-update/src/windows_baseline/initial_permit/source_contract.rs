@@ -33,6 +33,23 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
             return Err("legacy native mode guard removed or replaced");
         }
     }
+    // Seeing all three guard names does not prove they execute: an earlier
+    // unconditional return would leave those strings intact. Constrain this
+    // small private native helper to its current exhaustive three-way match.
+    let helper_compact = helper.split_whitespace().collect::<String>();
+    const NATIVE_MODE_HELPER: &str = concat!(
+        "fnrequire_native_baseline_authority(authority:BaselineAuthority)->io::Result<()>{",
+        "matchauthority{",
+        "BaselineAuthority::MachineSystem=>keld_guard::require_windows_system_token(),",
+        "BaselineAuthority::PerUser=>keld_guard::require_windows_non_system_token(),",
+        "BaselineAuthority::MachineUac=>{",
+        "keld_guard::require_windows_non_system_token()?;",
+        "keld_guard::require_windows_machine_uac_owner_token()",
+        "}}}",
+    );
+    if helper_compact != NATIVE_MODE_HELPER {
+        return Err("unreviewed native v1 guard control flow");
+    }
     let end = visible[initializer_start..]
         .find("\nmod publication;")
         .ok_or("KEL-53 publication boundary missing")?;
@@ -53,6 +70,51 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
         != 1
     {
         return Err("bootstrap recheck must be exactly one native call");
+    }
+
+    // A mere ordered subsequence is insufficient: an extra FILE_CREATE can
+    // occur before the recheck and still leave all five old anchors present.
+    // This closed source slice permits only the observed read-only operations
+    // from the initial token check through the first native effect. Whitespace,
+    // comments and strings are masked/normalized, but any additional live
+    // statement in this slice fails, regardless of which writer it calls.
+    let compact = initializer.split_whitespace().collect::<String>();
+    const PREFIX_BEFORE_EFFECT: &str = concat!(
+        "token_check(authority).map_err(|cause|error(,cause))?;",
+        "crate::provenance::match_identity(&trust.installation,verified.installation())?;",
+        "letmutretained_source=",
+        "publication::ValidatedBaselineStageSource::open_legacy(verified,archive)?;",
+        "letroots=open_roots(trust,true).map_err(|cause|error(,cause))?;",
+        "require_native_baseline_authority(authority).map_err(|cause|error(,cause))?;",
+    );
+    const PROTECTED_EFFECTS: &[&str] = &[
+        "letmutlock=acquire_bootstrap_lock(&roots)?;",
+        "seed_activation_lock(&roots)?;",
+        "publish_baseline_version(&mutretained_source,&roots,authority,&mutobserve)?;",
+        "seed_baseline_pointers(verified,&roots,&mutobserve)?;",
+        "commit_baseline(&roots,&mutlock,&mutobserve)?;",
+    ];
+    let precheck_start = compact
+        .find("token_check(authority).map_err(|cause|error(,cause))?;")
+        .ok_or("initial native token check missing")?;
+    let first_effect = compact
+        .find(PROTECTED_EFFECTS[0])
+        .ok_or("KEL-53 bootstrap creation missing")?;
+    if compact.get(precheck_start..first_effect) != Some(PREFIX_BEFORE_EFFECT) {
+        return Err("unreviewed statement or effect before native bootstrap recheck");
+    }
+    // The entire initializer is the scope, not just the admitted prefix.
+    // Each real protected call must appear once and in the established order;
+    // a duplicate before the guard cannot be hidden behind its later copy.
+    let mut remaining = &compact[first_effect..];
+    for &effect in PROTECTED_EFFECTS {
+        if compact.matches(effect).count() != 1 {
+            return Err("missing or repeated KEL-53 protected effect");
+        }
+        let offset = remaining
+            .find(effect)
+            .ok_or("KEL-53 protected effect reordered before bootstrap recheck")?;
+        remaining = &remaining[offset + effect.len()..];
     }
     Ok(())
 }
@@ -88,6 +150,21 @@ fn native_effect_recheck_single_fault_mutations_are_refused() {
             "keld_guard::require_windows_machine_uac_owner_token()",
             "Ok(())",
         ),
+        (
+            "native mode helper returns before all checks",
+            "fn require_native_baseline_authority(authority: BaselineAuthority) -> io::Result<()> {\n    match authority {",
+            "fn require_native_baseline_authority(authority: BaselineAuthority) -> io::Result<()> {\n    return Ok(());\n    match authority {",
+        ),
+        (
+            "activation creation replaced with inert quoted call",
+            "seed_activation_lock(&roots)?;",
+            "let _ = \"seed_activation_lock(&roots)?;\";",
+        ),
+        (
+            "activation creation replaced with inert macro tokens",
+            "seed_activation_lock(&roots)?;",
+            "let _ = stringify!(seed_activation_lock(&roots)?;);",
+        ),
     ] {
         assert_eq!(
             LEGACY_INITIALIZER.matches(before).count(),
@@ -100,6 +177,38 @@ fn native_effect_recheck_single_fault_mutations_are_refused() {
             "{label}: missing native first-effect authority was not detected"
         );
     }
+
+    // Worker46's counterexample: the old subsequence check admitted this
+    // additional *real* creation between read-only root admission and the
+    // native guard. No journal/metadata witness can excuse such an effect.
+    let root_open = "let roots =\n        open_roots(trust, true).map_err(|cause| error(\"private scaffold admission\", cause))?;";
+    assert_eq!(LEGACY_INITIALIZER.matches(root_open).count(), 1);
+    let early_effect = LEGACY_INITIALIZER.replacen(
+        root_open,
+        &format!("{root_open}\n    seed_activation_lock(&roots)?;"),
+        1,
+    );
+    assert_eq!(
+        early_effect
+            .matches("seed_activation_lock(&roots)?;")
+            .count(),
+        2
+    );
+    assert!(
+        legacy_effect_authority_contract(&early_effect).is_err(),
+        "an early activation.lock creation must refuse even when the native recheck and later effect still exist"
+    );
+    let unexpected_effect = LEGACY_INITIALIZER.replacen(
+        root_open,
+        &format!(
+            "{root_open}\n    let _ = std::fs::create_dir(trust.installation.install_root.join(\"rogue\"));"
+        ),
+        1,
+    );
+    assert!(
+        legacy_effect_authority_contract(&unexpected_effect).is_err(),
+        "an unlisted filesystem effect before native recheck must refuse"
+    );
 }
 
 // Keep offsets unchanged so the existing method/field slicers operate on
