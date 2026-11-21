@@ -7,9 +7,17 @@
 //! The expected bytes were computed *independently* from a locally installed,
 //! embedded-signed Brave executable on Rushil Windows (2026-11-21):
 //! `Get-AuthenticodeSignature` reported Valid and `SignatureType` Authenticode;
-//! .NET `X509Chain.Build` returned true with exactly three certificates.
-//! Root DER SHA-256 is from `X509Chain.ChainElements[2].Certificate.RawData`.
-//! Leaf issuer SPKI SHA-256 is from `ChainElements[1].Certificate.RawData`,
+//! .NET `X509Chain.Build` returned true with exactly three certificates, while
+//! Windows SDK `signtool verify /pa /all /v` selected FOUR certificates for
+//! the primary signature: Brave -> G4 code-signing CA -> G4 root cross-signed
+//! by Assured ID -> self-signed DigiCert Assured ID Root CA. This native
+//! selected path is different from .NET's shorter self-signed G4 root path.
+//! The expected native root DER SHA-256 is independently computed from the
+//! unmodified `Cert:\LocalMachine\Root` Assured ID certificate `RawData`,
+//! whose SHA-1 thumbprint `0563B8630D62D75ABBC8AB1E4BDFB5A899B24D43`
+//! matches the terminal root identified by `signtool`.
+//! The immediate leaf issuer SPKI SHA-256 is from
+//! `X509Chain.ChainElements[1].Certificate.RawData`,
 //! decoded and re-encoded using Python cryptography 50.0.2 (also checked by
 //! independent OpenSSL). These facts are *certificate bytes*, not approval.
 //! Git for Windows uses an unrelated four-element chain. The locally installed
@@ -31,8 +39,8 @@ const BRAVE_IMAGE_SHA256: [u8; 32] = [
 ];
 
 const BRAVE_TRUST_ROOT_DER_SHA256: [u8; 32] = [
-    0x55, 0x2f, 0x7b, 0xdc, 0xf1, 0xa7, 0xaf, 0x9e, 0x6c, 0xe6, 0x72, 0x01, 0x7f, 0x4f, 0x12, 0xab,
-    0xf7, 0x72, 0x40, 0xc7, 0x8e, 0x76, 0x1a, 0xc2, 0x03, 0xd1, 0xd9, 0xd2, 0x0a, 0xc8, 0x99, 0x88,
+    0x3e, 0x90, 0x99, 0xb5, 0x01, 0x5e, 0x8f, 0x48, 0x6c, 0x00, 0xbc, 0xea, 0x9d, 0x11, 0x1e, 0xe7,
+    0x21, 0xfa, 0xba, 0x35, 0x5a, 0x89, 0xbc, 0xf1, 0xdf, 0x69, 0x56, 0x1e, 0x3d, 0xc6, 0x32, 0x5c,
 ];
 
 const BRAVE_LEAF_ISSUER_SPKI_SHA256: [u8; 32] = [
