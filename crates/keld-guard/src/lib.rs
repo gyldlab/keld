@@ -63,8 +63,8 @@ pub use windows_authenticode::{
 #[cfg(windows)]
 pub use windows_machine::{
     WindowsInitiatingImpersonationToken, WindowsInitiatingPrimaryToken, WindowsInitiatingToken,
-    WindowsLogonSessionError, WindowsLogonSessionId, WindowsLogonTime, WindowsTokenError,
-    require_windows_initiating_token_profile, require_windows_logon_session_ended,
+    WindowsLogonSessionError, WindowsLogonSessionId, WindowsLogonTime, WindowsPerUserWorkerPreflight,
+    WindowsTokenError, require_windows_initiating_token_profile, require_windows_logon_session_ended,
     require_windows_machine_uac_owner_token, require_windows_non_system_token,
     require_windows_own_impersonate_privilege, require_windows_own_token_session,
     require_windows_system_token, seal_windows_machine_directory, seal_windows_machine_file,
