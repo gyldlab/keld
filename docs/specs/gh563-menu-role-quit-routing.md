@@ -1,8 +1,12 @@
 # Spec: Menu role quit routing into the app quit owner
-Status: draft
-Linear: GH-563 (#517) · Owner: @0monish (approval pending) · Updated: 2026-11-06
+- Status: draft
+- Tracker: GH-563
+- Owner: @0monish (approval pending)
+- Updated: 2026-11-21
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
+
 Source baseline: `0eb3ce203187f35c5276a4237189c906a5220d5a`
-Publication: grouped future implementation pack; docs only, do not merge.
+Publication: grouped future implementation pack (#517); docs only, do not merge.
 
 ## 1. Goal & non-goals
 
@@ -34,49 +38,67 @@ that scope and specifies the later adapter acceptance.
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
 boundary and approves none of those changes.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-### AC1
+### AC-1: Route native menu Quit through the app coordinator
 
-Given a qualified current menu owner and an approved GH451 implementation, when the user selects Quit, then one intent reaches the
-app coordinator and before-quit runs exactly once.
+- **Given:** The current menu owner is qualified and the GH451 implementation is approved.
+- **When:** The user selects Quit from the installed native menu.
+- **Then:** One intent reaches the app coordinator, and before-quit runs exactly once.
+- **Negative control:** Call native terminate directly from the menu callback.
+- **Single fault:** Replace the coordinator dispatch with direct native termination.
+- **At-risk precondition:** A valid menu Quit activation occurs while the app can still veto.
+- **Expected RED:** The coordinator misses before-quit or the native process terminates before the veto.
 
-Independent negative control: Call native terminate directly from the menu callback.
+### AC-2: Preserve the dirty-window close veto
 
-### AC2
+- **Given:** An unsaved window can veto its normal close request.
+- **When:** The user selects Quit from the native menu.
+- **Then:** Its close listener can veto, and both the native window and the app remain alive.
+- **Negative control:** Destroy the window without the GH531 close handshake.
+- **Single fault:** Bypass the GH531 close handshake for this menu intent.
+- **At-risk precondition:** The unsaved window is still alive when the menu Quit enters GH451.
+- **Expected RED:** The native window disappears despite the dirty-window veto.
 
-Given an unsaved window, when Quit is selected from the menu, then its normal close listener can veto and the native window and
-app remain alive.
+### AC-3: Give Cmd+Q the same veto behavior
 
-Independent negative control: Destroy the window without the GH531 close handshake.
+- **Given:** The same unsaved-window fixture has the installed native role-Quit item.
+- **When:** The user presses Cmd+Q.
+- **Then:** The key equivalent dispatches the installed role-Quit item and preserves the same veto.
+- **Negative control:** Let the key equivalent bypass the role adapter.
+- **Single fault:** Route the Cmd+Q key callback directly to native termination.
+- **At-risk precondition:** The installed menu and active dirty window admit a real key-equivalent activation.
+- **Expected RED:** Cmd+Q terminates or closes the window even though the menu-click veto succeeds.
 
-### AC3
+### AC-4: Refuse stale menu activations
 
-Given the same unsaved fixture, when Cmd+Q is pressed, then it dispatches the installed role-quit item and preserves the same
-veto.
+- **Given:** An old menu stamp, retired app link or pre-Ready owner is no longer qualified.
+- **When:** That native menu activation arrives.
+- **Then:** The adapter refuses it without native termination or dispatch to a successor.
+- **Negative control:** Trust the old menu's captured role without checking the current installed owner.
+- **Single fault:** Skip the current installed-menu stamp check.
+- **At-risk precondition:** A retired menu callback remains callable after the active owner changes.
+- **Expected RED:** The stale activation reaches the successor or terminates the app.
 
-Independent negative control: Let the key equivalent bypass the role adapter.
+### AC-5: Keep full role-Quit acceptance pending without native proof
 
-### AC4
+- **Given:** The available evidence covers only GH480 or scoped D2 support.
+- **When:** The GH563 full role-Quit cell is evaluated.
+- **Then:** It remains pending fail with GH563 as its implementing ticket.
+- **Negative control:** Flip the full role-Quit verdict after a mock intent or the narrow demo alone.
+- **Single fault:** Promote the cell to pass using only a synthetic role-intent result.
+- **At-risk precondition:** The menu surface exists, but no native menu/key-equivalent veto run has qualified.
+- **Expected RED:** The full role-Quit cell incorrectly reports pass without the required native proof.
 
-Given a stale menu stamp, retired app link or pre-Ready owner, when an old native activation arrives, then the adapter refuses
-without native termination or dispatch to a successor.
+### AC-6: Coalesce repeated native quit intents at GH451
 
-Independent negative control: Trust the old menu's captured role without checking the current installed owner.
-
-### AC5
-
-Given only GH480 or scoped D2 support, when evidence is generated, then the GH563 full role-quit cell remains pending fail with
-this implementing ticket.
-
-Independent negative control: Flip the full role-quit verdict after a mock intent or the narrow demo alone.
-
-### AC6
-
-Given a nested or repeated valid intent during an active quit, when delivery reaches GH451, then that owner coalesces it and the
-adapter does not create another sweep.
-
-Independent negative control: Maintain a second quit-in-progress state machine in menu code.
+- **Given:** A valid quit is active and a nested or repeated native menu intent arrives.
+- **When:** The adapter delivers that intent to GH451.
+- **Then:** GH451 coalesces it, and the adapter creates no second close sweep.
+- **Negative control:** Maintain a second quit-in-progress state machine in menu code.
+- **Single fault:** Let the menu adapter start another sweep on a nested Quit.
+- **At-risk precondition:** A second valid intent arrives before the first transaction ends.
+- **Expected RED:** The second intent starts an extra before-quit or window close sweep.
 
 ## 4. Design
 
@@ -118,26 +140,34 @@ app quit state, registry close state or other menu roles.
 This publication changes only `docs/specs/gh563-menu-role-quit-routing.md` and grouped-PR/issue metadata. Shared policies,
 architecture, generated schemas, code and unrelated work remain with their existing owners.
 
-## 6. Tasks (ordered, each independently reviewable)
+## 6. Tasks
 
-### T1
+### T-1: Reconcile menu and lifecycle contracts
+
+- **Blocked by:** none
 
 - [ ] Reconcile the current menu/lifecycle schemas with the preserved scoped decision and add pending stage-transition fixtures.
 
-### T2
+### T-2: Connect validated menu intent to GH451
+
+- **Blocked by:** T-1
 
 - [ ] Wire the validated native role intent into GH451 using existing transport and retirement checks.
 
-### T3
+### T-3: Qualify native menu and key equivalent
+
+- **Blocked by:** T-2
 
 - [ ] Run real menu and Cmd+Q dirty-window fixtures, duplicate/stale/pre-Ready controls and natural terminal exit for the clean
 case.
 
-### T4
+### T-4: Update GH563 acceptance cell with native receipts
+
+- **Blocked by:** T-3
 
 - [ ] Update only the GH563 cell with exact source, device and receipts once all required behavior is proved.
 
-## 7. Test plan
+## 7. Test plan & evidence
 
 Every AC has a distinct observable and negative mutation in section 3. Map the resulting tests and evidence rows to GH-563;
 preserve pending-fail/unknown status until the actual implementing commit passes the relevant fixture.
@@ -150,6 +180,20 @@ source-versus-proposal wording and file limits. Runtime, native and original-app
 belongs to the exact published head; a documentation-only green run does not prove platform behavior.
 The user restricted this session to GitHub. Local `just ci`, native execution, hooks and machine session closeout were not run.
 Official upstream GitHub sources were used within that source restriction; no Context7 or external-machine evidence is claimed.
+
+### E-1: Pinned GH480 menu source inspection
+
+- **Run:** `git show 83ded4df3c2355d69bf88d6f4202749febd40eb1:docs/specs/gh480-guarded-macos-application-menu.md` and inspect role-Quit scope.
+- **n:** 1 pinned source revision.
+- **Environment:** Git repository with GH480 pin `83ded4df3c2355d69bf88d6f4202749febd40eb1`; documentation review only.
+- **Limits:** The source documents role ownership; it does not prove Cmd+Q, AppKit routing, veto or natural exit.
+
+### E-2: Planned GH-563 native menu acceptance
+
+- **Run:** Not executed; run distinct AC-1 through AC-6 menu, key-equivalent, veto and retirement fixtures.
+- **n:** 0 native acceptance runs.
+- **Environment:** Qualified installed macOS menu, real owner and implementing commit must be recorded at execution.
+- **Limits:** Scoped D2 and GH480 evidence cannot pass the full role-Quit cell.
 
 ## 8. Review gates triggered
 
@@ -166,10 +210,19 @@ is proposed.
 
 No numerical product performance claim is made without a reproducible pinned workload, environment and receipt.
 
-## 10. Open questions (block implementation)
+## 10. Open questions, blockers & unknowns
 
-1. Reconcile the scoped payload with current generated contracts and the full GH451 approved target.
-2. Qualify installed menu and Cmd+Q routing on the selected macOS source/device before claiming pass.
+### Q-1: Payload and GH451 contract
+
+Reconcile the scoped payload with current generated contracts and the full GH451 approved target.
+
+### Q-2: Installed menu and Cmd+Q acceptance
+
+Qualify installed menu and Cmd+Q routing on the selected macOS source/device before claiming pass.
+
+### U-1: Full role-quit acceptance remains unverified
+
+E-2 is unrun. The original scoped decision does not establish multiwindow, Dock or terminal acceptance.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
