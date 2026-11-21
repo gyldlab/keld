@@ -13,7 +13,7 @@ use crate::records::{GenerationPhase, GenerationRecord, MetadataRoleReference};
 /// Check complete role bodies against the four exact D-23 recorded references.
 ///
 /// Even if every length and SHA-256 match, unqualified T-20 cannot mint a
-/// ReadyRevision. The actual retained D-23 owner must authenticate the
+/// `ReadyRevision`. The actual retained D-23 owner must authenticate the
 /// generation and historical floors and hold the same D-90 lease while the
 /// reviewed pinned TUF client verifies signatures and current freshness.
 pub(super) fn verify_ready_revision_against_recorded_generation(
