@@ -1168,7 +1168,7 @@ mod tests {
         builder.with_any_thread(true).with_dpi_aware(false);
         let event_loop = builder.build();
         let environment =
-            super::super::create_environment_for_profile_with_options(&profile, options)?;
+            super::super::create_environment_for_profile_with_options(&profile, options, None)?;
         WebView2Engine::from_selected_environment(com, event_loop, environment, profile)
     }
 

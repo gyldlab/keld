@@ -182,6 +182,7 @@ fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
         WebView2LaunchPhase::Controller,
         started,
         started,
+        None,
     )
     .expect_err("expired launch work must lose to the absolute deadline");
     assert!(
@@ -308,6 +309,44 @@ fn expired_launch_uses_current_generation_version_after_warm_preflight() {
     assert!(
         !stderr.contains("ThreadId(") && !stderr.contains("profile="),
         "timeout diagnostics must stay redacted: {stderr}"
+    );
+}
+
+/// Native positive control: the same production preflight helper used by a
+/// real engine must pass the actual installed Evergreen version into this
+/// subprocess's failure-only deadline receipt. If preflight propagation is
+/// accidentally deleted, an `unavailable` receipt fails this test.
+#[test]
+fn expired_launch_records_actual_windows_preflight_version() {
+    let observed = super::runtime_version().expect("physical Windows Evergreen runtime");
+    let expected = super::super::gh814_validated_preflight_version(&observed)
+        .expect("installed native version must be bounded dotted digits");
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current keld-wv test executable"),
+    )
+    .args([
+        "--exact",
+        "webview2::tests::gh814_launch_timeout_log_child",
+        "--nocapture",
+    ])
+    .env("KELD_GH814_LAUNCH_LOG_PHASE", "controller")
+    .env("KELD_GH814_GENERATION_ORACLE", "real")
+    .output()
+    .expect("native preflight and deadline in the same Windows test child");
+    assert!(
+        output.status.success(),
+        "preflight's real runtime query must precede WV-009 without masking it: {output:?}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("bounded ASCII diagnostic");
+    let emitted = stderr
+        .lines()
+        .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+        .expect("preflight must produce failure-only runtime evidence");
+    assert!(
+        emitted.contains(&format!("loader_runtime_version={expected}"))
+            && emitted.contains("phase=controller")
+            && emitted.contains("callback_channel_state=not_observed"),
+        "actual preflight was lost or replaced by a stale value: {emitted}"
     );
 }
 
