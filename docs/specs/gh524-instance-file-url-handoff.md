@@ -1,8 +1,12 @@
 # Spec: Instance, file and URL handoff ordering
-Status: draft
-Linear: GH-524 (#517) · Owner: @0monish (approval pending) · Updated: 2026-11-06
+- Status: draft
+- Tracker: GH-524
+- Owner: @0monish (approval pending)
+- Updated: 2026-11-21
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
+
 Source baseline: `0eb3ce203187f35c5276a4237189c906a5220d5a`
-Publication: grouped future implementation pack; docs only, do not merge.
+Publication: grouped future implementation pack (#517); docs only, do not merge.
 
 ## 1. Goal & non-goals
 
@@ -29,69 +33,102 @@ transport wording must be reconciled with the current encoded envelope and aggre
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
 boundary and approves none of those changes.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-### AC1
+### AC-1: Deliver one second-instance event after Ready
 
-Given a losing declared instance during primary startup, when its lock-request call admits a handoff, then the primary emits one
-second-instance event only after ready, with the admitted argv/cwd/additionalData.
+- **Given:** A losing declared instance during primary startup.
+- **When:** Its lock-request call admits a handoff.
+- **Then:** The primary emits one second-instance event only after Ready with the admitted argv, cwd and additionalData.
+- **Negative control:** Flush the admitted queue before Ready.
+- **Single fault:** Remove the Ready barrier for one admitted record.
+- **At-risk precondition:** The primary admits a handoff but has not reached Ready.
+- **Expected RED:** The second-instance listener fires before Ready.
 
-Independent negative control: Flush the queue before Ready or dispatch the same admitted record twice.
+The duplicate-dispatch negative also remains required. Replaying the same admitted record must not emit a second callback.
 
-### AC2
+### AC-2: Deliver native file and URL inputs after listener registration
 
-Given separate native open-file and open-url intents before readiness, when the app registers each listener inside
-will-finish-launching, then each intended listener receives its corresponding payload after registration and before ready.
+- **Given:** Separate native open-file and open-url intents arrive before readiness.
+- **When:** The app registers each listener inside will-finish-launching.
+- **Then:** Each listener receives its corresponding payload after registration and before Ready.
+- **Negative control:** Flush the file queue before will-finish-launching callbacks finish.
+- **Single fault:** Remove the file listener-registration barrier.
+- **At-risk precondition:** A real native file intent is queued while its listener is being registered.
+- **Expected RED:** The file callback is lost or arrives before its listener is registered.
 
-Independent negative control: Flush either queue before will-finish-launching callbacks finish; run file and URL cases separately
-through actual native-source admission.
+Run a separate URL negative with the same listener-order requirement through actual native-source admission.
 
-### AC3
+### AC-3: Keep received paths outside the grant authority
 
-Given a path in argv or additionalData with no existing grant, when app code tries to read it, then the guard refuses.
+- **Given:** A path in argv or additionalData has no existing grant.
+- **When:** App code attempts to read that path.
+- **Then:** The guard refuses the read.
+- **Negative control:** Convert a delivered pathname into a host read grant.
+- **Single fault:** Grant read authority on receipt of one untrusted pathname.
+- **At-risk precondition:** The handoff supplies a pathname with no permitted file-read capability.
+- **Expected RED:** The guard admits the unauthorized read.
 
-Independent negative control: Convert every delivered pathname into a host read grant.
+### AC-4: Refuse an oversized or full-queue handoff atomically
 
-### AC4
+- **Given:** A handoff exceeds the approved budget or the queue is full.
+- **When:** The losing instance requests admission.
+- **Then:** Its lock verdict stays false, the primary emits no partial event, and the refusal is diagnosed.
+- **Negative control:** Account for only one payload field when checking the budget.
+- **Single fault:** Exclude additionalData from the aggregate admission calculation.
+- **At-risk precondition:** The complete encoded record exceeds the cap while one field fits.
+- **Expected RED:** Admission exceeds the cap or exposes a partial event.
 
-Given an over-budget handoff or a full queue, when admission occurs, then the loser keeps its false lock verdict and the primary
-emits no partial event; the refusal is diagnosed.
+Also mutate prefix enqueue before full validation. The atomic-admission assertion must fail independently.
 
-Independent negative control: Account only one field or enqueue a prefix before validating the full message.
+### AC-5: Retain bounded duplicate protection after long ingress activity
 
-### AC5
+- **Given:** One authenticated ingress has admitted and drained more than 64 sequential records.
+- **When:** Its first record is replayed during the same ingress lifetime.
+- **Then:** Duplicate suppression prevents redispatch, and high-water bookkeeping stays within its approved bound.
+- **Negative control:** Forget old dispatched IDs without a retained watermark.
+- **Single fault:** Evict the ingress watermark while that ingress can still authenticate.
+- **At-risk precondition:** The first record has aged beyond the 64-record queue, but the peer remains valid.
+- **Expected RED:** The first record redispatches instead of being rejected as a duplicate.
 
-Given more than 64 sequential admitted-and-drained records on one authenticated ingress lifetime, when its first record is
-replayed, then duplicate suppression still prevents redispatch while retained bookkeeping stays bounded under the approved
-high-water contract.
+An independent census must also reject a generation-long unbounded ID set, even if duplicate delivery stays suppressed.
 
-Independent negative control: Forget old dispatched IDs without a watermark or keep a generation-long unbounded ID set; delivery
-and high-water census assertions fail independently.
+### AC-6: Retire queued data with its generation
 
-### AC6
+- **Given:** A G1 queue holds a unique payload nonce without a user-intent grant.
+- **When:** G1 retires and G2 connects.
+- **Then:** G2 receives zero callbacks with that nonce, and the owner records a dropped/unknown G1 disposition.
+- **Negative control:** Omit only queue retirement and deliver old data into G2.
+- **Single fault:** Keep one G1 queue entry eligible for delivery after G1 retires.
+- **At-risk precondition:** G1 has a pending nonce at the point G2 becomes current.
+- **Expected RED:** A G2 listener receives the G1 nonce.
 
-Given a G1 queue with a unique payload nonce and no user-intent grant, when G1 retires and G2 connects, then G2 receives zero
-callbacks carrying that nonce and the owner records a dropped/unknown G1 disposition.
+Test grant lifetime separately. A missing read grant must not hide a replayed data callback.
 
-Independent negative control: Omit only queue retirement and deliver the old data into G2. A separate grant-lifetime test checks
-authority; absence of a grant cannot mask replayed callback data.
+### AC-7: Release actual lock custody and report current state
 
-### AC7
+- **Given:** The current holder owns the native single-instance lock.
+- **When:** A qualified release operation completes.
+- **Then:** The Host has released custody, hasSingleInstanceLock is false, and a separate contender acquires.
+- **Negative control:** Change only the facade lock boolean while native custody remains held.
+- **Single fault:** Clear the facade boolean without releasing the native lock.
+- **At-risk precondition:** A contender tries to acquire after the release call reports completion.
+- **Expected RED:** The contender cannot acquire despite the reported release.
 
-Given the current holder, when a qualified release operation completes, then the host has released custody, hasSingleInstanceLock
-is false and a separate contender acquires. A subsequent request cannot return stale true from the initial election fact; it
-follows the separately approved reacquisition contract or typed unsupported behavior.
+A subsequent request cannot return stale true from the initial election fact. It follows the separately approved reacquisition
+contract or typed unsupported behavior. Test the stale initial-true return and the retained native lock independently.
 
-Independent negative control: Mutate only a facade bool, keep the native lock, or keep returning the initial true fact after
-release; test each independently.
+### AC-8: Authenticate cross-Host handoff before queue insertion
 
-### AC8
+- **Given:** A wrong-app peer, stale elected-holder endpoint or foreign/unqualified sender submits a handoff.
+- **When:** The elected Host authenticates the submission.
+- **Then:** It rejects the request before queue insertion, and the losing instance's lock verdict stays false.
+- **Negative control:** Treat a payload app ID or knowledge of the primary app-link address as authentication.
+- **Single fault:** Authorize the wrong-app sender using only its claimed app ID.
+- **At-risk precondition:** An unqualified sender knows the primary address and a plausible app ID.
+- **Expected RED:** An unauthorized record reaches the queue or the intended event listener.
 
-Given a wrong-app peer, stale elected-holder endpoint or foreign/unqualified sender, when it submits a handoff, then it is
-rejected before queue insertion and the losing instance's lock verdict remains false.
-
-Independent negative control: Treat knowledge of the primary app-link address or a payload app ID as peer/holder authentication. A
-qualified sender positive must still enqueue through the same ingress.
+A qualified sender must still enqueue through that same ingress in an independent positive test.
 
 ## 4. Design
 
@@ -146,28 +183,36 @@ shortcut, new IPC transport, arbitrary URL launcher or protocol-registration imp
 This publication changes only `docs/specs/gh524-instance-file-url-handoff.md` and grouped-PR/issue metadata. Shared policies,
 architecture, generated schemas, code and unrelated work remain with their existing owners.
 
-## 6. Tasks (ordered, each independently reviewable)
+## 6. Tasks
 
-### T1
+### T-1: Set ingress, queue and lifecycle contracts
+
+- **Blocked by:** none
 
 - [ ] Approve the inter-Host ingress/identity/acknowledgement/retirement composition, bounded ordered duplicate protocol, queue
 budgets and lifecycle ordering; record source-backed pending rows.
 
-### T2
+### T-2: Implement bounded host admission and delivery
+
+- **Blocked by:** T-1
 
 - [ ] Add host admission and existing-link delivery with aggregate budgets, deduplication and retirement in one slice.
 
-### T3
+### T-3: Implement ordered native inputs and release semantics
+
+- **Blocked by:** T-1, T-2
 
 - [ ] Wire will-finish-launching/Ready ordering for both native file and URL sources, and the jointly approved synchronous
 release/current-state/reacquisition contract into existing app/facts owners.
 
-### T4
+### T-4: Qualify native and hostile-input acceptance
+
+- **Blocked by:** T-2, T-3
 
 - [ ] Run two-process startup races, Finder-style file/URL fixtures, oversize/duplicate/stale controls and unauthorized read
 negatives.
 
-## 7. Test plan
+## 7. Test plan & evidence
 
 Every AC has a distinct observable and negative mutation in section 3. Map the resulting tests and evidence rows to GH-524;
 preserve pending-fail/unknown status until the actual implementing commit passes the relevant fixture.
@@ -181,6 +226,20 @@ source-versus-proposal wording and file limits. Runtime, native and original-app
 belongs to the exact published head; a documentation-only green run does not prove platform behavior.
 The user restricted this session to GitHub. Local `just ci`, native execution, hooks and machine session closeout were not run.
 Official upstream GitHub sources were used within that source restriction; no Context7 or external-machine evidence is claimed.
+
+### E-1: Source baseline inspection
+
+- **Run:** `git show 0eb3ce203187f35c5276a4237189c906a5220d5a:packages/@keld/electron/src/app.ts` and inspect app event ownership.
+- **n:** 1 pinned source revision.
+- **Environment:** Git repository with source pin `0eb3ce203187f35c5276a4237189c906a5220d5a`; documentation review only.
+- **Limits:** Source inspection does not qualify native input, inter-Host ingress, grant isolation or exact-once behavior.
+
+### E-2: Planned GH-524 runtime and OS acceptance
+
+- **Run:** Not executed; run the separate AC-1 through AC-8 positive and negative fixtures during implementation.
+- **n:** 0 native acceptance runs.
+- **Environment:** Exact implementing revision and qualified native host/device must be recorded at execution.
+- **Limits:** No acceptance result is claimed for second-instance, file/URL ordering, release, replay or authenticated ingress.
 
 ## 8. Review gates triggered
 
@@ -196,17 +255,38 @@ latency or durable-delivery claim is made.
 
 No numerical product performance claim is made without a reproducible pinned workload, environment and receipt.
 
-## 10. Open questions (block implementation)
+## 10. Open questions, blockers & unknowns
 
-1. Approve the proposed 64-record/64-KiB limits or replace them with receipted bounds.
-2. Approve explicit dropped/unknown behavior across role or host loss and the user's retry surface.
-3. Approve native user-intent provenance, lifecycle schema and mirror release ordering.
-4. Approve the missing losing-Host to elected-Host ingress using existing IPC primitives, including
+### Q-1: Queue limits
+
+Approve the proposed 64-record/64-KiB limits or replace them with receipted bounds.
+
+### Q-2: Role-loss disposition
+
+Approve explicit dropped/unknown behavior across role or host loss and the user's retry surface.
+
+### Q-3: Native intent and release ordering
+
+Approve native user-intent provenance, lifecycle schema and mirror release ordering.
+
+### Q-4: Cross-Host ingress
+
+Approve the missing losing-Host to elected-Host ingress using existing IPC primitives, including
 wrong-app/foreign-peer/stale-holder authentication and acknowledgement semantics.
-5. Approve bounded ingress identity/high-water retention and pressure/replay behavior; 64 queued records does not bound
+
+### Q-5: High-water retention
+
+Approve bounded ingress identity/high-water retention and pressure/replay behavior; 64 queued records does not bound
 generation-long duplicate history by itself.
-6. Jointly approve GH453 initial/current lock-state distinction, synchronous release completion and post-release reacquisition
+
+### Q-6: Lock state and reacquisition
+
+Jointly approve GH453 initial/current lock-state distinction, synchronous release completion and post-release reacquisition
 without stale success.
+
+### U-1: Real native acceptance remains unverified
+
+The implementing commit and qualified OS device have no recorded acceptance result in this draft. E-2 remains unrun.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
