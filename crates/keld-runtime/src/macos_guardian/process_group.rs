@@ -1,6 +1,8 @@
 //! Private macOS process-group validation and rejected-registration cleanup.
 use std::io;
 use std::process::{Child, ChildStdin, ExitStatus};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 #[cfg(test)]
@@ -118,9 +120,7 @@ fn report_test_ambiguous_probe(group: u32) {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TestGroupSignalPoint {
-    /// Inside [`terminate_registered_group`], just before its `killpg`: every
-    /// group signal the Guardian product sends passes here, whichever call
-    /// site (attested arm, own-child decision or a direct call) reached it.
+    /// After the kernel authorized the one signal, before `killpg`.
     BeforeSignal,
     /// After that one signal was denied (zombie-only EPERM), before the next
     /// read-only probe.
@@ -174,6 +174,57 @@ fn run_test_group_signal_hook(group: u32, point: TestGroupSignalPoint) {
     if let Some((owner, mut hook)) = taken {
         hook(point);
         GROUP_SIGNAL_HOOK.with(|slot| *slot.borrow_mut() = Some((owner, hook)));
+    }
+}
+
+// Process-wide test observer for the shared killpg boundary. Unlike the
+// scheduling hook above, this counter also sees raw product cleanup calls
+// from other threads, including supervision_runner's direct fallback path.
+#[cfg(test)]
+static GROUP_SIGNAL_COUNTERS: Mutex<Vec<(u32, Arc<AtomicUsize>)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(super) struct TestGroupSignalCounter {
+    group: u32,
+    count: Arc<AtomicUsize>,
+}
+
+#[cfg(test)]
+impl TestGroupSignalCounter {
+    pub(super) fn count(&self) -> usize {
+        self.count.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestGroupSignalCounter {
+    fn drop(&mut self) {
+        GROUP_SIGNAL_COUNTERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(group, count)| *group != self.group || !Arc::ptr_eq(count, &self.count));
+    }
+}
+
+#[cfg(test)]
+pub(super) fn install_test_group_signal_counter(group: u32) -> TestGroupSignalCounter {
+    let count = Arc::new(AtomicUsize::new(0));
+    GROUP_SIGNAL_COUNTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((group, Arc::clone(&count)));
+    TestGroupSignalCounter { group, count }
+}
+
+#[cfg(test)]
+fn record_test_group_signal_attempt(group: u32) {
+    let counters = GROUP_SIGNAL_COUNTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (expected, count) in counters.iter() {
+        if *expected == group {
+            count.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -308,6 +359,7 @@ pub(super) fn validate_guardian_child_group(
 /// (`GuardedPrimary`'s spent authority), not here.
 pub(super) fn terminate_attested_group(group: GroupIdentity) -> Result<(), RuntimeError> {
     terminate_attested_group_until(group, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4)
+        .map(|_| ())
 }
 
 /// [`terminate_attested_group`] with a caller-owned absolute reap deadline,
@@ -315,9 +367,79 @@ pub(super) fn terminate_attested_group(group: GroupIdentity) -> Result<(), Runti
 pub(super) fn terminate_attested_group_until(
     group: GroupIdentity,
     reap_deadline: Instant,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    terminate_attested_group_outcome(group, reap_deadline)
+}
+
+// Internal outcome only: a delivered signal is not an absence proof.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) enum AttestedGroupTermination {
+    SignalDelivered,
+    AbsenceProven,
+}
+
+// Preserve the first successful proof within the caller's original budget.
+// Only a delivered signal still requires the read-only absence owner.
+pub(super) fn terminate_attested_group_and_prove_absence(
+    group: GroupIdentity,
+    deadline: Instant,
 ) -> Result<(), RuntimeError> {
-    match observe_group_identity(group.pid) {
-        Ok(current) if current == group => signal_attested_group_once(group, reap_deadline),
+    finish_attested_group_termination(terminate_attested_group_outcome(group, deadline), || {
+        require_attested_group_absence(group, deadline)
+    })
+}
+
+fn finish_attested_group_termination(
+    outcome: Result<AttestedGroupTermination, RuntimeError>,
+    prove_absence: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    match outcome? {
+        AttestedGroupTermination::SignalDelivered => prove_absence(),
+        AttestedGroupTermination::AbsenceProven => Ok(()),
+    }
+}
+
+fn terminate_attested_group_outcome(
+    group: GroupIdentity,
+    reap_deadline: Instant,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    terminate_attested_group_with_observers(
+        group,
+        || observe_group_identity(group.pid),
+        probe_group_absence,
+        || signal_attested_group_once(group, reap_deadline),
+        || require_attested_group_absence(group, reap_deadline),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn terminate_attested_group_with_observers_for_test(
+    group: GroupIdentity,
+    observe_identity: impl FnOnce() -> Result<GroupIdentity, RuntimeError>,
+    first_probe: impl FnOnce(i32) -> (Result<Pid, Errno>, Result<(), Errno>),
+    signal_once: impl FnOnce() -> Result<AttestedGroupTermination, RuntimeError>,
+    prove_absence: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    terminate_attested_group_with_observers(
+        group,
+        observe_identity,
+        first_probe,
+        signal_once,
+        prove_absence,
+    )
+}
+
+// Private composition seam. Shipping callers supply the exact kernel operations;
+// component regressions supply observations, not an invented outcome variant.
+fn terminate_attested_group_with_observers(
+    group: GroupIdentity,
+    observe_identity: impl FnOnce() -> Result<GroupIdentity, RuntimeError>,
+    first_probe: impl FnOnce(i32) -> (Result<Pid, Errno>, Result<(), Errno>),
+    signal_once: impl FnOnce() -> Result<AttestedGroupTermination, RuntimeError>,
+    prove_absence: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    match observe_identity() {
+        Ok(current) if current == group => signal_once(),
         Ok(_) => Err(lifecycle_error(
             "macOS guardian registered group identity changed",
             io::Error::new(
@@ -334,13 +456,14 @@ pub(super) fn terminate_attested_group_until(
             // absence owner, which never signals and accepts only dual ESRCH
             // within the caller's reap deadline (a quarter of the existing
             // shutdown deadline unless a retained owner shares one budget).
-            if probe_group_absence(raw) == (Err(Errno::ESRCH), Ok(())) {
-                return signal_attested_group_once(group, reap_deadline);
+            if first_probe(raw) == (Err(Errno::ESRCH), Ok(())) {
+                return signal_once();
             }
             // Keep this fallback's existing typed failure: callers and
             // their native oracles distinguish it from a later probe-only
             // absence timeout of a retained generation.
-            require_attested_group_absence(group, reap_deadline)
+            prove_absence()
+                .map(|()| AttestedGroupTermination::AbsenceProven)
                 .map_err(|_| registered_identity_unavailable(observation))
         }
     }
@@ -374,9 +497,23 @@ fn registered_identity_unavailable(observation: RuntimeError) -> RuntimeError {
 fn signal_attested_group_once(
     group: GroupIdentity,
     reap_deadline: Instant,
-) -> Result<(), RuntimeError> {
-    terminate_registered_group(group.pid)
-        .or_else(|denied| reconcile_denied_signal_after_reap(group, denied, reap_deadline))
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    #[cfg(test)]
+    run_test_group_signal_hook(group.pid, TestGroupSignalPoint::BeforeSignal);
+    classify_attested_group_signal(terminate_registered_group(group.pid), |denied| {
+        #[cfg(test)]
+        run_test_group_signal_hook(group.pid, TestGroupSignalPoint::AfterDeniedSignal);
+        reconcile_denied_signal_after_reap(group, denied, reap_deadline)
+    })
+}
+
+fn classify_attested_group_signal(
+    signal: Result<(), RuntimeError>,
+    reconcile: impl FnOnce(RuntimeError) -> Result<(), RuntimeError>,
+) -> Result<AttestedGroupTermination, RuntimeError> {
+    signal
+        .map(|()| AttestedGroupTermination::SignalDelivered)
+        .or_else(|denied| reconcile(denied).map(|()| AttestedGroupTermination::AbsenceProven))
 }
 
 // One read-only kernel observation of the original leader PID and its whole
@@ -508,7 +645,7 @@ const GROUP_SIGNAL_PHASE: &str = "macOS guardian process-group signal";
 pub(super) fn terminate_registered_group(group: u32) -> Result<(), RuntimeError> {
     let raw = validate_group_pid(group)?;
     #[cfg(test)]
-    run_test_group_signal_hook(group, TestGroupSignalPoint::BeforeSignal);
+    record_test_group_signal_attempt(group);
     let result = killpg(Pid::from_raw(raw), Signal::SIGKILL);
     finish_group_termination(result, || kill(Pid::from_raw(-raw), None))
 }
@@ -566,24 +703,21 @@ fn reconcile_denied_signal_after_reap_with_observers(
         RuntimeError::Lifecycle {
             phase: phase @ GROUP_SIGNAL_PHASE,
             source,
-        } if is_denied_signal_source(&source) => {
-            #[cfg(test)]
-            run_test_group_signal_hook(group.pid, TestGroupSignalPoint::AfterDeniedSignal);
-            require_attested_group_absence_with_observers(group, deadline, now, probe).map_err(
-                |absence| {
-                    lifecycle_error(
-                        phase,
-                        io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            UnprovenDeniedSignal {
-                                denied: source,
-                                absence: absence_reason(&absence),
-                            },
-                        ),
-                    )
-                },
+        } if is_denied_signal_source(&source) => require_attested_group_absence_with_observers(
+            group, deadline, now, probe,
+        )
+        .map_err(|absence| {
+            lifecycle_error(
+                phase,
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    UnprovenDeniedSignal {
+                        denied: source,
+                        absence: absence_reason(&absence),
+                    },
+                ),
             )
-        }
+        }),
         other => Err(other),
     }
 }
@@ -624,6 +758,20 @@ impl std::error::Error for UnprovenDeniedSignal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.denied)
     }
+}
+
+// Preserve the original signal-phase errno when a RuntimeError is cloned for
+// Core/Host diagnostic retention. This only copies error evidence: no signal,
+// child wait, group probe, or new process authority is performed here.
+pub(crate) fn clone_unproven_denied_signal(source: &io::Error) -> Option<io::Error> {
+    let context = source.get_ref()?.downcast_ref::<UnprovenDeniedSignal>()?;
+    Some(io::Error::new(
+        source.kind(),
+        UnprovenDeniedSignal {
+            denied: crate::clone_runtime_io_error(&context.denied),
+            absence: context.absence.clone(),
+        },
+    ))
 }
 
 // The exact signal-phase EPERM: the kernel's raw error, or that same raw error
@@ -670,6 +818,8 @@ pub(super) fn retire_own_child_group(
         Ambiguous(RuntimeError),
     }
     let signal_once = || {
+        #[cfg(test)]
+        run_test_group_signal_hook(group.pid, TestGroupSignalPoint::BeforeSignal);
         // Every signal failure waits for the reap: the one classifier,
         // `reconcile_denied_signal_after_reap`, decides afterwards and
         // returns anything but the exact signal-phase EPERM unchanged.
@@ -844,3 +994,7 @@ pub(super) fn reject_host_registration(
     // Post-enrollment rejection runs its separate birth-attested group cleanup.
     collapse_failures(failures)
 }
+
+#[cfg(test)]
+#[path = "process_group/absence_composition_tests.rs"]
+mod absence_composition_tests;

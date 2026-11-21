@@ -4,7 +4,8 @@ use super::generation_host::{
     GenerationHostAdmission, is_initial_recovery_denied, is_post_shutdown_spawn_refused,
 };
 use super::process_group::{
-    GroupIdentity, require_attested_group_absence, terminate_attested_group_until,
+    AttestedGroupTermination, GroupIdentity, require_attested_group_absence,
+    terminate_attested_group_until,
 };
 #[cfg(test)]
 use super::terminate_registered_group;
@@ -71,12 +72,16 @@ pub(super) struct RegisteredPrimaryGeneration {
 /// leader is gone, and after a delivered SIGKILL a second group-wide kill
 /// could only reach processes that joined later or a recycled group. So the
 /// first host-side attempt spends the authority whether it was delivered or
-/// failed. Later host paths keep custody (fail closed) and may only run the
-/// read-only dual-ESRCH absence probe, never `killpg`.
+/// failed. The owner also retains an already-proven absence outcome so a
+/// terminal path does not inspect a recycled PGID a second time. Other spent
+/// states may only run the read-only dual-ESRCH absence probe, never `killpg`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) enum NativeSignalAuthority {
     /// No host-side signal has been attempted for this generation.
     Armed,
+    /// The original group was already absent at the first attested observation.
+    /// Terminal cleanup must not repeat that completed proof against a recycled PGID.
+    AbsenceProven,
     /// The one signal was delivered; the group is not yet proven absent.
     Delivered {
         /// Absolute end of the attempt's reap budget.
@@ -96,7 +101,7 @@ impl NativeSignalAuthority {
     /// disappeared can be released, but never a fresh reap window.
     fn probe_deadline(self) -> Option<Instant> {
         match self {
-            Self::Armed => None,
+            Self::Armed | Self::AbsenceProven => None,
             Self::Delivered { reap_deadline } | Self::ProbeOnly { reap_deadline } => {
                 Some(reap_deadline.max(Instant::now() + GENERATION_CONTROL_POLL))
             }
@@ -115,10 +120,17 @@ impl RegisteredPrimaryGeneration {
     }
 
     /// Makes the generation's single birth-attested signal attempt while
-    /// armed, and spends the authority whatever its outcome. When the
-    /// authority is already spent this sends nothing and returns `Ok`, so
-    /// the caller applies its own read-only absence proof.
+    /// armed, and spends the authority whatever its outcome. It preserves
+    /// whether the group was already absent or a signal was delivered. When
+    /// the authority is already spent this sends nothing and returns `Ok`.
     pub(super) fn signal_if_armed(&mut self) -> Result<(), RuntimeError> {
+        self.signal_if_armed_with(terminate_attested_group_until)
+    }
+
+    fn signal_if_armed_with(
+        &mut self,
+        terminate: impl FnOnce(GroupIdentity, Instant) -> Result<AttestedGroupTermination, RuntimeError>,
+    ) -> Result<(), RuntimeError> {
         let Some(identity) = self.group_identity else {
             return terminate_unwitnessed_generation(self.group_pid);
         };
@@ -126,17 +138,28 @@ impl RegisteredPrimaryGeneration {
             return Ok(());
         }
         let reap_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4;
-        let result = terminate_attested_group_until(identity, reap_deadline);
-        self.native_signal = if result.is_ok() {
-            NativeSignalAuthority::Delivered { reap_deadline }
-        } else {
-            NativeSignalAuthority::ProbeOnly { reap_deadline }
+        let result = terminate(identity, reap_deadline);
+        self.native_signal = match result {
+            Ok(AttestedGroupTermination::SignalDelivered) => {
+                NativeSignalAuthority::Delivered { reap_deadline }
+            }
+            Ok(AttestedGroupTermination::AbsenceProven) => NativeSignalAuthority::AbsenceProven,
+            Err(_) => NativeSignalAuthority::ProbeOnly { reap_deadline },
         };
-        result
+        result.map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(super) fn signal_if_armed_with_for_test(
+        &mut self,
+        terminate: impl FnOnce(GroupIdentity, Instant) -> Result<AttestedGroupTermination, RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.signal_if_armed_with(terminate)
     }
 
     /// Host fail-safe for this retained generation: the single armed signal
-    /// attempt, or afterwards only the read-only absence probe.
+    /// attempt, or afterwards only the read-only absence probe. A completed
+    /// absence proof is terminal and does not need another observation.
     pub(super) fn terminate(&mut self) -> Result<(), RuntimeError> {
         match (self.native_signal.probe_deadline(), self.group_identity) {
             (Some(deadline), Some(identity)) => require_attested_group_absence(identity, deadline),
@@ -145,8 +168,9 @@ impl RegisteredPrimaryGeneration {
     }
 
     /// Core's app-link failure report. A repeated report after a delivered
-    /// signal is idempotent: the Guardian's CLEAR, not a second signal,
-    /// proves absence. A failed attempt still reports its probe result.
+    /// signal or completed absence proof is idempotent: the Guardian's CLEAR,
+    /// not a second signal, owns the normal retirement path. A failed attempt
+    /// still reports its probe result.
     fn fail(&mut self) -> Result<(), RuntimeError> {
         match self.native_signal {
             NativeSignalAuthority::Delivered { .. } => Ok(()),
@@ -154,15 +178,15 @@ impl RegisteredPrimaryGeneration {
         }
     }
 
-    /// CLEAR's absence deadline. After an armed or delivered signal CLEAR
-    /// keeps its own `own` window: CLEAR's own `signal_if_armed` turns
-    /// `Armed` into `Delivered { now + D/4 }` before this deadline is
-    /// chosen, so capping at that budget would shrink CLEAR's own window
-    /// from D to D/4 and fail a group that is still draining when CLEAR
+    /// CLEAR's absence deadline when no completed absence proof is available.
+    /// After a delivered signal CLEAR keeps its own `own` window. Capping its
+    /// window at the signal attempt's D/4 budget would shrink CLEAR's own
+    /// window from D to D/4 and fail a group that is still draining when CLEAR
     /// arrives. CLEAR runs at most once per attempt and any failure ends the
     /// worker, so the window is never stacked. After a FAILED attempt CLEAR
     /// is bounded by that attempt's already-spent deadline, plus at most one
-    /// poll interval of grace.
+    /// poll interval of grace. An `AbsenceProven` outcome bypasses this method
+    /// and is reused without a second numeric-PGID observation.
     pub(super) fn clear_absence_deadline(&self, own: Instant) -> Instant {
         match self.native_signal {
             NativeSignalAuthority::ProbeOnly { .. } => self
@@ -204,17 +228,52 @@ fn terminate_unwitnessed_generation(group_pid: u32) -> Result<(), RuntimeError> 
 fn terminate_and_release_generation(
     registered: &mut Option<RegisteredPrimaryGeneration>,
 ) -> Result<(), RuntimeError> {
+    terminate_and_release_generation_with(
+        registered,
+        RegisteredPrimaryGeneration::terminate,
+        require_attested_group_absence,
+    )
+}
+
+fn terminate_and_release_generation_with(
+    registered: &mut Option<RegisteredPrimaryGeneration>,
+    terminate: impl FnOnce(&mut RegisteredPrimaryGeneration) -> Result<(), RuntimeError>,
+    prove_absence: impl FnOnce(GroupIdentity, Instant) -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
     if let Some(generation) = registered.as_mut() {
-        generation.terminate()?;
-        if let (Some(identity), Some(deadline)) = (
-            generation.group_identity,
-            generation.native_signal.probe_deadline(),
-        ) {
-            require_attested_group_absence(identity, deadline)?;
+        // A spent generation's `terminate` already performs its one read-only
+        // absence proof. An armed generation may instead finish its first
+        // attested decision as `AbsenceProven` or `SignalDelivered`; only the
+        // latter needs the terminal post-signal absence proof here.
+        let had_spent_attempt = generation.native_signal.probe_deadline().is_some();
+        terminate(generation)?;
+        if !had_spent_attempt
+            && let (Some(identity), Some(deadline)) = (
+                generation.group_identity,
+                generation.native_signal.probe_deadline(),
+            )
+        {
+            prove_absence(identity, deadline)?;
         }
         *registered = None;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn terminate_and_release_generation_for_test(
+    registered: &mut Option<RegisteredPrimaryGeneration>,
+) -> Result<(), RuntimeError> {
+    terminate_and_release_generation(registered)
+}
+
+#[cfg(test)]
+pub(super) fn terminate_and_release_generation_with_for_test(
+    registered: &mut Option<RegisteredPrimaryGeneration>,
+    terminate: impl FnOnce(&mut RegisteredPrimaryGeneration) -> Result<(), RuntimeError>,
+    prove_absence: impl FnOnce(GroupIdentity, Instant) -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    terminate_and_release_generation_with(registered, terminate, prove_absence)
 }
 
 // A test traps an attempted post-ECHILD direct-child kill before it reaches
@@ -690,11 +749,10 @@ impl GuardedPrimary {
         // PREPARE after the Guardian's idle probe, or an in-flight SPAWNED
         // refused after S. Each needs zero registered group and its private
         // typed result; the refusal type exists only after the attested group
-        // was signalled and the lease revoked. Only an orderly S (KSA, not an
-        // accepted Quit's KQA) may retire either one (architecture 06: the
-        // first-PREPARE denial is accepted only after verified KSA). The
-        // Guardian's own exit status still proves its local retirement.
-        // Never downgrade another worker failure.
+        // was signalled and the lease revoked, and only an orderly S (KSA, not
+        // an accepted Quit's KQA) may retire it. The Guardian's own exit
+        // status still proves its local retirement. Never downgrade another
+        // worker failure.
         let reconciled = |error: &RuntimeError| {
             shutdown_won
                 && orderly_acknowledged
