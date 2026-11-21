@@ -244,6 +244,27 @@ mod handoff_tests {
                 .starts_with(r"\\?\"),
             "deep archive root must receive extended Win32 spelling"
         );
+        let bare_probe = parent.join("x".repeat("local-app-archive".len()));
+        let probe_api = local_source::win32_extended_if_long(&bare_probe).unwrap();
+        match boot::create_windows_stage_root(&bare_probe) {
+            Ok(()) => {
+                eprintln!("bare DOS long path accepted by host; opt-out refusal not proven here");
+                std::fs::remove_dir(&probe_api).expect("remove accepted bare-path probe");
+            }
+            Err(error) => {
+                assert!(
+                    matches!(error.raw_os_error(), Some(3 | 123 | 206 | 267)),
+                    "bare path must fail at a Win32 path boundary, not ACL validation: {error}"
+                );
+                eprintln!("bare DOS archive-stage refusal: {error}");
+                assert!(
+                    !probe_api
+                        .try_exists()
+                        .expect("probe metadata check must not be denied"),
+                    "failed bare create left a stage"
+                );
+            }
+        }
         let pins =
             create_archive_stage(&archive).expect("private archive stage on deep local root");
         let stable = windows_inputs::stable_local_path(&pins).expect("retained archive stage");
@@ -251,6 +272,21 @@ mod handoff_tests {
             stable.canonicalize().unwrap(),
             archive.canonicalize().unwrap()
         );
+        drop(pins);
+        let short = owned.path().join("short-archive");
+        if short.as_os_str().encode_wide().count() < 248 {
+            assert_eq!(local_source::win32_extended_if_long(&short).unwrap(), short);
+            let short_pins = create_archive_stage(&short).expect("short private archive stage");
+            assert_eq!(
+                windows_inputs::stable_local_path(&short_pins)
+                    .unwrap()
+                    .canonicalize()
+                    .unwrap(),
+                short.canonicalize().unwrap()
+            );
+        } else {
+            eprintln!("short-path directory control skipped: Windows TEMP prefix is already long");
+        }
     }
     fn output(path: &std::path::Path) -> File {
         let mut file = OpenOptions::new()

@@ -449,12 +449,55 @@ mod tests {
             api_path.to_string_lossy().starts_with(r"\\?\"),
             "long image stage requires extended Win32 syntax"
         );
+        // Failure-first native oracle: on a host without Win32 long-path
+        // opt-in, the original bare-DOS creation must refuse without leaving
+        // a stage behind. Hosts with opt-in may accept that same spelling.
+        let bare_probe = parent.join("x".repeat("local-test-images".len()));
+        let probe_api = local_source::win32_extended_if_long(&bare_probe).unwrap();
+        match boot::create_windows_stage_root(&bare_probe) {
+            Ok(()) => {
+                eprintln!("bare DOS long path accepted by host; opt-out refusal not proven here");
+                std::fs::remove_dir(&probe_api).expect("remove accepted bare-path probe");
+            }
+            Err(error) => {
+                assert!(
+                    matches!(error.raw_os_error(), Some(3 | 123 | 206 | 267)),
+                    "bare path must fail at a Win32 path boundary, not ACL validation: {error}"
+                );
+                eprintln!("bare DOS image-stage refusal: {error}");
+                assert!(
+                    !probe_api
+                        .try_exists()
+                        .expect("probe metadata check must not be denied"),
+                    "failed bare create left a stage"
+                );
+            }
+        }
         let pins = create_image_stage(&stage).expect("create and retain long private image stage");
         let stable = windows_inputs::stable_local_path(&pins).expect("retained image stage");
         assert_eq!(
             stable.canonicalize().unwrap(),
             stage.canonicalize().unwrap()
         );
+        drop(pins);
+        let short = owned.path().join("short-images");
+        if short.as_os_str().encode_wide().count() < 248 {
+            assert_eq!(
+                local_source::win32_extended_if_long(&short).unwrap(),
+                short,
+                "short fixed-local stage must not change spelling"
+            );
+            let short_pins = create_image_stage(&short).expect("short private image stage");
+            assert_eq!(
+                windows_inputs::stable_local_path(&short_pins)
+                    .unwrap()
+                    .canonicalize()
+                    .unwrap(),
+                short.canonicalize().unwrap()
+            );
+        } else {
+            eprintln!("short-path directory control skipped: Windows TEMP prefix is already long");
+        }
     }
 
     #[test]

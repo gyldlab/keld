@@ -268,7 +268,10 @@ impl CapturedInputs {
     pub(super) fn open(root: &Path) -> Result<Self, BuildError> {
         let ancestors = pin_input_root(root)?;
         let root = stable_local_path(&ancestors)?;
-        boot::ensure_current_principal_owns(&root)
+        // The retained identity is DOS-form for later consumers. Only the
+        // direct Win32 security API receives an extended spelling when the
+        // physical path exceeds the ordinary directory limit.
+        boot::ensure_current_principal_owns(&super::local_source::win32_extended_if_long(&root)?)
             .map_err(|error| BuildError::input("Windows project owner", error))?;
         let config = open_leaf(&root, "keld.config.ts")?;
         let permissions = open_leaf(&root, "keld.permissions.jsonc")?;
@@ -409,8 +412,10 @@ fn open_leaf(root: &Path, name: &'static str) -> Result<File, BuildError> {
             "input must be a non-reparse regular file",
         ));
     }
-    boot::ensure_current_principal_owns(&stable_path)
-        .map_err(|error| BuildError::input(name, error))?;
+    boot::ensure_current_principal_owns(&super::local_source::win32_extended_if_long(
+        &stable_path,
+    )?)
+    .map_err(|error| BuildError::input(name, error))?;
     Ok(file)
 }
 
@@ -480,6 +485,47 @@ mod tests {
             fs::read_to_string(fixture.0.join("keld.config.ts")).expect("read"),
             APP
         );
+    }
+
+    #[test]
+    fn retained_long_authoring_root_and_file_pass_owner_check() {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        let owned = tempfile::tempdir().expect("owned fixed-local fixture");
+        let units = owned.path().as_os_str().encode_wide().count();
+        assert!(units < 230, "fixture needs a short fixed-local temp prefix");
+        let parent = owned.path().join("p".repeat(245 - units - 1));
+        fs::create_dir(&parent).expect("short parent for deep authoring fixture");
+        let project = parent.join("owned-project");
+        let extended = super::super::local_source::win32_extended_if_long(&project).unwrap();
+        assert!(extended.to_string_lossy().starts_with(r"\\?\"));
+        fs::create_dir(&extended).expect("create the deep project under an owned parent");
+        for (name, bytes) in [
+            ("keld.config.ts", APP.as_bytes()),
+            (
+                "keld.permissions.jsonc",
+                br#"{"profile":"strict"}"#.as_slice(),
+            ),
+        ] {
+            let path =
+                super::super::local_source::win32_extended_if_long(&project.join(name)).unwrap();
+            fs::write(&path, bytes).expect("write retained authoring leaf");
+        }
+        // This exercises both GetNamedSecurityInfo sites with a physical path
+        // beyond the normal Win32 limit. A host with long-path opt-in may also
+        // accept the unextended spelling; the owner check is never omitted.
+        let app = CapturedInputs::open(&project)
+            .expect("admit owned deep root and exact regular leaves")
+            .check(&project)
+            .expect("valid deep project");
+        assert_eq!(app.id, "com.example.check");
+        for name in ["keld.config.ts", "keld.permissions.jsonc"] {
+            let path =
+                super::super::local_source::win32_extended_if_long(&project.join(name)).unwrap();
+            fs::remove_file(path).expect("remove exact test-owned leaf");
+        }
+        fs::remove_dir(&extended).expect("remove exact test-owned project");
+        fs::remove_dir(&parent).expect("remove exact short fixture parent");
     }
 
     #[test]
