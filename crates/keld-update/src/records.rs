@@ -38,6 +38,15 @@ pub(crate) use initial_admission::{
 #[allow(dead_code)]
 mod metadata_store;
 
+// Private canonical D-23 bytes used only by the retained native KEL-53
+// repository owner. These types do not mint ReadyRevision or writer authority.
+#[cfg(windows)]
+pub(crate) use metadata_store::{
+    AnchorRecord, CurrentRecord, EnrollmentState, GenerationPhase, GenerationRecord,
+    decode_metadata_anchor, decode_metadata_current, decode_metadata_generation,
+    encode_metadata_anchor, encode_metadata_current, encode_metadata_generation,
+};
+
 const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";
 const FLOOR_SCHEMA: &str = "keld.version-floor/v1";
