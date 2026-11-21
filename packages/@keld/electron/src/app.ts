@@ -168,7 +168,18 @@ function removeAppListener(event: string, listener: AppListener): void {
   if (!list) return;
   for (let i = list.length - 1; i >= 0; i -= 1) {
     if (list[i] === listener) {
-      list.splice(i, 1);
+      // Preserve each remaining listener in order using the captured intrinsic.
+      // Inherited Array.prototype.splice is application-mutable and may erase a
+      // different listener's veto. Array length is our own data property.
+      for (let slot = i; slot + 1 < list.length; slot += 1)
+        stateDefineProperty(list, slot, {
+          __proto__: null,
+          value: list[slot + 1],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        } as PropertyDescriptor);
+      list.length -= 1;
       break;
     }
   }

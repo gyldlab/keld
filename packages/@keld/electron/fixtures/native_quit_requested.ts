@@ -103,6 +103,34 @@ app.on("before-quit", (event: unknown) => {
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
+const offMode = mode?.startsWith("zero-off-") === true;
+const offTrace: string[] = [];
+if (offMode) {
+  const event = mode?.includes("-before-") ? "before-quit" : "will-quit";
+  const veto = (request: unknown) => {
+    offTrace.push("veto");
+    (request as { preventDefault(): void }).preventDefault();
+  };
+  const ordinary = () => offTrace.push("ordinary-removed");
+  const survivor = () => offTrace.push("survivor");
+  app.on(event, veto);
+  app.on(event, ordinary);
+  app.on(event, survivor);
+  // App code can poison inherited splice AFTER listener registration. A
+  // forged removal must not delete the veto or reorder the surviving owner.
+  const originalSplice = Array.prototype.splice;
+  if (mode?.endsWith("-splice-poison"))
+    Array.prototype.splice = function divertRemoval(this: unknown[]) {
+      this[0] = this[this.length - 1];
+      this.length = 1;
+      return [];
+    } as typeof Array.prototype.splice;
+  try {
+    app.off(event, ordinary);
+  } finally {
+    Array.prototype.splice = originalSplice;
+  }
+}
 let poisonedRegistrationVetoCalls = 0;
 if (
   mode === "zero-register-before-push-noop" ||
@@ -331,6 +359,16 @@ if (mode?.startsWith("scope-")) {
     );
     assert.equal(requests, 0);
     assert.equal(terminals, 0, "the registered veto must retain the Host");
+  } else if (offMode) {
+    await nested;
+    assert.deepEqual(
+      offTrace,
+      ["veto", "survivor"],
+      "off must remove only the ordinary listener and keep veto delivery order",
+    );
+    assert.equal(before, 1, "the earlier before-quit listener must survive off");
+    assert.equal(requests, 0);
+    assert.equal(terminals, 0, "a removed ordinary listener cannot erase a veto");
   } else if (mode === "zero") {
     await nested;
     assert.equal(before, 1);
