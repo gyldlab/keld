@@ -11,6 +11,22 @@ use crate::{
 };
 
 pub(crate) const MAX_LOCAL_RECORD_BYTES: usize = 64 * 1024;
+
+// KEL-270 D-64/D-68: this codec is built with the real updater on Windows and
+// exercised in crate tests, but its native repository writer/reader is not
+// commissioned until KEL-53 T82. The narrow dead-code exception expires when
+// the owner wires the verified read-only state loader.
+#[cfg(any(windows, test))]
+#[allow(dead_code)]
+mod initial_admission;
+
+// KEL-270 D-23 contains only canonical metadata *record bytes*.
+// T20 owns signed TUF verification; KEL-53 T82 owns protected-native handles,
+// ledger census, writer leases and publication. None are implemented here.
+#[cfg(any(windows, test))]
+#[allow(dead_code)]
+mod metadata_store;
+
 const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";
 const FLOOR_SCHEMA: &str = "keld.version-floor/v1";
@@ -325,18 +341,7 @@ pub(crate) fn encode_provenance(
             .protection_profile()
             .as_str()
             .to_owned(),
-        identity: WireIdentity {
-            install_mode: identity.install_mode.as_str().to_owned(),
-            app_id: identity.app_id.clone(),
-            channel: identity.channel.as_str().to_owned(),
-            target: identity.target.clone(),
-            install_root: path_text(&identity.install_root)?.to_owned(),
-            update_root: path_text(&identity.update_root)?.to_owned(),
-            signing_key_id: hex_digest(identity.signing_key_id.as_bytes()),
-            baseline: wire_artifact(&identity.baseline)?,
-            profile_digest: hex_digest(&identity.profile_digest.0),
-            principal_model: "strict-distinct-os-principals".to_owned(),
-        },
+        identity: wire_identity(identity)?,
         publisher_scope: hex_digest(publisher_scope),
         volume_guid: volume_guid.to_owned(),
     })
@@ -402,21 +407,7 @@ pub(crate) fn decode_provenance(bytes: &[u8]) -> Result<ProvenanceRecord, Update
         return Err(invalid("protection profile does not match install mode"));
     }
     nonempty(&wire.volume_guid)?;
-    path_text(Path::new(&wire.identity.install_root))?;
-    path_text(Path::new(&wire.identity.update_root))?;
-    let identity = DirectInstallationIdentity {
-        install_mode,
-        app_id: wire.identity.app_id,
-        channel: channel(&wire.identity.channel)?,
-        target: wire.identity.target,
-        install_root: wire.identity.install_root.into(),
-        update_root: wire.identity.update_root.into(),
-        signing_key_id: SigningKeyId::from_digest(digest(&wire.identity.signing_key_id)?),
-        baseline: artifact(wire.identity.baseline)?,
-        profile_digest: keld_guard::ProfileDigest(digest(&wire.identity.profile_digest)?),
-        principal_model: PrincipalModel::StrictDistinctOsPrincipals,
-    };
-    crate::provenance::validate_expected(&identity)?;
+    let identity = identity_from_wire(wire.identity)?;
     Ok(ProvenanceRecord {
         provenance: InstallProvenance {
             identity,
@@ -425,6 +416,46 @@ pub(crate) fn decode_provenance(bytes: &[u8]) -> Result<ProvenanceRecord, Update
         publisher_scope: digest(&wire.publisher_scope)?,
         volume_guid: wire.volume_guid,
     })
+}
+
+/// Shared existing D-8 wire identity representation for provenance and D-64.
+fn wire_identity(identity: &DirectInstallationIdentity) -> Result<WireIdentity, UpdateError> {
+    crate::provenance::validate_expected(identity)?;
+    Ok(WireIdentity {
+        install_mode: identity.install_mode.as_str().to_owned(),
+        app_id: identity.app_id.clone(),
+        channel: identity.channel.as_str().to_owned(),
+        target: identity.target.clone(),
+        install_root: path_text(&identity.install_root)?.to_owned(),
+        update_root: path_text(&identity.update_root)?.to_owned(),
+        signing_key_id: hex_digest(identity.signing_key_id.as_bytes()),
+        baseline: wire_artifact(&identity.baseline)?,
+        profile_digest: hex_digest(&identity.profile_digest.0),
+        principal_model: "strict-distinct-os-principals".to_owned(),
+    })
+}
+
+/// Reuses the existing D-8 parser/validation rather than defining a D-64 copy.
+fn identity_from_wire(wire: WireIdentity) -> Result<DirectInstallationIdentity, UpdateError> {
+    if wire.principal_model != "strict-distinct-os-principals" {
+        return Err(invalid("unsupported owner or principal model"));
+    }
+    path_text(Path::new(&wire.install_root))?;
+    path_text(Path::new(&wire.update_root))?;
+    let identity = DirectInstallationIdentity {
+        install_mode: crate::DirectInstallMode::parse(&wire.install_mode)?,
+        app_id: wire.app_id,
+        channel: channel(&wire.channel)?,
+        target: wire.target,
+        install_root: wire.install_root.into(),
+        update_root: wire.update_root.into(),
+        signing_key_id: SigningKeyId::from_digest(digest(&wire.signing_key_id)?),
+        baseline: artifact(wire.baseline)?,
+        profile_digest: keld_guard::ProfileDigest(digest(&wire.profile_digest)?),
+        principal_model: PrincipalModel::StrictDistinctOsPrincipals,
+    };
+    crate::provenance::validate_expected(&identity)?;
+    Ok(identity)
 }
 
 pub(crate) fn encode_complete(
