@@ -1,11 +1,11 @@
 //! D-45 issuer/profile/role comparison over independently authenticated inputs.
 //!
-//! This module owns no WinTrust state, native certificate reader, signer key,
+//! This module owns no `WinTrust` state, native certificate reader, signer key,
 //! installation permit, or public API. T-82 must first commission a native
 //! producer for the signer leaf's exact EKUs, root certificate hash and immediate
 //! issuer SPKI, and Pack's retained-handle D-WIRE identity. There is deliberately
 //! no production constructor for these combined observations. A successful
-//! predicate is data consistency only, not Authenticode or installer authority.
+//! predicate is data consistency only, not `Authenticode` or installer authority.
 
 #![allow(dead_code)] // T-82: no commissioned native signer-facts or policy producer yet.
 
@@ -49,9 +49,9 @@ pub(super) struct WindowsD45ProfilePolicy<'a> {
     pub(super) destination_issuer: WindowsD45IssuerPolicy<'a>,
 }
 
-/// Observations to be issued only by Guard's future WinTrust leaf and chain
+/// Observations to be issued only by Guard's future `WinTrust` leaf and chain
 /// decoder while the verified provider state remains live. No arbitrary public
-/// Boolean for "WinTrust succeeded" or "profile valid" is admitted.
+/// Boolean for "`WinTrust` succeeded" or "profile valid" is admitted.
 #[derive(Debug)]
 pub(super) struct WindowsD45NativeSignerFacts<'a> {
     pub(super) signed_app_id: &'a str,
@@ -60,7 +60,7 @@ pub(super) struct WindowsD45NativeSignerFacts<'a> {
     pub(super) leaf_issuer_spki_sha256: [u8; 32],
 }
 
-/// D-45 pure comparison result. Cannot create VerifiedWindowsImage or a D-46
+/// D-45 pure comparison result. Cannot create `VerifiedWindowsImage` or a D-46
 /// effect permit. No field is exported or usable as signer authority.
 #[must_use = "policy data consistency alone is never signer authority"]
 pub(super) struct WindowsD45RolePolicyMatch {
@@ -75,7 +75,7 @@ fn refusal(detail: &'static str) -> WindowsAuthenticodeError {
 }
 
 fn contains_once(values: &[&str], exact: &str) -> bool {
-    values.iter().filter(|oid| *oid == &exact).count() == 1
+    values.iter().copied().filter(|oid| *oid == exact).count() == 1
 }
 
 fn require_issuer(
@@ -112,8 +112,10 @@ pub(super) fn require_d45_issuer_profile_role(
     policy: Option<&WindowsD45ProfilePolicy<'_>>,
     native: Option<&WindowsD45NativeSignerFacts<'_>>,
 ) -> Result<WindowsD45RolePolicyMatch, WindowsAuthenticodeError> {
-    let policy = policy.ok_or_else(|| refusal("the authenticated D-WIRE issuer and role policy is unavailable"))?;
-    let facts = native.ok_or_else(|| refusal("the native WinTrust issuer and signer EKU evidence is unavailable"))?;
+    let policy = policy
+        .ok_or_else(|| refusal("the authenticated D-WIRE issuer and role policy is unavailable"))?;
+    let facts =
+        native.ok_or_else(|| refusal("the native WinTrust issuer and signer EKU evidence is unavailable"))?;
     if policy.app_id.is_empty() || facts.signed_app_id != policy.app_id {
         return Err(refusal("the WinTrust signed app ID differs from the authenticated Host identity"));
     }

@@ -1,5 +1,5 @@
 //! Pure D-45 data-consistency controls. These synthetic records are never a
-//! real certificate, commissioned policy, signed Host or T-82 WinTrust pass.
+//! real certificate, commissioned policy, signed Host or T-82 `WinTrust` pass.
 
 use super::{
     CODE_SIGNING_OID, PUBLIC_TRUST_OID, WindowsD45HostRole, WindowsD45IssuerPolicy,
