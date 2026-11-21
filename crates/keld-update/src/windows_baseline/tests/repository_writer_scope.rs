@@ -8,9 +8,9 @@ use crate::windows_baseline::repository_census::{
 };
 use crate::windows_baseline::repository_writer_scope::refuse_installation_lease_as_repository_owner;
 use crate::windows_baseline::{
-    load_windows_activation_write_snapshot, select_windows_active_package,
+    WindowsBaselineTrust, load_windows_activation_write_snapshot, select_windows_active_package,
 };
-use crate::{Channel, UpdateError};
+use crate::{ActivationEffect, Channel, UpdateError};
 
 const REPOSITORY: [u8; 32] = [0x91; 32];
 
@@ -24,6 +24,33 @@ fn refusal_step(
         UpdateError::Baseline { step, .. } => step,
         other => panic!("unexpected installation lease refusal: {other}"),
     }
+}
+
+fn assert_writer_active_selection(trust: &WindowsBaselineTrust, context: &str) {
+    match select_windows_active_package(trust).expect_err(context) {
+        UpdateError::Activation {
+            step: "active package selection",
+            effect: ActivationEffect::WriterActive,
+            ..
+        } => {}
+        other => panic!("held exclusive installation lease must yield WriterActive: {other:?}"),
+    }
+}
+
+/// Exact extra installed seed leaves, not a full version tree or D-90 census.
+/// `record_bytes` separately covers only direct update-root regular files.
+fn protected_seed_leaves(trust: &WindowsBaselineTrust) -> [Vec<u8>; 3] {
+    let baseline = trust
+        .installation
+        .update_root
+        .join("versions")
+        .join("1.0.0");
+    [
+        std::fs::read(trust.installation.install_root.join("install-provenance"))
+            .expect("protected installation provenance bytes"),
+        std::fs::read(baseline.join(".complete")).expect("protected baseline completion bytes"),
+        std::fs::read(baseline.join("content.tar")).expect("protected baseline archive bytes"),
+    ]
 }
 
 #[test]
@@ -48,10 +75,7 @@ fn genuine_exclusive_installation_lease_is_not_repository_membership_authority()
         "repository writer scope",
         "the real installation lease cannot cover unrelated roots or source readers"
     );
-    assert!(
-        select_windows_active_package(&trust).is_err(),
-        "the writer still has the exclusive per-install activation lease"
-    );
+    assert_writer_active_selection(&trust, "the writer holds the per-install activation lease");
     drop(writer);
     assert!(
         select_windows_active_package(&trust).is_ok(),
@@ -60,7 +84,7 @@ fn genuine_exclusive_installation_lease_is_not_repository_membership_authority()
     assert_eq!(
         record_bytes(&trust),
         before,
-        "D-90 refusal must not mutate records"
+        "D-90 refusal must not mutate direct update-root records other than activation.lock"
     );
 }
 
@@ -117,8 +141,14 @@ fn simultaneous_native_installation_writers_cannot_mint_repository_eligibility()
         first.installation.channel, second.installation.channel,
         "the negative control uses the same installed channel"
     );
+    assert_eq!(
+        first.publisher_scope, second.publisher_scope,
+        "the two installed sources share the same recorded publisher scope"
+    );
     let first_before = record_bytes(&first);
     let second_before = record_bytes(&second);
+    let first_seed_before = protected_seed_leaves(&first);
+    let second_seed_before = protected_seed_leaves(&second);
 
     // This is the actual OS-level counterexample to treating an existing
     // installation's activation.lock as a repository-wide writer lease.
@@ -128,20 +158,14 @@ fn simultaneous_native_installation_writers_cannot_mint_repository_eligibility()
     // that either writer covers the missing acquisition-v1 repository.
     let first_writer = load_windows_activation_write_snapshot(&first, &verifier(&first))
         .expect("first real exclusive installation writer");
-    assert!(
-        select_windows_active_package(&first).is_err(),
-        "first exclusive writer blocks its own installation reader"
-    );
+    assert_writer_active_selection(&first, "first writer blocks its own installation reader");
     assert!(
         select_windows_active_package(&second).is_ok(),
         "first installation lease cannot fence a different installed root"
     );
     let second_writer = load_windows_activation_write_snapshot(&second, &verifier(&second))
         .expect("second installation owns an independent exclusive activation lease");
-    assert!(
-        select_windows_active_package(&second).is_err(),
-        "second exclusive writer blocks only its own installation reader"
-    );
+    assert_writer_active_selection(&second, "second writer blocks its own installation reader");
 
     for (trust, writer) in [(&first, &first_writer), (&second, &second_writer)] {
         let request = WindowsRepositoryEligibilityRequest {
@@ -166,9 +190,9 @@ fn simultaneous_native_installation_writers_cannot_mint_repository_eligibility()
         select_windows_active_package(&first).is_ok(),
         "releasing the first installation writer restores only its own reader"
     );
-    assert!(
-        select_windows_active_package(&second).is_err(),
-        "the second installation writer remains independently exclusive"
+    assert_writer_active_selection(
+        &second,
+        "second writer stays exclusive after first releases",
     );
     drop(second_writer);
     assert!(
@@ -178,11 +202,21 @@ fn simultaneous_native_installation_writers_cannot_mint_repository_eligibility()
     assert_eq!(
         record_bytes(&first),
         first_before,
-        "D-90 refusal must not write protected records in the first installation"
+        "D-90 refusal must preserve direct update-root record bytes in the first installation"
     );
     assert_eq!(
         record_bytes(&second),
         second_before,
-        "D-90 refusal must not write protected records in the second installation"
+        "D-90 refusal must preserve direct update-root record bytes in the second installation"
+    );
+    assert_eq!(
+        protected_seed_leaves(&first),
+        first_seed_before,
+        "first installation provenance, baseline completion and archive bytes must be unchanged"
+    );
+    assert_eq!(
+        protected_seed_leaves(&second),
+        second_seed_before,
+        "second installation provenance, baseline completion and archive bytes must be unchanged"
     );
 }
