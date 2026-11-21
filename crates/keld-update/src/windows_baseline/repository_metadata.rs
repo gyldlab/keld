@@ -89,6 +89,14 @@ pub(super) struct RepositoryMetadataIo<'lease> {
     profile: keld_guard::WindowsInstallProtectionProfile,
 }
 
+/// All operation namespaces from the same retained repository writer.
+/// This bundles borrowed parents; it is not a lease or a D-90 witness.
+pub(super) struct RetainedOperationParents<'lease> {
+    admissions: &'lease Dir,
+    recoveries: &'lease Dir,
+    transitions: &'lease Dir,
+}
+
 impl<'lease> RepositoryMetadataIo<'lease> {
     /// Attaches only to the caller-retained lease and D-90 proof; this type
     /// cannot be constructed by a production caller before T-82 qualification.
@@ -96,9 +104,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         enrollments: &'lease Dir,
         repository: &'lease Dir,
         generations: &'lease Dir,
-        admissions: &'lease Dir,
-        recoveries: &'lease Dir,
-        transitions: &'lease Dir,
+        operations: RetainedOperationParents<'lease>,
         expected: &'lease RepositoryAnchor,
         eligibility: &'lease RepositoryLedgerCensus,
         profile: keld_guard::WindowsInstallProtectionProfile,
@@ -107,9 +113,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
             enrollments,
             repository,
             generations,
-            admissions,
-            recoveries,
-            transitions,
+            admissions: operations.admissions,
+            recoveries: operations.recoveries,
+            transitions: operations.transitions,
             expected,
             eligibility,
             profile,
