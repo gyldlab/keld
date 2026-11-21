@@ -44,6 +44,14 @@ const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.windows/v1\0";
 const WINDOWS_SIGNER_SPKI_MAX_BYTES: u32 = 64 * 1024;
 const WINDOWS_OPUS_INFO_MAX_BYTES: u32 = 4 * 1024;
 
+/// Two distinct trust policies over the same retained, read-only image handle.
+/// Cache-only observation never substitutes for full revocation verification.
+#[derive(Clone, Copy)]
+enum WindowsTrustPolicy {
+    Full,
+    OfflinePreflight,
+}
+
 /// An executable image held open for KEL-135 Authenticode verification.
 ///
 /// The handle shares only reads, so the file cannot be written, renamed or deleted
@@ -71,10 +79,8 @@ impl WindowsAuthenticodeImage {
         Ok(Self { path, image })
     }
 
-    /// First checks the pinned image locally with cache-only, no-revocation
-    /// `WinVerifyTrust` flags. Then independently verifies chain revocation and
-    /// binds the same signed publisher and app id to the same open handle.
-    /// Neither the local preflight nor a cache hit grants caller authority.
+    /// Verifies the pinned image once and binds its authenticated publisher and app id
+    /// to the same open handle.
     ///
     /// Any `WinTrust` state it creates is closed, or its close failure reported, before
     /// it returns. A refused image's handle is closed with it.
@@ -90,6 +96,61 @@ impl WindowsAuthenticodeImage {
             image: self.image,
             identity,
         })
+    }
+
+    /// Observes a signed image using only cached local trust data, before any
+    /// discovery/network decision. Retains the original file handle and returns
+    /// a distinct, non-authority type; it does not check revocation status.
+    ///
+    /// # Errors
+    /// Refuses an absent or untrusted local chain, ambiguous signatures, missing
+    /// or invalid signed program-name facts, and any `WinTrust` CLOSE failure.
+    pub fn observe_preflight(self) -> Result<WindowsPreflightImage, WindowsAuthenticodeError> {
+        let observed = windows_identity_from_image_with_policy(
+            &self.path,
+            &self.image,
+            WindowsTrustPolicy::OfflinePreflight,
+        )?;
+        Ok(WindowsPreflightImage {
+            source: self,
+            observed_publisher_scope: observed.publisher_scope,
+            observed_app_id: observed.app_id,
+        })
+    }
+}
+
+/// A D-45 cache-only signed-image observation retaining the exact source file.
+///
+/// The observed values are for local read-only Direct/Managed discovery only.
+/// Neither the type nor its fields can mint `VerifiedWindowsImage`, bypass
+/// revocation, or grant installation authority. A later approved Direct-decision
+/// adapter must independently perform full verification on this retained file.
+#[derive(Debug)]
+pub struct WindowsPreflightImage {
+    source: WindowsAuthenticodeImage,
+    observed_publisher_scope: [u8; 32],
+    observed_app_id: Box<str>,
+}
+
+impl WindowsPreflightImage {
+    /// Locally observed publisher scope. No current revocation status is implied.
+    #[must_use]
+    pub const fn observed_publisher_scope(&self) -> &[u8; 32] {
+        &self.observed_publisher_scope
+    }
+
+    /// Locally observed legacy `keld.app-id/v1:` signed program-name app ID.
+    /// The v2 D-WIRE policy/role check is a separate pending Guard boundary.
+    #[must_use]
+    pub fn observed_app_id(&self) -> &str {
+        &self.observed_app_id
+    }
+
+    /// The retained file supplying read-only discovery bytes. No path reopen.
+    /// Only the future Direct-decision owner may promote this observation.
+    #[must_use]
+    pub const fn file(&self) -> &File {
+        &self.source.image
     }
 }
 
@@ -181,11 +242,30 @@ fn open_windows_trust_image(executable: &Path) -> Result<File, WindowsAuthentico
     Ok(image)
 }
 
-#[allow(unsafe_code, clippy::too_many_lines)] // one linear VERIFY/extract/CLOSE state owner avoids a leaked trust handle
 fn verified_windows_identity_from_image(
     executable: &Path,
     image: &File,
 ) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
+    windows_identity_from_image_with_policy(executable, image, WindowsTrustPolicy::Full)
+}
+
+#[allow(unsafe_code, clippy::too_many_lines)] // one shared VERIFY/extract/CLOSE state owner for full and offline policies
+fn windows_identity_from_image_with_policy(
+    executable: &Path,
+    image: &File,
+    policy: WindowsTrustPolicy,
+) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
+    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);
+    let (revocation_checks, provider_flags) = match policy {
+        WindowsTrustPolicy::Full => (
+            WTD_REVOKE_WHOLECHAIN,
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        ),
+        WindowsTrustPolicy::OfflinePreflight => (
+            WTD_REVOKE_NONE,
+            WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL,
+        ),
+    };
     let mut executable_wide: Vec<u16> = executable.as_os_str().encode_wide().collect();
     if executable_wide.contains(&0) {
         return Err(windows_identity_error(
@@ -234,7 +314,7 @@ fn verified_windows_identity_from_image(
         pPolicyCallbackData: std::ptr::null_mut(),
         pSIPClientData: std::ptr::null_mut(),
         dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_NONE,
+        fdwRevocationChecks: revocation_checks,
         dwUnionChoice: WTD_CHOICE_FILE,
         Anonymous: WINTRUST_DATA_0 {
             pFile: &raw mut file_info,
@@ -242,78 +322,11 @@ fn verified_windows_identity_from_image(
         dwStateAction: WTD_STATEACTION_VERIFY,
         hWVTStateData: std::ptr::null_mut(),
         pwszURLReference: std::ptr::null_mut(),
-        // D-45 offline preflight: 0x0010 | 0x1000, with no network retrieval.
-        dwProvFlags: WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL,
+        dwProvFlags: provider_flags,
         dwUIContext: WTD_UICONTEXT_EXECUTE,
         pSignatureSettings: &raw mut signature_settings,
     };
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    // First authenticate the local signature, signer count and bounded identity
-    // without any URL retrieval. Neither this observation nor a cached chain
-    // supplies revocation clearance or installation authority.
-    // SAFETY: the exact retained read-only hFile, NUL-terminated descriptive
-    // pathname, signature settings, and WinTrust input remain live until CLOSE.
-    let preflight_status = unsafe {
-        WinVerifyTrust(
-            std::ptr::null_mut(),
-            &raw mut action,
-            (&raw mut trust_data).cast(),
-        )
-    };
-    let preflight_result = if preflight_status == 0 {
-        validate_windows_signature_cardinality(
-            signature_settings.cSecondarySigs,
-            signature_settings.dwVerifiedSigIndex,
-        )
-        .and_then(|()| windows_identity_from_verified_trust_state(&trust_data))
-    } else {
-        Err(windows_identity_error(
-            format!(
-                "WinVerifyTrust rejected the current executable with status 0x{:08x} during the cache-only preflight",
-                u32::from_ne_bytes(preflight_status.to_ne_bytes())
-            ),
-            "Install a package signed by a locally trusted Authenticode publisher; do not bypass signature verification.",
-        ))
-    };
-    // A VERIFY failure may still allocate provider state. Close any such state
-    // before reporting either the primary refusal or a cleanup failure.
-    let preflight_close_result = if trust_data.hWVTStateData.is_null() {
-        Ok(())
-    } else {
-        trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
-        // SAFETY: this closes the state from the preceding VERIFY while the
-        // same action, hFile, path, and signature settings remain live.
-        let status = unsafe {
-            WinVerifyTrust(
-                std::ptr::null_mut(),
-                &raw mut action,
-                (&raw mut trust_data).cast(),
-            )
-        };
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(windows_trust_close_error(status))
-        }
-    };
-    let preflight_identity = match (preflight_result, preflight_close_result) {
-        (Ok(identity), Ok(())) => identity,
-        (Ok(_), Err(cleanup)) => return Err(cleanup),
-        (Err(primary), Ok(())) => return Err(primary),
-        (Err(primary), Err(cleanup)) => return Err(primary.with_close_failure(cleanup)),
-    };
-
-    // The preflight has no public constructor or authority conversion. Run the
-    // original revocation-checked policy independently against this same hFile.
-    // Reinitialize mutable provider output fields and state after CLOSE.
-    signature_settings.dwIndex = 0;
-    signature_settings.dwFlags = WSS_GET_SECONDARY_SIG_COUNT;
-    signature_settings.cSecondarySigs = 0;
-    signature_settings.dwVerifiedSigIndex = 0;
-    trust_data.dwStateAction = WTD_STATEACTION_VERIFY;
-    trust_data.hWVTStateData = std::ptr::null_mut();
-    trust_data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
-    trust_data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
     // SAFETY: `file_info`, its NUL-terminated path, the borrowed open trust-image
     // handle, and `signature_settings` remain live and unmoved with `trust_data`
     // until the matching CLOSE call. Other optional pointers are null and the selected
@@ -326,13 +339,23 @@ fn verified_windows_identity_from_image(
         )
     };
     if trust_status != 0 {
-        let primary = windows_identity_error(
+        let failure_detail = if offline {
+            format!(
+                "WinVerifyTrust rejected the current executable with status 0x{:08x} during the cache-only preflight",
+                u32::from_ne_bytes(trust_status.to_ne_bytes())
+            )
+        } else {
             format!(
                 "WinVerifyTrust rejected the current executable with status 0x{:08x}",
                 u32::from_ne_bytes(trust_status.to_ne_bytes())
-            ),
-            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status.",
-        );
+            )
+        };
+        let fix = if offline {
+            "Install a package signed by a locally trusted Authenticode publisher; do not bypass signature verification."
+        } else {
+            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status."
+        };
+        let primary = windows_identity_error(failure_detail, fix);
         if !trust_data.hWVTStateData.is_null() {
             trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
             // SAFETY: this closes only state created by the VERIFY call above
@@ -356,17 +379,7 @@ fn verified_windows_identity_from_image(
         signature_settings.cSecondarySigs,
         signature_settings.dwVerifiedSigIndex,
     )
-    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data))
-    .and_then(|identity| {
-        if identity == preflight_identity {
-            Ok(identity)
-        } else {
-            Err(windows_identity_error(
-                "the signed publisher or app identity changed between local preflight and full verification",
-                "Restore the signed Host image and restart verification from the retained file.",
-            ))
-        }
-    });
+    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data));
     trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
     // SAFETY: this is the mandatory CLOSE for the successful VERIFY call;
     // action/data storage and every referenced input remain live here.
@@ -798,6 +811,23 @@ mod tests {
         );
         drop(image);
         fs::rename(&image_path, &moved).expect("a released image can move");
+    }
+
+    #[test]
+    fn d45_cache_only_preflight_refuses_unsigned_source() {
+        let directory = FixtureDirectory::new("d45-offline-unsigned");
+        let host_path = directory.path().join("unsigned-keld-host.exe");
+        fs::write(&host_path, b"unsigned synthetic source").expect("write unsigned image");
+
+        let error = WindowsAuthenticodeImage::open(&host_path)
+            .expect("a regular unsigned fixture opens for a read-only observation")
+            .observe_preflight()
+            .expect_err("offline preflight must refuse an unsigned image");
+        assert!(
+            error.detail().contains("cache-only preflight"),
+            "preflight must report its separate offline trust policy: {error}"
+        );
+        assert!(error.close_failure().is_none(), "{error}");
     }
 
     #[test]

@@ -16,7 +16,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
 };
 
-use super::*;
+use super::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FixtureDirectory, WindowsAuthenticodeError,
+    WindowsAuthenticodeImage,
+};
 
 /// Own only the junction leaves, never either target directory.
 struct TestJunctions {
