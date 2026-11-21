@@ -51,7 +51,7 @@ pub use refusals::WindowsTokenError;
     dead_code,
     reason = "staged D-42 observation awaits T-82 retained-token grant"
 )]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObservedUserSid {
     bytes: [u8; MAX_SID_BYTES],
     used: usize,
