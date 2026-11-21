@@ -3,6 +3,11 @@
 //! These test the existing retained-directory *negative* observation after
 //! another process exits without teardown. They do not call the gated writer,
 //! prove NTFS power-loss durability, mint D-90 eligibility or authorize cleanup.
+//! A deletion mutant of the guarded production integration is unavailable:
+//! the native D-90 `RepositoryLedgerCensus` witness has no qualified producer,
+//! so neither journal/metadata writer can be constructed through that path.
+//! These fixtures test local refusal and byte preservation only. In particular,
+//! generic `pending-*` residue is not a completed D-64/D-68 publication cut.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -85,13 +90,18 @@ fn journal_membership_crash_child() {
                 .expect("canonical pending operation fixture");
             synced_new(&root.join("pending-operation.json"), &bytes);
         }
-        "d68-prepared-before-pointer" => {
+        "repository-root-pending-residue" => {
+            // A generic unfinished repository-root record. There is no
+            // admitted D-64 journal or canonical prepared D-68 pointer here:
+            // do not classify this as the D-64 -> D-68 production cut.
             synced_new(
                 &root.join(format!("pending-{}", "6d".repeat(32))),
-                b"flushed-unpublished-d68-pointer",
+                b"unidentified-pending-record",
             );
         }
-        "d68-pointed-with-preparation-residue" => {
+        "repository-root-pending-residue-with-pointed-name" => {
+            // This is an operation-directory shape fixture. The pointed D-64
+            // leaf is deliberately opaque, so it proves no D-64 record validity.
             synced_new(&admission, b"pointed-admission-record");
             let bytes = encode_pending_repository_operation(&pending())
                 .expect("canonical pending operation fixture");
@@ -169,10 +179,11 @@ fn native_members(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     observed
 }
 
-/// Independent per-cut source-of-truth: every expected relative name and exact
-/// byte sequence is specified before the restart reader is invoked. In
-/// particular a D-64 admitted record cannot be substituted by a prepared
-/// sibling, and a D-68 pointer cannot conceal a missing pointed journal.
+/// Independent per-case name/byte oracle before the negative reader runs.
+/// The D-64-shaped leaves contain opaque fixture data, not canonical journal
+/// bytes or authenticated installation custody. Canonical D-68 pointer bytes
+/// are used only in pointer-present fixtures; no case proves a positive
+/// D-64-to-D-68 native publication or power-loss recovery.
 fn expected_members(cut: &str) -> Vec<(PathBuf, Vec<u8>)> {
     let pointer_bytes =
         encode_pending_repository_operation(&pending()).expect("canonical expected D-68 bytes");
@@ -191,11 +202,11 @@ fn expected_members(cut: &str) -> Vec<(PathBuf, Vec<u8>)> {
             b"orphan-admitted-record".to_vec(),
         )],
         "d68-pointer-without-d64" => vec![pointer],
-        "d68-prepared-before-pointer" => vec![(
+        "repository-root-pending-residue" => vec![(
             PathBuf::from(format!("pending-{}", "6d".repeat(32))),
-            b"flushed-unpublished-d68-pointer".to_vec(),
+            b"unidentified-pending-record".to_vec(),
         )],
-        "d68-pointed-with-preparation-residue" => vec![
+        "repository-root-pending-residue-with-pointed-name" => vec![
             admitted_journal_member,
             pointer,
             (
@@ -294,11 +305,11 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
         ("d68-pointer-without-d64", "repository pointed membership"),
         ("d68-with-unpointed-recovery", "repository member namespace"),
         (
-            "d68-prepared-before-pointer",
+            "repository-root-pending-residue",
             "repository pending publication residue",
         ),
         (
-            "d68-pointed-with-preparation-residue",
+            "repository-root-pending-residue-with-pointed-name",
             "repository pending publication residue",
         ),
     ] {
@@ -329,7 +340,7 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
             cut,
             "d68-pointer-without-d64"
                 | "d68-with-unpointed-recovery"
-                | "d68-pointed-with-preparation-residue"
+                | "repository-root-pending-residue-with-pointed-name"
         );
         assert_eq!(
             pointed,
