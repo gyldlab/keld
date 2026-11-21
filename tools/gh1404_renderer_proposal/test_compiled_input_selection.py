@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TOOL = Path(__file__).with_name("verify_compiled_input_selection.py")
@@ -230,6 +231,54 @@ class SourceToCompiledInputTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, "")
         self.assertIn("GH1404_G1_COMPILED_INPUT_REFUSED", result.stderr)
+
+    def test_late_source_parent_swap_after_last_stage_read_cannot_publish_receipt(self):
+        staged = self.copy_stage().resolve(strict=True)
+        stage_source = staged / "src"
+        final_leaf = staged / "src/main/webapp/mxgraph/src/shape/mxText.js"
+        old_reader = check.physical
+        swapped = False
+
+        def changed_after_successful_read(path, *args, **kwargs):
+            nonlocal swapped
+            result = old_reader(path, *args, **kwargs)
+            if not swapped and Path(path) == final_leaf:
+                outside = Path(self.temp.name) / "foreign-after-last-source-read"
+                shutil.copytree(stage_source, outside)
+                (outside / "main/webapp/mxgraph/src/shape/mxText.js").write_bytes(
+                    b"FOREIGN EXECUTABLE SOURCE AFTER VERIFIED READ\n"
+                )
+                stage_source.rename(staged / "retired-original-src")
+                stage_source.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return result
+
+        with mock.patch.object(check, "physical", side_effect=changed_after_successful_read):
+            with self.assertRaises((OSError, check.Refusal)):
+                check.inspect(self.inputs, staged, self.original)
+        self.assertTrue(swapped, "fault did not run after the last genuine G1 source read")
+
+    def test_late_same_byte_new_inode_cannot_rebind_source_receipt(self):
+        staged = self.copy_stage().resolve(strict=True)
+        stage_source = staged / "src"
+        final_leaf = staged / "src/main/webapp/mxgraph/src/shape/mxText.js"
+        old_reader = check.physical
+        replaced = False
+
+        def replace_after_last_read(path, *args, **kwargs):
+            nonlocal replaced
+            data = old_reader(path, *args, **kwargs)
+            if not replaced and Path(path) == final_leaf:
+                prior = staged / "retired-original-src"
+                stage_source.rename(prior)
+                shutil.copytree(prior, stage_source)
+                replaced = True
+            return data
+
+        with mock.patch.object(check, "physical", side_effect=replace_after_last_read):
+            with self.assertRaisesRegex(check.Refusal, "selected physical input changed"):
+                check.inspect(self.inputs, staged, self.original)
+        self.assertTrue(replaced, "identical-byte new-inode replacement did not run")
 
     def test_missing_unapproved_source_toolchain_cannot_be_minted_by_two_raw_patches(self):
         result = self.audit()

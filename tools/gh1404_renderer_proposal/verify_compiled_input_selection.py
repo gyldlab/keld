@@ -61,7 +61,7 @@ def git_blob(data):
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
-def physical(path):
+def physical(path, *, evidence=None):
     """Read one regular inode through a no-follow walk of every path component.
 
     Leaf-only O_NOFOLLOW is insufficient: a swapped ancestor directory can
@@ -121,12 +121,15 @@ def physical(path):
         require(identity(start) == identity(os.fstat(live_fd)) and
                 identity(start) == identity(os.fstat(fd)),
                 "source path or content changed while reading: " + path.name)
-        return bytes(data)
+        selected_bytes = bytes(data)
+        if evidence is not None:
+            evidence.append((path, identity(start), selected_bytes))
+        return selected_bytes
 
 
-def pinned(root, file):
+def pinned(root, file, *, evidence=None):
     require(file in PINS, "unlisted source input: " + file)
-    data = physical(root / file)
+    data = physical(root / file, evidence=evidence)
     require(sha(data) == PINS[file], "immutable input digest mismatch: " + file)
     return data
 
@@ -156,7 +159,11 @@ def assert_ant(xml, props):
 
 def inspect(inputs, staged, original, *, candidate_precompiled=None, require_compiled=False):
     inputs, staged, original = [Path(v).resolve(strict=True) for v in (inputs, staged, original)]
-    tree = json.loads(pinned(inputs, "pinned-drawio-recursive-tree.json"))
+    # One output receipt must describe one still-current physical selection,
+    # not a mixture of names observed before and after a source-root swap.
+    selected_evidence = []
+    tree = json.loads(pinned(inputs, "pinned-drawio-recursive-tree.json",
+                             evidence=selected_evidence))
     require(tree.get("sha") == GIT_TREE and tree.get("truncated") is False,
             "immutable upstream tree hash or truncation differs")
     blobs = {entry["path"]: entry["sha"] for entry in tree["tree"]
@@ -171,10 +178,11 @@ def inspect(inputs, staged, original, *, candidate_precompiled=None, require_com
         ("etc/build/Xml2Js.class", XML2JS_GIT),
     ):
         require(blobs.get(path) == value, "immutable original Git tree mismatch: " + path)
-    includes = pinned(inputs, "drawio-mxgraph-src-mxClient.js")
-    old_compiled = pinned(inputs, "drawio-mxgraph-COMPILED-ORIGINAL-mxClient.js")
-    ant = pinned(inputs, "drawio-pinned-build.xml")
-    properties = pinned(inputs, "drawio-pinned-build.properties")
+    includes = pinned(inputs, "drawio-mxgraph-src-mxClient.js", evidence=selected_evidence)
+    old_compiled = pinned(inputs, "drawio-mxgraph-COMPILED-ORIGINAL-mxClient.js",
+                          evidence=selected_evidence)
+    ant = pinned(inputs, "drawio-pinned-build.xml", evidence=selected_evidence)
+    properties = pinned(inputs, "drawio-pinned-build.properties", evidence=selected_evidence)
     require(git_blob(includes) == SRC_MX_GIT and git_blob(old_compiled) == OLD_MX_GIT
             and git_blob(ant) == ANT_XML_GIT and git_blob(properties) == ANT_PROPS_GIT,
             "original source/compiled/Ant immutable Git blobs differ")
@@ -185,12 +193,13 @@ def inspect(inputs, staged, original, *, candidate_precompiled=None, require_com
     )
     require(len(refs) == 131 and len(set(refs)) == 131,
             "immutable 131 source includes missing/duplicated/reordered")
-    stage_bytes = physical(staged / "source-manifest.json")
+    stage_bytes = physical(staged / "source-manifest.json", evidence=selected_evidence)
     require(sha(stage_bytes) == STAGE_SHA, "source stage immutable manifest digest mismatch")
     stage = json.loads(stage_bytes)
     require(stage.get("upstream") == "jgraph/drawio@" + UPSTREAM and
             stage.get("patch_sha256") == PATCH_SHA and
-            sha(physical(staged / "gh1404-g1-production.patch")) == PATCH_SHA,
+            sha(physical(staged / "gh1404-g1-production.patch",
+                         evidence=selected_evidence)) == PATCH_SHA,
             "source stage upstream or patch differs")
     require(len(stage.get("files", [])) == 2, "source stage has extra/missing G1 leaves")
     selected = []
@@ -205,7 +214,7 @@ def inspect(inputs, staged, original, *, candidate_precompiled=None, require_com
                 "immutable source include not selected: " + logical)
         path = original / logical
         if path.exists() or path.is_symlink():
-            require(git_blob(physical(path)) == original_blob,
+            require(git_blob(physical(path, evidence=selected_evidence)) == original_blob,
                     "physical original source differs: " + logical)
             physically_verified += 1
         else:
@@ -214,10 +223,11 @@ def inspect(inputs, staged, original, *, candidate_precompiled=None, require_com
         if index in OVERRIDES:
             name, original_sha, owner_file = OVERRIDES[index]
             require(relative == "/" + name, "G1 source include order differs at " + str(index))
-            require(path.is_file() and sha(physical(path)) == original_sha,
+            require(path.is_file() and
+                    sha(physical(path, evidence=selected_evidence)) == original_sha,
                     "missing exact pristine G1 original")
-            candidate = pinned(inputs, owner_file)
-            require(physical(staged / logical) == candidate,
+            candidate = pinned(inputs, owner_file, evidence=selected_evidence)
+            require(physical(staged / logical, evidence=selected_evidence) == candidate,
                     "source stage changed G1 candidate bytes")
             rows = [r for r in stage["files"] if r.get("path") == logical]
             require(len(rows) == 1 and rows[0].get("original_sha256") == original_sha
@@ -248,6 +258,18 @@ def inspect(inputs, staged, original, *, candidate_precompiled=None, require_com
     if require_compiled:
         raise Refusal("COMPILED_PROVENANCE_UNQUALIFIED: no exact candidate precompiled "
                       "mxClient.js and independent 131-source/toolchain receipt")
+    # A hostile writer can replace an already-read directory after the last
+    # individual no-follow verification and before this receipt is returned.
+    # Reopen every selected name from the filesystem root, rechecking bytes
+    # AND held inode identity. A later same-UID edit after process exit still
+    # requires independent build-consumer custody and cannot be approved here.
+    for path, original_identity, original_bytes in selected_evidence:
+        reread_evidence = []
+        current_bytes = physical(path, evidence=reread_evidence)
+        require(current_bytes == original_bytes and
+                len(reread_evidence) == 1 and
+                reread_evidence[0][1] == original_identity,
+                "selected physical input changed before source receipt: " + path.name)
     return {
         "schema": "keld.gh1404-g1-compiled-input-custody/v1",
         "status": "SOURCE_ONLY_INPUT_ORDER_VERIFIED_COMPILED_UNQUALIFIED",
