@@ -93,7 +93,214 @@ class ProductionStageDestinationTests(unittest.TestCase):
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"fixture source, generated output is a stub")
+        # The synthetic generator tests replace only the expected SOURCE hashes
+        # in their own Python process. Production stages must use hard-pinned
+        # pristine upstream values and the subprocess tests below do so.
+        if hasattr(stage, "PINNED_SOURCE_SHA256"):
+            original = stage.PINNED_SOURCE_SHA256
+            stage.PINNED_SOURCE_SHA256 = {
+                name: hashlib.sha256((self.source / name).read_bytes()).hexdigest()
+                for name, _ in PINNED_SOURCE_SHA256
+            }
+            self.addCleanup(setattr, stage, "PINNED_SOURCE_SHA256", original)
         return self.source
+
+    def _owned_pristine(self) -> Path:
+        """Copy verified original inputs; never mutate a shared pinned checkout."""
+        original = self._sources(pinned=True)
+        for name, expected in PINNED_SOURCE_SHA256:
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((original / name).read_bytes())
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected)
+            self.assertEqual(path.stat().st_nlink, 1)
+        return self.source
+
+    def test_pinned_source_hardlink_is_not_unique_provenance(self) -> None:
+        source = self._owned_pristine()
+        name, _ = PINNED_SOURCE_SHA256[0]
+        os.link(source / name, self.root / "outside-hardlink.js")
+        result = self.stage(self.root / "must-not-publish", source)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("source", result.stderr)
+        self.assertFalse((self.root / "must-not-publish" / "source-manifest.json").exists())
+
+    def test_pinned_source_path_swap_to_foreign_symlink_before_read_is_refused(self) -> None:
+        source = self._owned_pristine()
+        name, _ = PINNED_SOURCE_SHA256[0]
+        victim = source / name
+        foreign = self.root / "outside-source.js"
+        foreign.write_bytes(b"FOREIGN UNQUALIFIED SOURCE\n")
+        original_open, original_read, original_run = os.open, Path.read_bytes, subprocess.run
+        swaps = 0
+
+        def swap() -> None:
+            nonlocal swaps
+            if swaps == 0:
+                swaps += 1
+                victim.rename(victim.with_name("parked-original.js"))
+                victim.symlink_to(foreign)
+
+        def swapped_read(path: Path) -> bytes:
+            if path == victim:
+                swap()  # Parent: pathname check and read are separate.
+            return original_read(path)
+
+        def swapped_open(path: str | bytes | os.PathLike[str], flags: int,
+                         *args: object, **kwargs: object) -> int:
+            if (path == victim.name and kwargs.get("dir_fd") is not None and
+                    flags & os.O_ACCMODE == os.O_RDONLY):
+                swap()  # Child: just before no-follow source FD acquire.
+            return original_open(path, flags, *args, **kwargs)
+
+        def generator(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.CompletedProcess(
+                argv, 0, b"replacement" if "--patch" not in argv else b"patch", b""
+            )
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(Path, "read_bytes", swapped_read), \
+                mock.patch.object(stage.os, "open", side_effect=swapped_open), \
+                mock.patch.object(stage.subprocess, "run", side_effect=generator), \
+                mock.patch.object(sys, "argv", [str(SCRIPT), "--source-root",
+                                                str(source), "--output-root",
+                                                str(self.root / "source-swap")]), \
+                redirect_stdout(out), redirect_stderr(err):
+            try:
+                stage.main()
+            except SystemExit as rejected:
+                exit_code = rejected.code
+            else:
+                exit_code = 0
+        self.assertEqual(swaps, 1, "source path swap was not exercised")
+        self.assertEqual(exit_code, 2, "FOREIGN source accepted: " + out.getvalue())
+        self.assertIn("source", err.getvalue())
+        self.assertFalse((self.root / "source-swap" / "source-manifest.json").exists())
+
+    def test_source_inode_rebound_after_generator_cannot_publish_receipt(self) -> None:
+        source = self._owned_pristine()
+        victim = source / PINNED_SOURCE_SHA256[0][0]
+        outside = self.root / "foreign-source.js"
+        outside.write_bytes(b"UNQUALIFIED FOREIGN AFTER OPEN\n")
+        original_run = subprocess.run
+        calls = 0
+
+        def swap_after_first_generator(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            nonlocal calls
+            result = original_run(*args, **kwargs)
+            calls += 1
+            if calls == 1:
+                victim.rename(victim.with_name("parked-pinned.js"))
+                victim.symlink_to(outside)
+            return result
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        output = self.root / "rebound-after-source-read"
+        with mock.patch.object(stage.subprocess, "run", side_effect=swap_after_first_generator), \
+                mock.patch.object(sys, "argv",
+                                  [str(SCRIPT), "--source-root", str(source),
+                                   "--output-root", str(output)]), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as failure:
+                stage.main()
+        self.assertEqual(calls, 4, "all four generators must run on buffered source bytes")
+        self.assertEqual(failure.exception.code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("source changed", stderr.getvalue())
+        self.assertFalse((output / "source-manifest.json").exists())
+
+    def test_source_root_inode_rebound_after_generator_cannot_publish_receipt(self) -> None:
+        source = self._owned_pristine()
+        parked = self.root / "parked-source-root"
+        foreign_root = self.root / "foreign-source-root"
+        foreign_root.mkdir()
+        original_run = subprocess.run
+        calls = 0
+
+        def swap_root_after_first_generator(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            nonlocal calls
+            result = original_run(*args, **kwargs)
+            calls += 1
+            if calls == 1:
+                source.rename(parked)
+                source.symlink_to(foreign_root, target_is_directory=True)
+            return result
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        output = self.root / "root-rebound-stage"
+        with mock.patch.object(stage.subprocess, "run", side_effect=swap_root_after_first_generator), \
+                mock.patch.object(sys, "argv",
+                                  [str(SCRIPT), "--source-root", str(source),
+                                   "--output-root", str(output)]), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as failure:
+                stage.main()
+        self.assertEqual(calls, 4, "all four generators must run on held source FDs")
+        self.assertEqual(failure.exception.code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("source", stderr.getvalue())
+        self.assertFalse((output / "source-manifest.json").exists())
+
+    def test_mid_manifest_sigkill_cannot_publish_partial_final_json(self) -> None:
+        source = self._sources(pinned=False)
+        interrupted = self.root / "manifest-write-killed"
+        killed = subprocess.run(
+            [sys.executable, "-B", str(Path(__file__).resolve()),
+             "--crash-stage-child", "manifest-half", str(source), str(interrupted)],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stderr)
+        self.assertEqual(killed.stdout, "")
+        self.assertTrue((interrupted / "gh1404-g1-production.patch").is_file(),
+                        "SIGKILL happened before source/patch staging")
+        self.assertFalse((interrupted / "source-manifest.json").exists(),
+                         "partial JSON became visible under the final manifest filename")
+        temporary_manifests = list(interrupted.glob(".source-manifest-*.tmp"))
+        self.assertEqual(len(temporary_manifests), 1,
+                         "fault must interrupt a real unqualified manifest temporary write")
+        partial = temporary_manifests[0].read_bytes()
+        self.assertGreater(len(partial), 0, "SIGKILL preceded actual manifest write")
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(partial)
+        self.assertEqual(self.stage(interrupted).returncode, 2,
+                         "aborted output was reused as approved source")
+
+    def test_atomic_manifest_final_name_refuses_preexisting_symlink(self) -> None:
+        self._sources(pinned=False)
+        output = self.root / "manifest-race"
+        outside = self.root / "foreign-final.json"
+        outside.write_bytes(b"FOREIGN FINAL MUST STAY UNCHANGED\n")
+        original_link = os.link
+        calls = 0
+
+        def competing_final(source_name: str, final_name: str,
+                            *args: object, **kwargs: object) -> None:
+            nonlocal calls
+            if final_name == "source-manifest.json":
+                calls += 1
+                os.symlink(outside, final_name, dir_fd=kwargs["dst_dir_fd"])
+            original_link(source_name, final_name, *args, **kwargs)
+
+        def generator(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.CompletedProcess(
+                argv, 0, b"replacement" if "--patch" not in argv else b"patch", b""
+            )
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(stage.os, "link", side_effect=competing_final), \
+                mock.patch.object(stage.subprocess, "run", side_effect=generator), \
+                mock.patch.object(sys, "argv",
+                                  [str(SCRIPT), "--source-root", str(self.source),
+                                   "--output-root", str(output)]), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as rejected:
+                stage.main()
+        self.assertEqual(calls, 1, "final no-replace link was not exercised")
+        self.assertEqual(rejected.exception.code, 2)
+        self.assertEqual(stdout.getvalue(), "", "unqualified manifest was accepted")
+        self.assertIn("source publication", stderr.getvalue())
+        self.assertTrue((output / "source-manifest.json").is_symlink())
+        self.assertEqual(outside.read_bytes(), b"FOREIGN FINAL MUST STAY UNCHANGED\n")
 
     def _parent_swap_race(self, pinned: bool) -> None:
         source = self._sources(pinned)
@@ -467,10 +674,45 @@ def _crash_stage_child(mode: str, source: Path, output: Path) -> None:
                            [str(SCRIPT), "--source-root", str(source),
                             "--output-root", str(output)]), \
             mock.patch.object(stage.subprocess, "run", side_effect=candidate_generator):
+        if hasattr(stage, "PINNED_SOURCE_SHA256"):
+            stage.PINNED_SOURCE_SHA256 = {
+                name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+                for name, _ in PINNED_SOURCE_SHA256
+            }
         if mode == "abort":
             with mock.patch.object(stage, "verify_published_overlay",
                                    side_effect=lambda *_args: os.kill(os.getpid(), signal.SIGKILL)):
                 stage.main()
+        elif mode == "manifest-half":
+            original_write_new = stage.write_new_file
+            original_write = os.write
+
+            def crash_at_final(parent_fd: int, name: str, data: bytes) -> tuple[int, int, int, str]:
+                if name == "source-manifest.json":
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    fd = os.open(name, flags, 0o600, dir_fd=parent_fd)
+                    original_write(fd, data[:max(1, len(data) // 3)])
+                    os.fsync(fd)
+                    os.kill(os.getpid(), signal.SIGKILL)
+                return original_write_new(parent_fd, name, data)
+
+            def crash_at_temporary(fd: int, data: bytes) -> int:
+                # Corrected code uses an explicit os.write loop inside its
+                # atomic temporary-manifest publisher, not write_new_file(final).
+                original_write(fd, data[:max(1, len(data) // 3)])
+                os.fsync(fd)
+                os.kill(os.getpid(), signal.SIGKILL)
+                raise AssertionError("unreachable")
+
+            publisher = getattr(stage, "publish_atomic_manifest", None)
+            with mock.patch.object(stage, "write_new_file", side_effect=crash_at_final):
+                if publisher is None:
+                    stage.main()
+                else:
+                    # Existing overlay files are written via stream.write;
+                    # os.write belongs only to the manifest's temp publisher.
+                    with mock.patch.object(stage.os, "write", side_effect=crash_at_temporary):
+                        stage.main()
         else:
             stage.main()
 

@@ -349,6 +349,50 @@ It does not carry the original application's `drawio/LICENSE` or other graph
 resources: the separately qualified original application build must preserve
 those source inputs and record their hashes before any installed test.
 
+### Additional G1 source and crash custody (21 November 2026)
+
+The previous source-stage parent edc40a48ea8d12da02af90469ea8ac2f3d96fdd4
+accepted a foreign source-path substitution between its pathname validation and
+the subsequent read. It also created the final manifest name before the JSON
+file had been fully written. Independent review reproduced both exposures.
+
+The new source-stage correction opens the two original files using retained
+read-only, no-follow, nonblocking file descriptors beneath a pinned no-follow
+source root. Each leaf must be a single-link, regular file on the same root
+filesystem, must match its hard-coded pristine upstream SHA-256, and must retain
+the original device, inode, size, mode, link count and timestamps. The generator
+uses only buffered bytes read through those handles. Source-root identity,
+intermediate directory identities, original file names and contents are
+reverified before and after publishing output. Hardlinks, swapped symlinks,
+changed originals and source-directory or source-root replacement refuse.
+
+For a completed output, the tool fsyncs staged source files and directories,
+writes the full manifest to a new random temporary name using an exclusive
+no-follow open, fsyncs that complete file, and atomically links the finished
+inode into the final manifest name without replacement under the pinned
+directory handle. The directory is fsynced before and after removing the
+temporary link. A real SIGKILL during the manifest write leaves only a partial
+temporary file; the final manifest name does not exist. A preexisting final
+symlink cannot be overwritten or followed. An aborted directory cannot be
+reused as a verified stage even if some source files were written.
+
+Six adversarial staging cases were added to the original 18, including
+hardlink rejection, a source swap immediately before opening the source file,
+source file and source-root rebinding after generation, real SIGKILL during
+temporary manifest writing, and refusal of a competing final manifest name.
+All six demonstrated exact RED on the parent; the corrected real pinned
+source suite passes 24/24. The real staged outputs remain byte-for-byte the
+same: SVG probe 40/40 and bounds probe 13/13, with unchanged candidate source
+and patch SHA-256 values. No installed application or signed release is used.
+
+These output files do NOT update the normal draw.io compiled application:
+the pinned upstream Ant app target compiles prebuilt mxgraph/mxClient.js into
+client.min.js and app.min.js, rather than compiling the two raw G1 source
+files. Original mxGraph precompile reconstruction, full-source/legal inputs,
+source-owner approval, signed build, and installed G0-G12 acceptance are
+separate mandatory gates. Same-UID late modification remains a consumption
+boundary hazard even after an atomic manifest was fully published.
+
 ### Current focused evidence (20 November 2026)
 
 | Test oracle | Pinned original | Patched original-source functions |
