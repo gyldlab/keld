@@ -167,7 +167,13 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         let anchor = self.read_anchor()?;
         let current = self.read_current()?;
         match anchor {
-            None if current.is_none() && self.read_generation(1)?.is_none() => {
+            None if current.is_none() => {
+                // A previous enrollment can crash after publishing a non-genesis
+                // generation or a pending publication sibling. Absence of
+                // generations/1.json is never proof of a fresh repository.
+                // This retained-parent check is negative evidence only; D-90
+                // still owns the complete repository census and live lease.
+                require_empty_generation_namespace(self.generations)?;
                 Ok(NativeMetadataInspection::NoAnchorObserved)
             }
             None => Err(error(
@@ -214,6 +220,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                     ));
                 }
                 let generation = self.require_selected_generation(&current)?;
+                require_established_ready_generation(&generation)?;
                 if current.generation_sha256 != anchor.initial_generation_sha256 {
                     return Err(error(
                         "metadata enrollment binding",
@@ -241,15 +248,16 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 "new anchor must be pending",
             ));
         }
-        if self.read_anchor()?.is_some()
-            || self.read_current()?.is_some()
-            || self.read_generation(1)?.is_some()
-        {
+        if self.read_anchor()?.is_some() || self.read_current()?.is_some() {
             return Err(error(
                 "metadata anchor publication",
-                "existing anchor, current or genesis generation needs recovery",
+                "existing anchor or current needs recovery",
             ));
         }
+        // Read the full retained generations namespace before first enrollment.
+        // One unknown, non-genesis or interrupted publication entry blocks
+        // creation; a matching name alone never authenticates an owner.
+        require_empty_generation_namespace(self.generations)?;
         let bytes = encode_metadata_anchor(anchor)?;
         publish_new_record(self.enrollments, &self.anchor_leaf(), &bytes, self.profile)?;
         if self.read_anchor()?.as_ref() != Some(anchor) {
@@ -312,6 +320,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                     ));
                 }
                 let previous = self.require_selected_generation(&current)?;
+                require_established_ready_generation(&previous)?;
                 if current.sequence.checked_add(1) != Some(generation.sequence)
                     || generation.previous_generation_sha256 != Some(current.generation_sha256)
                     || generation.recovery_epoch != previous.recovery_epoch
@@ -511,3 +520,39 @@ fn generation_leaf(sequence: u64) -> String {
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
+
+/// A negative check for any generation residue when no enrollment anchor exists.
+///
+/// This observes the entire already-retained parent, including non-genesis
+/// generations and interrupted pending siblings. An empty directory is only a
+/// local observation; D-90's independent repository-wide member and reader
+/// proof is still mandatory before anyone may create the first anchor.
+fn require_empty_generation_namespace(generations: &Dir) -> Result<(), UpdateError> {
+    let mut entries = generations
+        .entries()
+        .map_err(|cause| error("metadata generation listing", cause))?;
+    match entries.next() {
+        None => Ok(()),
+        Some(Err(cause)) => Err(error("metadata generation listing", cause)),
+        Some(Ok(_)) => Err(error(
+            "metadata generation residue",
+            "a retained generation or pending publication sibling blocks fresh enrollment",
+        )),
+    }
+}
+
+/// An established D-23 current pointer must select a full ready generation.
+/// The canonical codec intentionally accepts non-ready phases for in-progress
+/// records, so pointer interpretation must enforce the separate readiness rule.
+fn require_established_ready_generation(generation: &GenerationRecord) -> Result<(), UpdateError> {
+    if generation.phase != GenerationPhase::Ready {
+        return Err(error(
+            "metadata established readiness",
+            "established current selects incomplete root-refresh or roles generation",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
