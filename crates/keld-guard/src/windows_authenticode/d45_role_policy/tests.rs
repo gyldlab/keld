@@ -264,5 +264,13 @@ fn absent_issuer_entries_refuse_before_native_matching() {
     assert!(rejection(Some(&input), Some(&facts)).contains("no root"));
     let mut input = policy(&digest, WindowsD45HostRole::Ordinary);
     input.destination_issuer.leaf_issuer_spki_hashes = &[];
-    assert!(rejection(Some(&input), Some(&facts)).contains("no root or leaf"));
+    // Source is inspected before destination, and its D-WIRE binding is
+    // deliberately uninhabited until the authenticated Pack producer exists.
+    // Therefore a synthetic destination-empty fixture cannot reach the
+    // destination list check; do not manufacture a source binding to test it.
+    assert!(
+        rejection(Some(&input), Some(&facts))
+            .contains("issuer membership arrays are not bound to canonical authenticated D-WIRE"),
+        "the unqualified source issuer must refuse before destination inspection"
+    );
 }
