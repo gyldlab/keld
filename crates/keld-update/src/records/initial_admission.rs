@@ -6,7 +6,7 @@
 
 use super::{
     DirectInstallationIdentity, UpdateError, WireIdentity, decode, digest, encode, hex_digest,
-    identity_from_wire, invalid, nonempty, wire_identity,
+    identity_from_wire, invalid, wire_identity,
 };
 use serde::{Deserialize, Serialize};
 
@@ -366,9 +366,33 @@ fn validate_record(record: &InitialAdmissionRecord) -> Result<(), UpdateError> {
 }
 
 fn validate_app(value: &str) -> Result<(), UpdateError> {
-    nonempty(value)?;
-    if value.len() > 255 {
-        return Err(invalid("application identity exceeds 255 UTF-8 bytes"));
+    // Exact KEL-135 CanonicalAppId grammar, as owned by
+    // keld-wv/src/profile/identity.rs::validate_canonical_app_id.
+    // That owner-local validator is private and updater cannot import keld-wv
+    // without reversing the production crate dependency. No new grammar or
+    // authority is defined here: the closed record refuses any byte sequence
+    // KEL-135 would refuse, without minting a validated profile identity.
+    const NONCANONICAL: &str =
+        "application identity must use KEL-135 canonical lowercase ASCII dot segments";
+    if value.is_empty() || value.len() > 255 || !value.is_ascii() {
+        return Err(invalid(NONCANONICAL));
+    }
+    let lower_alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    for segment in value.as_bytes().split(|byte| *byte == b'.') {
+        let Some(first) = segment.first() else {
+            return Err(invalid(NONCANONICAL));
+        };
+        let Some(last) = segment.last() else {
+            return Err(invalid(NONCANONICAL));
+        };
+        if !lower_alphanumeric(*first)
+            || !lower_alphanumeric(*last)
+            || !segment
+                .iter()
+                .all(|byte| lower_alphanumeric(*byte) || *byte == b'-')
+        {
+            return Err(invalid(NONCANONICAL));
+        }
     }
     Ok(())
 }

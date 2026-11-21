@@ -1,6 +1,8 @@
 //! D-64/D-68 exact bytes and cross-record refusal oracles.
 use super::*;
 
+mod review_followup;
+
 const VOLUME: &str = r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\";
 const SID: &str = "S-1-5-21-100-200-300-1001";
 
