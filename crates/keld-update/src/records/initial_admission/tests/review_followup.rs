@@ -1,6 +1,10 @@
 //! KEL-135 canonical app-ID, D-64/D-68 field-order and D-48 GUID negative controls.
 
-use super::*;
+use super::super::{
+    UpdateError, decode_initial_admission_record, decode_pending_repository_operation,
+    encode_initial_admission_record, encode_pending_repository_operation,
+};
+use super::{VOLUME, pointer, record};
 
 fn assert_local_detail<T: std::fmt::Debug>(result: Result<T, UpdateError>, expected: &str) {
     match result.expect_err("record must refuse with the specified reason") {

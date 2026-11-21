@@ -1,5 +1,11 @@
 //! D-64/D-68 exact bytes and cross-record refusal oracles.
-use super::*;
+use super::{
+    AdmissionInspection, DestinationRootBinding, InitialAdmissionPhase, InitialAdmissionRecord,
+    NativeObjectObservation, ObjectKind, PendingOperationKind, PendingRepositoryOperation,
+    RepositoryAnchor, RootBindingKind, UpdateError, decode_initial_admission_record,
+    decode_pending_repository_operation, encode_initial_admission_record,
+    encode_pending_repository_operation, inspect_initial_admission,
+};
 
 mod review_followup;
 

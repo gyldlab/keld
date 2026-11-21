@@ -1,7 +1,7 @@
 //! D-4 private v2 wire tests. Bytes below are independent literal spec vectors.
 //! A successful test does not verify Ed25519, `WinTrust`, or commissioned signing.
 
-use super::*;
+use super::{DOMAIN, ExpectedAppIdentityV2, V2IdentityFields};
 use crate::ExpectedAppIdentityPayload;
 
 const APP: &str = "com.example.app";
