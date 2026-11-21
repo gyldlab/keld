@@ -4,10 +4,13 @@
 //! another process exits without teardown. They do not call the gated writer,
 //! prove NTFS power-loss durability, mint D-90 eligibility or authorize cleanup.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::ffi::OsStr;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
@@ -105,19 +108,154 @@ fn journal_membership_crash_child() {
 
 fn native_members(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut observed = Vec::new();
-    for directory in ["", "admissions", "recoveries", "transitions"] {
-        for entry in fs::read_dir(root.join(directory)).expect("inspect surviving fixture names") {
-            let path = entry.expect("read fixture entry").path();
-            if path.is_file() {
-                observed.push((
-                    path.clone(),
-                    fs::read(&path).expect("read preserved crash-cut bytes"),
-                ));
-            }
+    for entry in fs::read_dir(root).expect("inspect repository root entries") {
+        let entry = entry.expect("read repository root entry");
+        let kind = entry.file_type().expect("read root member kind");
+        if kind.is_dir() {
+            assert!(
+                ["admissions", "recoveries", "transitions"]
+                    .iter()
+                    .any(|name| entry.file_name() == OsStr::new(name)),
+                "unexpected native root directory at {:?}",
+                entry.path(),
+            );
+        } else {
+            assert!(
+                kind.is_file(),
+                "unexpected native root member at {:?}",
+                entry.path()
+            );
+            observed.push((
+                PathBuf::from(entry.file_name()),
+                fs::read(entry.path()).expect("read root record bytes"),
+            ));
+        }
+    }
+    for directory in ["admissions", "recoveries", "transitions"] {
+        for entry in fs::read_dir(root.join(directory)).expect("inspect surviving operation names")
+        {
+            let entry = entry.expect("read operation member");
+            assert!(
+                entry
+                    .file_type()
+                    .expect("read operation member kind")
+                    .is_file(),
+                "unexpected non-file operation member at {:?}",
+                entry.path(),
+            );
+            observed.push((
+                PathBuf::from(directory).join(entry.file_name()),
+                fs::read(entry.path()).expect("read preserved crash-cut bytes"),
+            ));
         }
     }
     observed.sort_by(|a, b| a.0.cmp(&b.0));
     observed
+}
+
+/// Independent per-cut source-of-truth: every expected relative name and exact
+/// byte sequence is specified before the restart reader is invoked. In
+/// particular a D-64 admitted record cannot be substituted by a prepared
+/// sibling, and a D-68 pointer cannot conceal a missing pointed journal.
+fn expected_members(cut: &str) -> Vec<(PathBuf, Vec<u8>)> {
+    let pointer_bytes =
+        encode_pending_repository_operation(&pending()).expect("canonical expected D-68 bytes");
+    let pointer = (PathBuf::from("pending-operation.json"), pointer_bytes);
+    let pointed = (
+        PathBuf::from("admissions").join(format!("{}.json", "2a".repeat(32))),
+        b"pointed-admission-record".to_vec(),
+    );
+    let mut expected = match cut {
+        "d64-prepared" => vec![(
+            PathBuf::from("admissions").join("pending-incomplete"),
+            b"staged-record".to_vec(),
+        )],
+        "d64-admitted-before-d68" => vec![(
+            PathBuf::from("admissions").join(format!("{}.json", "3b".repeat(32))),
+            b"orphan-admitted-record".to_vec(),
+        )],
+        "d68-pointer-without-d64" => vec![pointer],
+        "d68-with-unpointed-recovery" => vec![
+            pointed,
+            pointer,
+            (
+                PathBuf::from("recoveries").join("pending-unfinished"),
+                b"foreign-recovery-cut".to_vec(),
+            ),
+        ],
+        other => panic!("unexpected per-cut expectation {other}"),
+    };
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    expected
+}
+
+fn read_capture(file: &mut File) -> String {
+    file.seek(SeekFrom::Start(0))
+        .expect("rewind reaped crash-cut child output");
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .expect("read reaped crash-cut child output");
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// A process-exit cut must not hang CI when an invalid child selector or a
+/// stalled writer never exits. File-backed output cannot fill an unread pipe.
+fn run_crash_child(root: &Path, cut: &str) {
+    let mut stdout_file = tempfile::tempfile().expect("isolated child stdout capture");
+    let mut stderr_file = tempfile::tempfile().expect("isolated child stderr capture");
+    let mut child = Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", CHILD_TEST, "--ignored", "--nocapture"])
+        .env(ROOT_ENV, root)
+        .env(CUT_ENV, cut)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(
+            stdout_file.try_clone().expect("child stdout file handle"),
+        ))
+        .stderr(Stdio::from(
+            stderr_file.try_clone().expect("child stderr file handle"),
+        ))
+        .spawn()
+        .expect("execute native crash-cut child");
+    let start = Instant::now();
+    let mut wait_fault = None;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if start.elapsed() < Duration::from_secs(60) => {
+                // Poll only for the kill switch; the child must exit at its
+                // witnessed crash boundary without a scheduling assumption.
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => break None,
+            Err(cause) => {
+                wait_fault = Some(cause);
+                break None;
+            }
+        }
+    };
+    if status.is_none() {
+        let kill = child.kill();
+        let reaped = child.wait();
+        let stdout = read_capture(&mut stdout_file);
+        let stderr = read_capture(&mut stderr_file);
+        assert!(kill.is_ok(), "failed to terminate child at {cut}: {kill:?}");
+        assert!(reaped.is_ok(), "failed to reap child at {cut}: {reaped:?}");
+        panic!(
+            "child missed bounded crash cut {cut}; wait error={wait_fault:?}; stdout={stdout}; stderr={stderr}"
+        );
+    }
+    let status = status.expect("completed child has exit status");
+    let stdout = read_capture(&mut stdout_file);
+    let stderr = read_capture(&mut stderr_file);
+    assert_eq!(
+        status.code(),
+        Some(CRASH_EXIT),
+        "child must exit at {cut}; stdout={stdout}; stderr={stderr}",
+    );
+    assert!(
+        stdout.contains(&format!("KELD_D64_D68_NATIVE_CRASH_CUT={cut}")),
+        "child must attest the requested cut before termination; stdout={stdout}; stderr={stderr}"
+    );
 }
 
 #[test]
@@ -132,30 +270,13 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
         for directory in ["admissions", "recoveries", "transitions"] {
             fs::create_dir(root.path().join(directory)).expect("isolated operation parent");
         }
-        let output = Command::new(std::env::current_exe().expect("test executable"))
-            .args(["--exact", CHILD_TEST, "--ignored", "--nocapture"])
-            .env(ROOT_ENV, root.path())
-            .env(CUT_ENV, cut)
-            .stdin(Stdio::null())
-            .output()
-            .expect("execute native crash-cut child");
-        assert_eq!(
-            output.status.code(),
-            Some(CRASH_EXIT),
-            "child must exit at {cut}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .contains(&format!("KELD_D64_D68_NATIVE_CRASH_CUT={cut}")),
-            "child must attest the requested cut before termination"
-        );
+        run_crash_child(root.path(), cut);
 
         let before = native_members(root.path());
-        assert!(
-            !before.is_empty(),
-            "the child must persist a physical crash-cut object"
+        let expected = expected_members(cut);
+        assert_eq!(
+            before, expected,
+            "the child must leave the exact relative names and bytes required at {cut}"
         );
         let pointer_path = root.path().join("pending-operation.json");
         let pointed = if pointer_path.exists() {
@@ -169,9 +290,9 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
             None
         };
         assert_eq!(
-            pointed.is_some(),
-            cut.starts_with("d68-"),
-            "the child must leave the intended D-68 publication state"
+            pointed,
+            cut.starts_with("d68-").then(pending),
+            "the exact decoded repository, app, owner SID, operation kind and attempt must match at {cut}"
         );
         let admissions = Dir::open_ambient_dir(root.path().join("admissions"), ambient_authority())
             .expect("restart retains admissions parent");
@@ -194,7 +315,7 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
         }
         assert_eq!(
             native_members(root.path()),
-            before,
+            expected,
             "restart diagnosis must preserve every journal and pointer byte at {cut}"
         );
     }
