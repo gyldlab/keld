@@ -8,9 +8,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::io;
+use std::marker::PhantomData;
 use std::mem::{offset_of, size_of};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::ptr::{addr_of, null, null_mut};
+use std::rc::Rc;
+use std::thread::{self, ThreadId};
 
 use windows_sys::Win32::Foundation::{
     ERROR_INSUFFICIENT_BUFFER, ERROR_NO_TOKEN, GetLastError, LUID,
@@ -35,6 +38,98 @@ const ADMINISTRATORS_SUB_AUTHORITIES: [u32; 2] = [32, 544];
 const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
 mod refusals;
 pub use refusals::WindowsTokenError;
+
+/// Read-only native observation of the actual Windows filesystem worker.
+///
+/// This is deliberately **not** D-42 installation admission or a permit. The
+/// existing native grant can establish the absence of thread impersonation and
+/// compare process-token sessions, but cannot establish `TokenUser`, token
+/// identity, Medium integrity, restriction history, or the other D-42 flags.
+/// None of those missing predicates may be inferred from this observation.
+/// It has no method that authorizes a filesystem effect.
+///
+/// The retained token is query-only, and the observation cannot cross threads.
+#[must_use = "a worker observation is not installation authorization"]
+pub struct WindowsPerUserWorkerPreflight {
+    worker_thread: ThreadId,
+    process_token: OwnedHandle,
+    initiating_session: u32,
+    invalidated: bool,
+    _thread_only: PhantomData<Rc<()>>,
+}
+
+impl WindowsPerUserWorkerPreflight {
+    /// Observe the executing worker after dispatch, without minting authority.
+    ///
+    /// # Errors
+    /// Refuses any impersonation, token-open/query failure, or process session
+    /// different from the initiating session. The complete D-42 token profile
+    /// remains unavailable until its native owner grant and implementation.
+    pub fn observe(initiating_session: u32) -> Result<Self, WindowsTokenError> {
+        require_unimpersonated_worker()?;
+        let process_token = open_process_token()
+            .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
+        own_session_result(initiating_session, token_session_id(&process_token)?)?;
+        Ok(Self {
+            worker_thread: thread::current().id(),
+            process_token,
+            initiating_session,
+            invalidated: false,
+            _thread_only: PhantomData,
+        })
+    }
+
+    /// Recheck the available native predicates on the executing worker.
+    ///
+    /// A mismatch or query failure permanently invalidates this observation,
+    /// including when a later query appears clean. A successful recheck is still
+    /// only a read-only preflight; it is not D-42 admission.
+    ///
+    /// # Errors
+    /// Refuses another worker, impersonation, a wrong session, any token query
+    /// failure, or an observation already invalidated by a previous failure.
+    pub fn revalidate(&mut self) -> Result<(), WindowsTokenError> {
+        if self.invalidated {
+            return Err(WindowsTokenError::os(
+                "D-42 worker preflight",
+                &io::Error::other("previous worker observation was invalidated"),
+            ));
+        }
+        let result = self.revalidate_current();
+        if result.is_err() {
+            self.invalidated = true;
+        }
+        result
+    }
+
+    fn revalidate_current(&self) -> Result<(), WindowsTokenError> {
+        if self.worker_thread != thread::current().id() {
+            return Err(WindowsTokenError::os(
+                "D-42 actual worker ThreadId",
+                &io::Error::other("the executing worker thread changed"),
+            ));
+        }
+        require_unimpersonated_worker()?;
+        own_session_result(
+            self.initiating_session,
+            token_session_id(&self.process_token)?,
+        )?;
+        let current = open_process_token()
+            .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
+        own_session_result(self.initiating_session, token_session_id(&current)?)
+    }
+}
+
+fn require_unimpersonated_worker() -> Result<(), WindowsTokenError> {
+    match thread_is_impersonating() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(WindowsTokenError::ThreadImpersonating),
+        Err(error) => Err(WindowsTokenError::os(
+            "OpenThreadToken(TOKEN_QUERY, TRUE)",
+            &error,
+        )),
+    }
+}
 
 /// Requires an elevated, non-impersonating process token that owns objects for the
 /// built-in Administrators group.
@@ -1157,6 +1252,66 @@ mod tests {
         assert!(
             require_no_thread_impersonation().is_err(),
             "the production OpenThreadToken check must refuse impersonation"
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_refuses_an_actual_wrong_session() {
+        let token = open_process_token().expect("query own process token");
+        let actual_session = token_session_id(&token).expect("query own session");
+        let error = WindowsPerUserWorkerPreflight::observe(actual_session.wrapping_add(1))
+            .err()
+            .expect("a different initiating session must refuse");
+        assert_eq!(
+            error,
+            WindowsTokenError::SessionMismatch {
+                expected: actual_session.wrapping_add(1),
+                actual: actual_session,
+            }
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_wrong_thread_invalidates_permanently() {
+        let token = open_process_token().expect("query own process token");
+        let session = token_session_id(&token).expect("query own session");
+        let mut preflight =
+            WindowsPerUserWorkerPreflight::observe(session).expect("observe actual worker");
+        assert!(preflight.revalidate().is_ok());
+
+        let original_worker = thread::current().id();
+        let foreign_worker = thread::spawn(|| thread::current().id())
+            .join()
+            .expect("obtain a distinct actual thread identity");
+        assert_ne!(foreign_worker, original_worker);
+        preflight.worker_thread = foreign_worker;
+        assert!(preflight.revalidate().is_err());
+        preflight.worker_thread = original_worker;
+        assert!(
+            preflight.revalidate().is_err(),
+            "a failed worker check must not regain authority after a clean replay"
+        );
+    }
+
+    #[test]
+    fn per_user_worker_preflight_live_impersonation_revokes_observation() {
+        let token = open_process_token().expect("query own process token");
+        let session = token_session_id(&token).expect("query own session");
+        let mut preflight =
+            WindowsPerUserWorkerPreflight::observe(session).expect("observe actual worker");
+
+        // SAFETY: test-only self impersonation is confined to this thread and
+        // RevertThreadToken restores it on every exit path after this call.
+        assert_ne!(unsafe { ImpersonateSelf(SecurityImpersonation) }, 0);
+        let revert = RevertThreadToken;
+        assert_eq!(
+            preflight.revalidate(),
+            Err(WindowsTokenError::ThreadImpersonating)
+        );
+        drop(revert);
+        assert!(
+            preflight.revalidate().is_err(),
+            "reverting thread impersonation must not reactivate a revoked observation"
         );
     }
 }
