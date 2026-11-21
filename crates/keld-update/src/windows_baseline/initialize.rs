@@ -266,6 +266,10 @@ fn initialize_with_authority_and_token_check(
     seed_activation_lock(&roots)?;
     observe(BaselineBoundary::ActivationLockCreated)
         .map_err(|cause| error("activation lock boundary", cause))?;
+    // A callback or another writer can change a retained directory between
+    // the bootstrap reread and stage creation. Refuse foreign entries before
+    // the next installation effect, preserving the incomplete first attempt.
+    recheck_activation_scaffold(&roots)?;
 
     // Keep the admitted source's read-only share through commit and the exact
     // seed reread. Readback opens the installed copy, not the source pathname.
@@ -325,6 +329,36 @@ pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError>
 /// next effect must stop the transaction as incomplete. This check neither
 /// proves D-90 repository-wide vacancy nor grants an initial-install permit.
 pub(super) fn recheck_bootstrap_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    recheck_scaffold(roots, ScaffoldCut::Bootstrap)
+}
+
+fn recheck_activation_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    recheck_scaffold(roots, ScaffoldCut::Activation)
+}
+
+#[derive(Clone, Copy)]
+enum ScaffoldCut {
+    Bootstrap,
+    Activation,
+}
+
+fn recheck_scaffold(roots: &Roots, cut: ScaffoldCut) -> Result<(), UpdateError> {
+    let (root_step, install_step, update_step, versions_step, expected) = match cut {
+        ScaffoldCut::Bootstrap => (
+            "bootstrap scaffold root",
+            "bootstrap scaffold install reread",
+            "bootstrap scaffold update reread",
+            "bootstrap scaffold versions reread",
+            &["versions", "bootstrap.lock"][..],
+        ),
+        ScaffoldCut::Activation => (
+            "activation scaffold root",
+            "activation scaffold install reread",
+            "activation scaffold update reread",
+            "activation scaffold versions reread",
+            &["versions", "bootstrap.lock", "activation.lock"][..],
+        ),
+    };
     let update_name = roots
         .trust
         .installation
@@ -332,15 +366,10 @@ pub(super) fn recheck_bootstrap_scaffold(roots: &Roots) -> Result<(), UpdateErro
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| error("topology", "update name absent"))?;
-    let install = roots
-        .install()
-        .map_err(|cause| error("bootstrap scaffold root", cause))?;
-    exact_entries(install, &[update_name])
-        .map_err(|cause| error("bootstrap scaffold install reread", cause))?;
-    exact_entries(&roots.update, &["versions", "bootstrap.lock"])
-        .map_err(|cause| error("bootstrap scaffold update reread", cause))?;
-    exact_entries(&roots.versions, &[])
-        .map_err(|cause| error("bootstrap scaffold versions reread", cause))?;
+    let install = roots.install().map_err(|cause| error(root_step, cause))?;
+    exact_entries(install, &[update_name]).map_err(|cause| error(install_step, cause))?;
+    exact_entries(&roots.update, expected).map_err(|cause| error(update_step, cause))?;
+    exact_entries(&roots.versions, &[]).map_err(|cause| error(versions_step, cause))?;
     Ok(())
 }
 

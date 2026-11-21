@@ -270,6 +270,131 @@ fn foreign_update_entry_at_bootstrap_cut_refuses_before_activation_effect() {
 }
 
 #[test]
+fn replay_during_live_bootstrap_and_after_commit_cannot_reseed() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    let verified = support::baseline(&trust);
+    let update = trust.installation.update_root.clone();
+    let mut replayed_with_live_lock = false;
+
+    let receipt = initialize_per_user_with_observer(&verified, &source, &trust, |boundary| {
+        if boundary == BaselineBoundary::LockCreated {
+            replayed_with_live_lock = true;
+            let refusal = initialize_windows_per_user_baseline(&verified, &source, &trust)
+                .expect_err("the second real installer cannot reuse an in-flight bootstrap");
+            assert!(matches!(
+                refusal,
+                UpdateError::Baseline {
+                    step: "fresh update",
+                    ..
+                }
+            ));
+            for leaf in ["activation.lock", "current", "last-known-good"] {
+                assert!(
+                    !update.join(leaf).exists(),
+                    "a replay cannot advance the outer transaction at {leaf}"
+                );
+            }
+            assert!(
+                fs::read_dir(update.join("versions"))?.next().is_none(),
+                "a replay cannot create any stage while the first writer owns bootstrap"
+            );
+        }
+        Ok(())
+    })
+    .expect("the original retained KEL-53 writer still commits");
+
+    assert!(
+        replayed_with_live_lock,
+        "the second attempt ran at the real bootstrap cut"
+    );
+    assert_eq!(receipt.loaded().version_floor(), "1.0.0");
+    drop(receipt);
+
+    let current_before = fs::read(update.join("current")).expect("durable current");
+    let floor_before = fs::read(update.join("version-floor")).expect("durable version floor");
+    let provenance = trust.installation.install_root.join("install-provenance");
+    let provenance_before = fs::read(&provenance).expect("durable final provenance");
+
+    initialize_windows_per_user_baseline(&verified, &source, &trust)
+        .expect_err("a committed bootstrap cannot be replayed");
+    assert_eq!(
+        fs::read(update.join("current")).expect("current"),
+        current_before
+    );
+    assert_eq!(
+        fs::read(update.join("version-floor")).expect("floor"),
+        floor_before
+    );
+    assert_eq!(fs::read(provenance).expect("provenance"), provenance_before);
+}
+
+#[test]
+fn foreign_version_at_activation_cut_refuses_before_stage_publication() {
+    support::assert_user_principal_token();
+    let (_temp, trust, source) = fixture();
+    let verified = support::baseline(&trust);
+    let update = trust.installation.update_root.clone();
+    let versions = update.join("versions");
+    let foreign = versions.join("unexpected-stage");
+    let mut reached_activation_cut = false;
+
+    let refusal = initialize_per_user_with_observer(&verified, &source, &trust, |boundary| {
+        if boundary == BaselineBoundary::ActivationLockCreated {
+            reached_activation_cut = true;
+            fs::write(&foreign, b"foreign-stage")?;
+        }
+        Ok(())
+    })
+    .expect_err("foreign version content must stop the next protected effect");
+
+    assert!(
+        reached_activation_cut,
+        "the test reached the actual activation-lock cut"
+    );
+    assert!(matches!(
+        refusal,
+        UpdateError::Baseline {
+            step: "activation scaffold versions reread",
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read(&foreign).expect("retain unexpected stage evidence"),
+        b"foreign-stage"
+    );
+    let listed = fs::read_dir(&versions)
+        .expect("retained versions directory")
+        .map(|entry| entry.expect("list version entry").file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        listed,
+        vec![std::ffi::OsString::from("unexpected-stage")],
+        "no incomplete or published stage can be created after the failed reread"
+    );
+    for present in ["bootstrap.lock", "activation.lock"] {
+        assert!(
+            update.join(present).is_file(),
+            "already created {present} remains"
+        );
+    }
+    for absent in ["version-floor", "current", "last-known-good"] {
+        assert!(
+            !update.join(absent).exists(),
+            "no pointer/floor publication after the adversarial cut: {absent}"
+        );
+    }
+    assert!(
+        !trust
+            .installation
+            .install_root
+            .join("install-provenance")
+            .exists(),
+        "a changed retained versions directory cannot reach the final commit"
+    );
+}
+
+#[test]
 fn per_user_missing_archive_refuses_before_bootstrap_effects() {
     support::assert_user_principal_token();
     let (_temp, trust, source) = fixture();
