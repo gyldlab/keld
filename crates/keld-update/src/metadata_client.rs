@@ -118,10 +118,16 @@ pub(crate) fn verify_ready_revision(
 pub(crate) fn verify_ready_revision_from_readers(
     readers: SignedRoleReaders<'_>,
 ) -> Result<ReadyRevision, MetadataClientRefusal> {
-    let root = read_complete_role(TufRole::Root, readers.root)?;
-    let timestamp = read_complete_role(TufRole::Timestamp, readers.timestamp)?;
-    let snapshot = read_complete_role(TufRole::Snapshot, readers.snapshot)?;
-    let targets = read_complete_role(TufRole::Targets, readers.targets)?;
+    let SignedRoleReaders {
+        root,
+        timestamp,
+        snapshot,
+        targets,
+    } = readers;
+    let root = read_complete_role(TufRole::Root, root)?;
+    let timestamp = read_complete_role(TufRole::Timestamp, timestamp)?;
+    let snapshot = read_complete_role(TufRole::Snapshot, snapshot)?;
+    let targets = read_complete_role(TufRole::Targets, targets)?;
     verify_ready_revision(SignedRoleBytes {
         root: &root,
         timestamp: &timestamp,
@@ -450,7 +456,7 @@ mod tests {
                 TufRole::Snapshot => &mut snapshot,
                 TufRole::Targets => &mut targets,
             };
-            chosen.fail_after = Some(if eof_failure { 1 } else { 0 });
+            chosen.fail_after = Some(usize::from(eof_failure));
             assert_eq!(
                 verify_ready_revision_from_readers(SignedRoleReaders {
                     root: &mut root,

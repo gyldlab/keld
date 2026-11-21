@@ -117,22 +117,20 @@ impl<'lease> RepositoryMetadataIo<'lease> {
             self.eligibility,
             self.profile,
         );
-        match journal.inspect_pointed_attempt()? {
-            Some((record, disposition)) => Ok(NativeRepositoryRestart::InitialAdmission {
+        if let Some((record, disposition)) = journal.inspect_pointed_attempt()? {
+            return Ok(NativeRepositoryRestart::InitialAdmission {
                 record: Box::new(record),
                 disposition,
-            }),
-            None => {
-                // D-64 publishes `admitted` before D-68 publishes the pointer.
-                // A crash between those durable cuts leaves a real orphan;
-                // absence of the pointer is not permission to select metadata.
-                // The retained admissions parent and D-90 witness remain live.
-                // An empty local directory is only a negative diagnostic, not
-                // a repository-wide member or old-reader completeness proof.
-                super::repository_member_diagnostics::require_no_unpointed_admissions(admissions)?;
-                self.inspect().map(NativeRepositoryRestart::Metadata)
-            }
+            });
         }
+        // D-64 publishes `admitted` before D-68 publishes the pointer.
+        // A crash between those durable cuts leaves a real orphan;
+        // absence of the pointer is not permission to select metadata.
+        // The retained admissions parent and D-90 witness remain live.
+        // An empty local directory is only a negative diagnostic, not
+        // a repository-wide member or old-reader completeness proof.
+        super::repository_member_diagnostics::require_no_unpointed_admissions(admissions)?;
+        self.inspect().map(NativeRepositoryRestart::Metadata)
     }
 
     /// Diagnoses anchor, current and selected generation by their retained

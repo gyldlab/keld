@@ -219,7 +219,7 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         Ok(())
     }
 
-    /// Verifies that D-46's exact CreationArmed journal was durably reread
+    /// Verifies that D-46's exact `CreationArmed` journal was durably reread
     /// before the first installation-specific native effect.
     pub(super) fn require_creation_armed(
         &self,
@@ -228,7 +228,7 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         self.require_pointed_phase(expected, InitialAdmissionPhase::CreationArmed)
     }
 
-    /// Verifies an exact BootstrapOwned journal under the still-retained
+    /// Verifies an exact `BootstrapOwned` journal under the still-retained
     /// repository and bootstrap leases before the metadata lease may release.
     pub(super) fn require_bootstrap_owned(
         &self,

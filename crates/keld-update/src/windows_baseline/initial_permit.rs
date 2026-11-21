@@ -47,7 +47,7 @@ trait NativeInitialAdmissionIssuer {
     /// creator provenance, and still-live repository selection. Refuse a
     /// foreign scaffold even if its protection profile looks valid.
     ///
-    /// FreshAbsent v2 cannot use a preprovisioned scaffold without D-43's
+    /// `FreshAbsent` v2 cannot use a preprovisioned scaffold without D-43's
     /// separately qualified creator proof. No such proof is commissioned.
     fn require_bound_existing_scaffold(&mut self, roots: &Roots) -> Result<(), UpdateError>;
 
