@@ -285,6 +285,11 @@ fn validate_generation(record: &GenerationRecord) -> Result<(), UpdateError> {
             "D-23 generation sequence and previous digest are inconsistent",
         ));
     }
+    // Enrollment creates sequence one with recovery epoch zero. Only a later,
+    // independently authorized recovery can advance that epoch.
+    if record.sequence == 1 && record.recovery_epoch != 0 {
+        return Err(invalid("D-23 genesis recovery epoch must be zero"));
+    }
     // The data-only codec constrains the *integer representation*. The real
     // OS clock owner must still verify its supported UTC range before use.
     if record.utc_floor_millis > i64::MAX as u64 {
@@ -307,6 +312,14 @@ fn validate_generation(record: &GenerationRecord) -> Result<(), UpdateError> {
         GenerationPhase::Roles | GenerationPhase::Ready if record.root_refresh.is_some() => {
             return Err(invalid(
                 "D-23 rootRefresh belongs only to root-refresh phase",
+            ));
+        }
+        GenerationPhase::Roles
+            if (record.snapshot.is_some() && record.timestamp.is_none())
+                || (record.targets.is_some() && record.snapshot.is_none()) =>
+        {
+            return Err(invalid(
+                "D-23 roles phase requires ordered timestamp, snapshot and targets",
             ));
         }
         GenerationPhase::Ready

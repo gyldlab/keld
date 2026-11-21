@@ -173,7 +173,7 @@ fn malformed_anchor_and_current_are_refused_at_their_independent_caps() {
         current.replacen(r#""sequence":1"#, r#""sequence":01"#, 1),
         current.replacen(r#""sequence":1"#, r#""sequence":1.0"#, 1),
         current.replacen("\"generationSha256\":\"", "\"generationSha256\":\"AA", 1),
-        current.replacen(r#""sequence":1"#, "", 1),
+        current.replacen(r#","sequence":1"#, "", 1),
         format!("{current}\n"),
     ] {
         assert_ne!(invalid, current);
@@ -187,4 +187,18 @@ fn malformed_anchor_and_current_are_refused_at_their_independent_caps() {
     let mut cut_current = current.into_bytes();
     cut_current.pop();
     assert!(decode_metadata_current(&cut_current).is_err());
+}
+
+#[test]
+fn missing_current_sequence_is_valid_json_but_not_a_valid_record() {
+    let original =
+        String::from_utf8(encode_metadata_current(&current()).expect("canonical current"))
+            .expect("ASCII JSON");
+    let missing = original.replacen(r#","sequence":1"#, "", 1);
+    assert_ne!(missing, original);
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&missing).is_ok(),
+        "missing sequence must remain syntactically valid JSON"
+    );
+    assert!(decode_metadata_current(missing.as_bytes()).is_err());
 }

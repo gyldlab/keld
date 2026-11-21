@@ -247,3 +247,87 @@ fn generation_refuses_reordered_unknown_duplicate_and_noncanonical_raw_bytes() {
     truncated.pop();
     assert!(decode_metadata_generation(&truncated).is_err());
 }
+
+#[test]
+fn roles_phase_refuses_missing_role_prerequisites_and_accepts_ordered_prefixes() {
+    let mut roles = generation();
+    roles.phase = GenerationPhase::Roles;
+    for (has_timestamp, has_snapshot, has_targets) in [
+        (false, true, true),
+        (false, false, true),
+        (true, false, true),
+    ] {
+        let mut invalid = roles.clone();
+        if !has_timestamp {
+            invalid.timestamp = None;
+        }
+        if !has_snapshot {
+            invalid.snapshot = None;
+        }
+        if !has_targets {
+            invalid.targets = None;
+        }
+        assert_eq!(
+            refusal(encode_metadata_generation(&invalid)),
+            "D-23 roles phase requires ordered timestamp, snapshot and targets"
+        );
+    }
+    for (has_timestamp, has_snapshot) in [(false, false), (true, false), (true, true)] {
+        let mut valid = roles.clone();
+        if !has_timestamp {
+            valid.timestamp = None;
+        }
+        if !has_snapshot {
+            valid.snapshot = None;
+        }
+        valid.targets = None;
+        let bytes = encode_metadata_generation(&valid).expect("ordered role prefix");
+        assert_eq!(
+            decode_metadata_generation(&bytes).expect("ordered prefix readback"),
+            valid
+        );
+    }
+
+    let canonical =
+        String::from_utf8(encode_metadata_generation(&roles).expect("all roles recorded"))
+            .expect("ASCII JSON");
+    let old = format!(
+        r#""timestamp":{{"sha256":"{}","length":512,"version":2}}"#,
+        "66".repeat(32)
+    );
+    let missing = canonical.replacen(&old, r#""timestamp":null"#, 1);
+    assert_ne!(missing, canonical);
+    assert!(serde_json::from_str::<serde_json::Value>(&missing).is_ok());
+    assert_eq!(
+        refusal(decode_metadata_generation(missing.as_bytes())),
+        "D-23 roles phase requires ordered timestamp, snapshot and targets"
+    );
+}
+
+#[test]
+fn genesis_requires_zero_recovery_epoch_but_successor_may_advance() {
+    let mut invalid = generation();
+    invalid.recovery_epoch = 1;
+    assert_eq!(
+        refusal(encode_metadata_generation(&invalid)),
+        "D-23 genesis recovery epoch must be zero"
+    );
+    let canonical = String::from_utf8(encode_metadata_generation(&generation()).expect("genesis"))
+        .expect("ASCII JSON");
+    let changed = canonical.replacen(r#""recoveryEpoch":0"#, r#""recoveryEpoch":1"#, 1);
+    assert_ne!(changed, canonical);
+    assert!(serde_json::from_str::<serde_json::Value>(&changed).is_ok());
+    assert_eq!(
+        refusal(decode_metadata_generation(changed.as_bytes())),
+        "D-23 genesis recovery epoch must be zero"
+    );
+    let mut successor = generation();
+    successor.sequence = 2;
+    successor.previous_generation_sha256 = Some([0x19; 32]);
+    successor.recovery_epoch = 1;
+    let bytes = encode_metadata_generation(&successor).expect("successor");
+    assert_eq!(
+        decode_metadata_generation(&bytes).expect("successor readback"),
+        successor
+    );
+}
