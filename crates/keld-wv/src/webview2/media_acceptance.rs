@@ -1636,6 +1636,20 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         }
     }
 
+    fn gh814_assert_initial_engine_sta_apartment(
+        observation: windows::core::Result<(
+            windows::Win32::System::Com::APTTYPE,
+            windows::Win32::System::Com::APTTYPEQUALIFIER,
+        )>,
+    ) -> Result<(), WvError> {
+        use windows::Win32::System::Com::{APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER_NONE};
+
+        let (kind, qualifier) = observation.map_err(failure)?;
+        assert!(matches!(kind, APTTYPE_STA | APTTYPE_MAINSTA));
+        assert_eq!(qualifier, APTTYPEQUALIFIER_NONE);
+        Ok(())
+    }
+
     /// Check the real native profile-fixture constructor, not a synthetic
     /// deadline child: it must retain the loader version it preflighted and
     /// make that same bounded value available to controller startup.
@@ -1813,23 +1827,11 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
             let plan = super::super::windows_profile_plan(&root, selection)?;
             gh814_begin_fixture_query_census();
-            // RED control: the pre-existing selector queried Evergreen here
-            // AND again inside the fixture constructor. Remove in GREEN.
-            let _redundant_initial_query = runtime_version()?;
             let (engine, initial_runtime) = profile_fixture_engine_with_receipt(&root, selection)?;
             gh814_assert_one_native_loader_query("initial")?;
             gh814_assert_profile_fixture_preflight(&engine, initial_runtime.as_deref(), "initial")?;
             observe_com_phase("initial-engine-ready");
-            let (kind, qualifier) = apartment().map_err(failure)?;
-            assert!(matches!(
-                kind,
-                windows::Win32::System::Com::APTTYPE_STA
-                    | windows::Win32::System::Com::APTTYPE_MAINSTA
-            ));
-            assert_eq!(
-                qualifier,
-                windows::Win32::System::Com::APTTYPEQUALIFIER_NONE
-            );
+            gh814_assert_initial_engine_sta_apartment(apartment())?;
             assert_eq!(
                 super::super::environment_user_data_folder(&engine.environment)?,
                 plan.user_data_dir
@@ -1863,8 +1865,6 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
             let next_plan = super::super::windows_profile_plan(&root, successor)?;
             gh814_begin_fixture_query_census();
-            // RED control: the same extra query existed for the successor.
-            let _redundant_successor_query = runtime_version()?;
             let (mut engine, successor_runtime) =
                 profile_fixture_engine_with_receipt(&root, successor)?;
             gh814_assert_one_native_loader_query("successor")?;
