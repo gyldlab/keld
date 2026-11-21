@@ -9,6 +9,7 @@
 //! relative-native operations. They remain unavailable here, so the writer
 //! cannot arm installation effects or silently clear a recovery fence.
 
+use super::repository_census::RepositoryLedgerCensus;
 use super::{error, publish_new_record, read_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -25,27 +26,33 @@ const PENDING_OPERATION: &str = "pending-operation.json";
 
 /// Borrowed, prevalidated native repository handles held by the KEL-53 writer.
 ///
-/// The caller owns both handles and its metadata lease for this entire lifetime;
-/// constructing this value proves neither the caller's lease nor D-90 completeness.
+/// The caller owns both handles and the metadata lease for this entire lifetime.
+/// A native D-90 eligibility witness is mandatory even to construct this I/O
+/// wrapper. The witness has no constructor until its complete native producer
+/// is qualified, so this code currently cannot publish a journal.
 pub(super) struct InitialAdmissionJournalIo<'lease> {
     repository: &'lease Dir,
     admissions: &'lease Dir,
     anchor: &'lease RepositoryAnchor,
+    _eligibility: &'lease RepositoryLedgerCensus,
     profile: keld_guard::WindowsInstallProtectionProfile,
 }
 
 impl<'lease> InitialAdmissionJournalIo<'lease> {
     /// Attaches to handles authenticated by the repository owner under its lease.
+    /// The unforgeable D-90 witness must remain borrowed through every I/O call.
     pub(super) const fn new(
         repository: &'lease Dir,
         admissions: &'lease Dir,
         anchor: &'lease RepositoryAnchor,
+        eligibility: &'lease RepositoryLedgerCensus,
         profile: keld_guard::WindowsInstallProtectionProfile,
     ) -> Self {
         Self {
             repository,
             admissions,
             anchor,
+            _eligibility: eligibility,
             profile,
         }
     }
