@@ -161,6 +161,21 @@ fn assert_authenticated_non_keld_refusal(error: &WindowsAuthenticodeError) {
     );
 }
 
+fn assert_foreign_offline_preflight_refusal(error: &WindowsAuthenticodeError) {
+    assert!(
+        matches!(
+            error.detail(),
+            "the verified Authenticode signature has no Keld app-id description"
+                | "the verified signature has no authenticated Keld app-id attribute"
+        ) || error.detail().contains("during the cache-only preflight"),
+        "a genuinely signed foreign Host must fail closed if local trust is not cached or the app-id is not Keld: {error}"
+    );
+    assert!(
+        error.close_failure().is_none(),
+        "the offline WinTrust provider state must close on every refusal: {error}"
+    );
+}
+
 /// The reopening mutant is real, not an invented signature result: the original
 /// signed file reaches authenticated app-ID extraction, whereas the alias path
 /// resolves to unsigned bytes after substitution and fails `WinVerifyTrust`.
@@ -250,20 +265,7 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
     let offline_refusal = pinned_preflight
         .observe_preflight()
         .expect_err("cache-only WinTrust on the original hFile must not grant a foreign app ID");
-    assert!(
-        matches!(
-            offline_refusal.detail(),
-            "the verified Authenticode signature has no Keld app-id description"
-                | "the verified signature has no authenticated Keld app-id attribute"
-        ) || offline_refusal
-            .detail()
-            .contains("during the cache-only preflight"),
-        "a genuinely signed foreign Host must fail closed if local trust is not cached or the app-id is not Keld: {offline_refusal}"
-    );
-    assert!(
-        offline_refusal.close_failure().is_none(),
-        "the offline WinTrust provider state must close on every refusal: {offline_refusal}"
-    );
+    assert_foreign_offline_preflight_refusal(&offline_refusal);
 
     let reopened_refusal = WindowsAuthenticodeImage::open(&visible)
         .expect("foreign pathname remains a regular file")
