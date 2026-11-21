@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
@@ -174,6 +175,41 @@ class ProductionStageDestinationTests(unittest.TestCase):
             EXPECTED_PATCH_SHA256,
         )
 
+    def test_abnormal_stage_death_before_verification_has_no_success_manifest(self) -> None:
+        # Real subprocess and SIGKILL; fake generators isolate filesystem
+        # publication from the separate pinned-original byte-identity tests.
+        source = self._sources(pinned=False)
+        interrupted = self.root / "interrupted-stage"
+        killed = subprocess.run(
+            [sys.executable, "-B", str(Path(__file__).resolve()),
+             "--crash-stage-child", "abort", str(source), str(interrupted)],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stderr)
+        self.assertEqual(killed.stdout, "", "a dead stage must not emit success")
+        self.assertTrue(
+            (interrupted / "gh1404-g1-production.patch").is_file(),
+            "the fault must occur after candidate files were written",
+        )
+        self.assertFalse(
+            (interrupted / "source-manifest.json").exists(),
+            "an unverified, interrupted overlay cannot advertise final source receipts",
+        )
+        self.assertEqual(
+            self.stage(interrupted).returncode, 2,
+            "an aborted overlay cannot be resumed as a qualified source output",
+        )
+
+        healthy = self.root / "healthy-successor"
+        recovered = subprocess.run(
+            [sys.executable, "-B", str(Path(__file__).resolve()),
+             "--crash-stage-child", "complete", str(source), str(healthy)],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        manifest = json.loads((healthy / "source-manifest.json").read_text())
+        self.assertEqual(json.loads(recovered.stdout), manifest)
+
     def _directory_swap_during_write(self, target: str) -> None:
         self._sources(pinned=False)
         parent = self.root / "staging-parent"
@@ -251,8 +287,10 @@ class ProductionStageDestinationTests(unittest.TestCase):
         self.assertEqual(changes, 1)
         self.assertIn("destination changed after source staging", stderr.getvalue())
         self.assertEqual(list(bundle.iterdir()), [], "pinned output descriptor was redirected")
-        self.assertTrue((parked / "new-overlay" / "source-manifest.json").is_file(),
-                        "write must stay anchored to the original directory inode")
+        self.assertTrue((parked / "new-overlay" / "gh1404-g1-production.patch").is_file(),
+                        "stage writes must stay anchored to the original directory inode")
+        self.assertFalse((parked / "new-overlay" / "source-manifest.json").exists(),
+                         "rebound output must never advertise final source receipts")
 
     def _publication_rebind_control(self, *, nested_directory: bool) -> None:
         # Run the actual pinned generator pair. Only the newly staged output
@@ -418,8 +456,29 @@ def _fifo_child(mode: str, source: Path, output: Path) -> None:
         stage.main()
 
 
+def _crash_stage_child(mode: str, source: Path, output: Path) -> None:
+    """Stage real temporary POSIX files, then die before verification."""
+    def candidate_generator(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        kind = Path(argv[1]).name
+        data = ("PATCH:" if "--patch" in argv else "CANDIDATE:") + kind
+        return subprocess.CompletedProcess(argv, 0, data.encode(), b"")
+
+    with mock.patch.object(sys, "argv",
+                           [str(SCRIPT), "--source-root", str(source),
+                            "--output-root", str(output)]), \
+            mock.patch.object(stage.subprocess, "run", side_effect=candidate_generator):
+        if mode == "abort":
+            with mock.patch.object(stage, "verify_published_overlay",
+                                   side_effect=lambda *_args: os.kill(os.getpid(), signal.SIGKILL)):
+                stage.main()
+        else:
+            stage.main()
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 5 and sys.argv[1] == "--fifo-child":
         _fifo_child(sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]))
+    elif len(sys.argv) == 5 and sys.argv[1] == "--crash-stage-child":
+        _crash_stage_child(sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]))
     else:
         unittest.main()

@@ -328,6 +328,15 @@ Verification opens output files nonblocking and rejects non-regular inodes,
 including a FIFO swapped into the advertised JavaScript path, without waiting
 for a pipe writer. Directory-path FIFO replacements are refused by the
 directory-only open.
+The source manifest is written only after the two candidate JavaScript files
+and patch pass their first exact-inode/content verification and the advertised
+output-root path still names the pinned descriptor. A real subprocess
+`SIGKILL` before that verification leaves an incomplete overlay with **no**
+manifest and no success stdout; a new attempt must use a different output
+path. This is producer-crash staging evidence, **not** a KELD Host-death or
+installed-app recovery test. A manifest alone cannot authorize consumption:
+the separate source/build owner still needs the producer's successful exit,
+fresh output identity verification and final approved build-input custody.
 These checks are point-in-time evidence: a separate process running under the
 **same UID** with write permission can still mutate paths after verification,
 or physically move an already-open directory inode into an application bundle.

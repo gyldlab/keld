@@ -243,9 +243,18 @@ def main() -> None:
         patch = bytes(full_patch)
         manifest["patch_sha256"] = sha256(patch)
         content.append(("gh1404-g1-production.patch", patch))
-        content.append(("source-manifest.json", (json.dumps(manifest, indent=2) + "\n").encode()))
+        manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode()
         try:
             dirs, records = write_overlay(output_fd, content, stack)
+            # A killed staging process must not leave a final hash receipt
+            # before verifying the files it describes. The manifest is the
+            # last advertised output, after the pinned source/patch are proven.
+            verify_published_overlay(output_fd, dirs, records, stack)
+            if not same_directory_at_path(output_root, output_fd):
+                raise RuntimeError("destination changed after source staging; output is unqualified")
+            records[("source-manifest.json",)] = write_new_file(
+                output_fd, "source-manifest.json", manifest_bytes
+            )
             verify_published_overlay(output_fd, dirs, records, stack)
         except (OSError, RuntimeError) as error:
             parser.error(f"destination changed or unsafe during source publication: {error}")
