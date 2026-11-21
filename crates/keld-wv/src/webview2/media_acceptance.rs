@@ -68,6 +68,20 @@ struct Evidence {
 thread_local! {
     static EVIDENCE: RefCell<Evidence> = RefCell::new(Evidence::default());
     static COM_LIFETIME_PHASES: Cell<bool> = const { Cell::new(false) };
+    static GH814_FIXTURE_RUNTIME_PROBES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Test-only census of native loader calls on the selected fixture thread.
+/// Reset before each fixture generation; a second query is not a receipt of
+/// the constructor's original selected preflight.
+pub(super) fn gh814_record_runtime_probe() {
+    GH814_FIXTURE_RUNTIME_PROBES.with(|probes| probes.set(probes.get() + 1));
+}
+
+/// The failure-only native environment argument oracle. It is absent from
+/// shipping builds and never permits a real COM launch to succeed.
+pub(super) fn gh814_force_fixture_environment_timeout() -> bool {
+    std::env::var_os("KELD_GH814_FIXTURE_FORCE_ENV_TIMEOUT").is_some()
 }
 
 /// Flush each phase before the fixture watchdog can terminate the process.
@@ -1157,15 +1171,48 @@ mod tests {
         )
     }
 
+    /// Only the native COM lifetime case needs to inspect the exact selected
+    /// constructor preflight. Return the same captured value without asking
+    /// Evergreen a second time outside the original launch lifetime.
+    fn profile_fixture_engine_with_receipt(
+        root: &Path,
+        selection: crate::profile::WebProfileSelection,
+    ) -> Result<(WebView2Engine, Option<String>), WvError> {
+        profile_fixture_engine_with_options_receipt(
+            root,
+            selection,
+            CoreWebView2EnvironmentOptions::default(),
+        )
+    }
+
     fn profile_fixture_engine_with_options(
         root: &Path,
         selection: crate::profile::WebProfileSelection,
         options: CoreWebView2EnvironmentOptions,
     ) -> Result<WebView2Engine, WvError> {
+        profile_fixture_engine_with_options_receipt(root, selection, options)
+            .map(|(engine, _receipt)| engine)
+    }
+
+    fn profile_fixture_engine_with_options_receipt(
+        root: &Path,
+        selection: crate::profile::WebProfileSelection,
+        options: CoreWebView2EnvironmentOptions,
+    ) -> Result<(WebView2Engine, Option<String>), WvError> {
         // This native fixture owns an engine just like production does.
         // Keep its actual preflight for both environment and controller
         // failure diagnostics; never re-query Evergreen after a deadline.
         let preflight_runtime_version = super::super::gh814_engine_preflight_version()?;
+        if gh814_force_fixture_environment_timeout() {
+            // The original selected native preflight, not a second loader
+            // query: compare this to the real failure-side environment log.
+            println!(
+                "KELD_GH814_FIXTURE_SELECTED_PREFLIGHT loader_runtime_version={}",
+                preflight_runtime_version
+                    .as_deref()
+                    .unwrap_or("unavailable")
+            );
+        }
         let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_any_thread(true).with_dpi_aware(false);
@@ -1177,8 +1224,9 @@ mod tests {
         )?;
         let mut engine =
             WebView2Engine::from_selected_environment(com, event_loop, environment, profile)?;
+        let selected_receipt = preflight_runtime_version.clone();
         engine.diagnostic_runtime_version = preflight_runtime_version;
-        Ok(engine)
+        Ok((engine, selected_receipt))
     }
 
     fn run_profile_fixture(mut engine: WebView2Engine) -> Result<(), WvError> {
@@ -1593,9 +1641,11 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
     /// make that same bounded value available to controller startup.
     fn gh814_assert_profile_fixture_preflight(
         engine: &WebView2Engine,
-        observed_runtime: &str,
+        observed_runtime: Option<&str>,
         generation: &str,
     ) -> Result<(), WvError> {
+        let observed_runtime = observed_runtime
+            .ok_or_else(|| failure("the native fixture selected no Evergreen preflight"))?;
         let expected = super::super::gh814_validated_preflight_version(observed_runtime)
             .ok_or_else(|| failure("native Evergreen version failed diagnostic validation"))?;
         let actual = engine
@@ -1611,6 +1661,103 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             "KELD_GH814_FIXTURE_PREFLIGHT generation={generation} loader_runtime_version={actual}"
         );
         Ok(())
+    }
+
+    fn gh814_begin_fixture_query_census() {
+        GH814_FIXTURE_RUNTIME_PROBES.with(|probes| probes.set(0));
+    }
+
+    fn gh814_assert_one_native_loader_query(generation: &str) -> Result<(), WvError> {
+        GH814_FIXTURE_RUNTIME_PROBES.with(|probes| {
+            if probes.get() == 1 {
+                Ok(())
+            } else {
+                Err(failure(format!(
+                    "GH814: {generation} fixture queried Evergreen {} times; expected one exact selected preflight",
+                    probes.get()
+                )))
+            }
+        })
+    }
+
+    /// The real fixture constructor enters the original environment timeout
+    /// with exactly the native preflight it selected, never a late loader
+    /// query or a version recovered from another engine.
+    #[test]
+    fn gh814_fixture_environment_timeout_keeps_selected_preflight() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current keld-wv native test executable"),
+        )
+        .args([
+            "--exact",
+            "webview2::media_acceptance::tests::gh814_fixture_environment_timeout_child",
+            "--nocapture",
+        ])
+        .env("KELD_GH814_FIXTURE_FORCE_ENV_TIMEOUT", "1")
+        .output()
+        .expect("native fixture environment-timeout oracle child");
+        assert!(
+            output.status.success(),
+            "original typed environment refusal must be retained: {output:?}"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("bounded fixture preflight receipt");
+        let expected = stdout
+            .lines()
+            .find(|line| line.contains("KELD_GH814_FIXTURE_SELECTED_PREFLIGHT"))
+            .and_then(|line| line.split_once("loader_runtime_version="))
+            .map(|(_, version)| version.trim())
+            .expect("exact originally selected native preflight receipt");
+        assert!(
+            super::super::gh814_validated_preflight_version(expected).as_deref() == Some(expected),
+            "the selected native preflight must be bounded dotted digits: {expected}"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("bounded environment timeout log");
+        let emitted = stderr
+            .lines()
+            .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+            .expect("real native environment-timeout evidence");
+        assert!(
+            emitted.contains("phase=environment")
+                && emitted.contains(&format!("loader_runtime_version={expected}"))
+                && emitted.contains("callback_channel_state=not_observed")
+                && !emitted.contains("ThreadId("),
+            "environment did not receive this fixture's exact selected preflight: {emitted}"
+        );
+    }
+
+    /// Test-only real profile fixture, with the unchanged environment WV-009
+    /// waiter forced expired before any COM browser startup. Uses the existing
+    /// fixture watchdog and removes only its own unique test directory.
+    #[test]
+    fn gh814_fixture_environment_timeout_child() -> Result<(), WvError> {
+        if !gh814_force_fixture_environment_timeout() {
+            return Ok(());
+        }
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            let root = profile_fixture_root("gh814-environment-timeout");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let ephemeral = crate::profile::EphemeralProfile::from_host_random([27; 32])?;
+            let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+            let outcome = match profile_fixture_engine(&root, selection) {
+                Ok(engine) => {
+                    drop(engine);
+                    Err(failure(
+                        "expired environment launch incorrectly reached READY",
+                    ))
+                }
+                Err(error)
+                    if error.to_string().contains("KELD-WV-009")
+                        && error.to_string().contains("phase=environment") =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(failure(format!(
+                    "environment launch returned unrelated error: {error}"
+                ))),
+            };
+            std::fs::remove_dir_all(root).map_err(failure)?;
+            outcome
+        })
     }
 
     #[test]
@@ -1665,9 +1812,13 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let ephemeral = crate::profile::EphemeralProfile::from_host_random([93; 32])?;
             let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
             let plan = super::super::windows_profile_plan(&root, selection)?;
-            let initial_runtime = runtime_version()?;
-            let engine = profile_fixture_engine(&root, selection)?;
-            gh814_assert_profile_fixture_preflight(&engine, &initial_runtime, "initial")?;
+            gh814_begin_fixture_query_census();
+            // RED control: the pre-existing selector queried Evergreen here
+            // AND again inside the fixture constructor. Remove in GREEN.
+            let _redundant_initial_query = runtime_version()?;
+            let (engine, initial_runtime) = profile_fixture_engine_with_receipt(&root, selection)?;
+            gh814_assert_one_native_loader_query("initial")?;
+            gh814_assert_profile_fixture_preflight(&engine, initial_runtime.as_deref(), "initial")?;
             observe_com_phase("initial-engine-ready");
             let (kind, qualifier) = apartment().map_err(failure)?;
             assert!(matches!(
@@ -1711,9 +1862,17 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let successor = crate::profile::EphemeralProfile::from_host_random([94; 32])?;
             let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
             let next_plan = super::super::windows_profile_plan(&root, successor)?;
-            let successor_runtime = runtime_version()?;
-            let mut engine = profile_fixture_engine(&root, successor)?;
-            gh814_assert_profile_fixture_preflight(&engine, &successor_runtime, "successor")?;
+            gh814_begin_fixture_query_census();
+            // RED control: the same extra query existed for the successor.
+            let _redundant_successor_query = runtime_version()?;
+            let (mut engine, successor_runtime) =
+                profile_fixture_engine_with_receipt(&root, successor)?;
+            gh814_assert_one_native_loader_query("successor")?;
+            gh814_assert_profile_fixture_preflight(
+                &engine,
+                successor_runtime.as_deref(),
+                "successor",
+            )?;
             observe_com_phase("successor-engine-ready");
             // The old hosted failure occurred after engine-ready and before
             // controller-ready. Sample the existing COM apartment observer

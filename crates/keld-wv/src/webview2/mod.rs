@@ -196,6 +196,9 @@ pub fn runtime_version() -> Result<String, WvError> {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::core::{PCWSTR, PWSTR};
 
+    #[cfg(all(feature = "media-acceptance", test))]
+    media_acceptance::gh814_record_runtime_probe();
+
     #[cfg(test)]
     gh814_assert_runtime_probe_is_not_late();
 
@@ -1623,6 +1626,26 @@ fn create_environment_for_profile_with_options_until(
     deadline: Instant,
     preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Environment, WvError> {
+    #[cfg(all(feature = "media-acceptance", test))]
+    if media_acceptance::gh814_force_fixture_environment_timeout() {
+        // Test-only deterministic failure at the ACTUAL fixture-to-environment
+        // argument boundary, before COM or profile browser creation. Exercise
+        // the original native typed deadline telemetry with the version
+        // received by this function. No production deadline is modified.
+        let (_sender, receiver) = mpsc::channel::<LaunchCallback<()>>();
+        let expired = Instant::now();
+        return match wait_for_launch_with_message_pump_until(
+            &receiver,
+            expired,
+            WebView2LaunchPhase::Environment,
+            expired,
+            expired,
+            preflight_runtime_version,
+        ) {
+            Err(error) => Err(error),
+            Ok(()) => Err(profile_failure(ProfileErrorKind::LifecycleUnproven)),
+        };
+    }
     // SAFETY: options is private and unpublished. The pinned implementation
     // exposes the documented EnvironmentOptions2 exclusive-UDF property.
     unsafe { options.set_exclusive_user_data_folder_access(true) };
