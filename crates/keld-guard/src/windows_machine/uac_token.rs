@@ -178,6 +178,11 @@ impl WindowsPerUserWorkerPreflight {
         own_session_result(initiating_session, token_session_id(&process_token)?)?;
         require_not_elevated(&process_token)?;
         let observed_user_sid = observe_current_user_sid()?;
+        // TokenUser is available only through the existing safe current-process
+        // reader. Bind that reading to a second query-only process-token open,
+        // and recheck the thread after every OS observation has completed.
+        revalidate_process_observation(&process_token, initiating_session, &observed_user_sid)?;
+        require_unimpersonated_worker()?;
         Ok(Self {
             worker_thread: thread::current().id(),
             process_token,
@@ -219,17 +224,32 @@ impl WindowsPerUserWorkerPreflight {
             ));
         }
         require_unimpersonated_worker()?;
-        own_session_result(
+        revalidate_process_observation(
+            &self.process_token,
             self.initiating_session,
-            token_session_id(&self.process_token)?,
+            &self.observed_user_sid,
         )?;
-        require_not_elevated(&self.process_token)?;
-        let current = open_process_token()
-            .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
-        own_session_result(self.initiating_session, token_session_id(&current)?)?;
-        require_not_elevated(&current)?;
-        require_same_observed_sid(&self.observed_user_sid)
+        require_unimpersonated_worker()
     }
+}
+
+#[allow(dead_code, reason = "used by staged private D-42 worker preflight")]
+fn revalidate_process_observation(
+    retained: &OwnedHandle,
+    initiating_session: u32,
+    observed_user_sid: &ObservedUserSid,
+) -> Result<(), WindowsTokenError> {
+    // The retained handle and the current process's freshly opened token
+    // must independently satisfy the same observable session and elevation
+    // predicates. TokenId/ModifiedId and retained TokenUser remain unavailable
+    // without T-82: matching these facts must never be treated as token identity.
+    own_session_result(initiating_session, token_session_id(retained)?)?;
+    let current = open_process_token()
+        .map_err(|error| WindowsTokenError::os("OpenProcessToken(TOKEN_QUERY)", &error))?;
+    own_session_result(initiating_session, token_session_id(&current)?)?;
+    require_same_observed_sid(observed_user_sid)?;
+    require_not_elevated(retained)?;
+    require_not_elevated(&current)
 }
 
 #[allow(dead_code, reason = "used by staged private D-42 worker preflight")]
@@ -1379,6 +1399,8 @@ mod tests {
 
     #[test]
     fn production_thread_check_rejects_a_live_self_impersonation_token() {
+        let token = open_process_token().expect("query actual process token");
+        let session = token_session_id(&token).expect("query actual process session");
         // SAFETY: ImpersonateSelf operates on the current test thread and does not
         // transfer or retain caller pointers. The drop guard always reverts it.
         assert_ne!(
@@ -1390,6 +1412,13 @@ mod tests {
         assert!(
             require_no_thread_impersonation().is_err(),
             "the production OpenThreadToken check must refuse impersonation"
+        );
+        assert!(
+            matches!(
+                WindowsPerUserWorkerPreflight::observe(session),
+                Err(WindowsTokenError::ThreadImpersonating)
+            ),
+            "the actual-worker preflight must refuse an impersonating thread at observation"
         );
     }
 
@@ -1453,6 +1482,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn per_user_worker_preflight_session_mismatch_permanently_invalidates_observation() {
+        let token = open_process_token().expect("query actual process token");
+        let actual_session = token_session_id(&token).expect("query actual process session");
+        let mut preflight = worker_from_actual_os_for_negative_test(actual_session, token);
+        let other_session = actual_session.wrapping_add(1);
+
+        preflight.initiating_session = other_session;
+        assert_eq!(
+            preflight.revalidate(),
+            Err(WindowsTokenError::SessionMismatch {
+                expected: other_session,
+                actual: actual_session,
+            }),
+            "the retained OS token's session must be checked on every revalidation"
+        );
+        preflight.initiating_session = actual_session;
+        assert!(
+            preflight.revalidate().is_err(),
+            "restoring the expected session cannot reactivate an invalidated preflight"
+        );
+    }
+
     fn worker_from_actual_os_for_negative_test(
         session: u32,
         process_token: OwnedHandle,
@@ -1476,11 +1528,24 @@ mod tests {
         let sid = current_process_sid().expect("query real current process TokenUser");
         let sid = ObservedUserSid::from_sid(&sid).expect("bounded process SID");
         let expected = elevated == 0 && !sid.is_builtin_service();
+        let observed = WindowsPerUserWorkerPreflight::observe(session);
         assert_eq!(
-            WindowsPerUserWorkerPreflight::observe(session).is_ok(),
+            observed.is_ok(),
             expected,
             "the private observer must enforce native non-elevation and service-account refusal"
         );
+        if let Ok(mut worker) = observed {
+            assert_eq!(
+                worker.revalidate(),
+                Ok(()),
+                "the actual worker must survive a fresh process-token and SID recheck"
+            );
+            assert_eq!(
+                worker.revalidate(),
+                Ok(()),
+                "a second native recheck must retain the same observed identity"
+            );
+        }
         assert_eq!(
             require_not_elevated(&token).is_ok(),
             elevated == 0,
@@ -1510,6 +1575,20 @@ mod tests {
                 "the worker SID mismatch must be the refusal, got: {error}"
             );
         }
+
+        let token = open_process_token().expect("query actual process token");
+        let session = token_session_id(&token).expect("query actual process session");
+        let mut worker = worker_from_actual_os_for_negative_test(session, token);
+        worker.observed_user_sid = other;
+        assert!(
+            worker.revalidate().is_err(),
+            "a worker with a foreign SID snapshot must reject the real process TokenUser"
+        );
+        worker.observed_user_sid = actual;
+        assert!(
+            worker.revalidate().is_err(),
+            "restoring the original SID cannot reactivate an invalidated worker"
+        );
     }
 
     #[test]
