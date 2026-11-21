@@ -46,7 +46,7 @@ resolution cannot authorize `Prepared`. Negative: substitute CloseRequested for 
 **R5 — Full veto/retry.** Given dirty Cancel or close Veto, preserve document bytes, file hash, visible native window, current birth-PIDs, role/link and new Quit eligibility. Given asynchronous Save or Discard and later actual Destroyed, a later `app.quit` emits a distinct `before-quit` and can progress through `will-quit`. Negative: keep the
 vetoed attempt's suppression latch; second `before-quit` disappears.
 
-**R6 — Multiwindow and merged close.** Given W2 then W1, request both closes newest-first even if one vetoes. If a later Quit receives GH-531 `Merged {close_seq}`, it observes that exact close-sequence settlement without borrowing an older app attempt's terminal authority. Test held Veto and Allow separately. This coordination rule **requires
+**R6 — Multiwindow and merged close.** Given W2 then W1, request both closes newest-first even if one vetoes. If a later Quit receives GH-531's `Merged` outcome for `close_seq`, it observes that exact close-sequence settlement without borrowing an older app attempt's terminal authority. Test held Veto and Allow separately. This coordination rule **requires
 explicit owner approval**; no local outcome is presumed. Negative: drop the merged result and require bounded settlement evidence.
 
 **R7 — OS success only after cleanup.** Given a pinned signed app and a prearmed kernel witness, OS Quit must reach the same guarded app owner. With cleanup held, no native success, zero-exit or forged process-family-clean receipt is allowed. Only after successful Host, Bun and renderer cleanup can the approved AppKit strategy publish success.
