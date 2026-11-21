@@ -137,6 +137,11 @@ impl CreationArmedEffectGate<'_> {
         // This MUST run before create-new: revalidation of the resulting lock
         // cannot undo an effect in an unrelated, caller-selected install root.
         self.issuer.require_bound_existing_scaffold(roots)?;
+        // The native issuer checks the actual worker/token, generation,
+        // deadline, and retained source *again* after journal/root I/O. No
+        // issuer callback, refresh, or application dispatch follows this last
+        // recheck before the KEL-53 writer makes its first protected create.
+        self.issuer.revalidate_under_repository_lease()?;
         let lock = initialize::acquire_bootstrap_lock(roots)?;
         self.issuer.revalidate_bootstrap_lock(&lock)?;
         self.issuer.publish_and_read_back_bootstrap_owned(&lock)?;
