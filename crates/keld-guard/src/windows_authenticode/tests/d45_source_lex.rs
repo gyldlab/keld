@@ -1,6 +1,6 @@
 //! Test-only D-45 Rust source mask, adapted from D-23's lexical negative oracle.
 //!
-//! This is a bounded source-shape aid, not a Rust parser or a WinTrust proof.
+//! This is a bounded source-shape aid, not a Rust parser or a `WinTrust` proof.
 //! It keeps byte offsets intact and refuses unexpected syntax rather than
 //! accepting an inert string, character, comment or macro as live Rust code.
 
