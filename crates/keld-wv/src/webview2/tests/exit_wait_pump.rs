@@ -264,6 +264,53 @@ fn expired_launch_preserves_refusal_when_runtime_probe_is_unavailable() {
     );
 }
 
+/// One Windows process represents two consecutive engine preflights with
+/// different observed Evergreen versions. The failure-only log for the second
+/// launch must use the second version, not the first-ever process value.
+/// Removing version propagation must fail this native emitted-line oracle.
+#[test]
+fn expired_launch_uses_current_generation_version_after_warm_preflight() {
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current keld-wv test executable"),
+    )
+    .args([
+        "--exact",
+        "webview2::tests::gh814_launch_timeout_log_child",
+        "--nocapture",
+    ])
+    .env("KELD_GH814_LAUNCH_LOG_PHASE", "controller")
+    .env("KELD_GH814_GENERATION_ORACLE", "two")
+    .env("KELD_GH814_FORBID_LATE_RUNTIME_PROBE", "1")
+    .output()
+    .expect("run both preflight generations in one real Windows subprocess");
+    assert!(
+        output.status.success(),
+        "each generation must retain the original WV-009 even without a late loader call: {output:?}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("bounded ASCII timeout evidence");
+    let lines: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "both generations must emit independent real timeout diagnostics: {stderr}"
+    );
+    for (line, expected) in lines.iter().zip(["111.1.1.1", "222.2.2.2"]) {
+        assert!(
+            line.contains(&format!("loader_runtime_version={expected}"))
+                && line.contains("phase=controller")
+                && line.contains("callback_channel_state=not_observed"),
+            "the version for this generation must not be absent or stale: {line}"
+        );
+    }
+    assert!(
+        !stderr.contains("ThreadId(") && !stderr.contains("profile="),
+        "timeout diagnostics must stay redacted: {stderr}"
+    );
+}
+
 /// Synthetic monotonic enqueue timestamps independently falsify attribution:
 /// an already queued pre-deadline completion must be distinguished from one
 /// whose callback only ran after the deadline. Both MUST still refuse WV-009.
