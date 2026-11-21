@@ -7,6 +7,7 @@
 use super::super::{RecordSlot, publish_new};
 use super::support::retained_directory;
 use std::fs;
+use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
 
 /// The Rust type is exhaustive: adding any slot requires review of this
 /// activation-only contract before a new replacement target can compile.
@@ -39,7 +40,9 @@ fn existing_fixed_replacement_slots_cannot_name_repository_journals() {
 
 /// Failure-first mutation: changing publish_new's native replace flag from
 /// false to true overwrites the independently planted D64 or D68 bytes and
-/// fails these assertions. Source-only until real Windows Cargo is qualified.
+/// fails these assertions. The successful control uses the same native parent
+/// and generated sibling name, so unrelated early IO denial cannot pass the
+/// collision assertion. Mutation RED remains unrun until Windows qualifies.
 #[test]
 fn absent_publication_never_replaces_existing_d64_or_d68_record() {
     for (namespace, target) in [
@@ -53,13 +56,31 @@ fn absent_publication_never_replaces_existing_d64_or_d68_record() {
         let prior = directory.join(&target);
         let prepared = format!("pending-{}", "ab".repeat(32));
         let sibling = directory.join(&prepared);
+        let control = directory.join("absent-publication-control.json");
+        assert!(!control.exists(), "control target starts absent");
+        fs::write(&sibling, b"control record").expect("valid pending source fixture");
+        publish_new(&parent, &prepared, "absent-publication-control.json")
+            .expect("the same retained parent and generated source can publish absent-only");
+        assert_eq!(
+            fs::read(&control).expect("positive native rename produced its target"),
+            b"control record"
+        );
+        assert!(!sibling.exists(), "positive rename consumed its source");
+
         fs::write(&prior, b"original durable record").expect("existing protected target fixture");
         fs::write(&sibling, b"new pending record").expect("pending publication fixture");
 
-        let refused = publish_new(&parent, &prepared, &target);
+        let refused = publish_new(&parent, &prepared, &target)
+            .expect_err("native absent-target rename must refuse an existing destination");
         assert!(
-            refused.is_err(),
-            "existing {namespace}/{target} must refuse absent-target publication: {refused:?}"
+            matches!(
+                refused.raw_os_error(),
+                Some(code)
+                    if code == ERROR_ALREADY_EXISTS.cast_signed()
+                        || code == ERROR_FILE_EXISTS.cast_signed()
+            ),
+            "expected native destination collision for {namespace}/{target}, got {refused:?} (raw OS code {:?})",
+            refused.raw_os_error()
         );
         assert_eq!(
             fs::read(&prior).expect("existing target survives refusal"),
@@ -68,6 +89,10 @@ fn absent_publication_never_replaces_existing_d64_or_d68_record() {
         assert_eq!(
             fs::read(&sibling).expect("unpublished sibling remains diagnostic"),
             b"new pending record"
+        );
+        assert_eq!(
+            fs::read(&control).expect("successful control target remains intact"),
+            b"control record"
         );
     }
 }
