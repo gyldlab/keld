@@ -9,8 +9,9 @@
 //! relative-native operations. They remain unavailable here, so the writer
 //! cannot arm installation effects or silently clear a recovery fence.
 
+use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
-use super::{error, publish_new_record, read_record};
+use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
 use crate::records::{
@@ -20,7 +21,6 @@ use crate::records::{
     encode_pending_repository_operation, inspect_initial_admission,
 };
 use cap_std::fs::Dir;
-use std::io;
 
 const PENDING_OPERATION: &str = "pending-operation.json";
 
@@ -60,7 +60,8 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
     /// Reads the exact protected pointer, refusing malformed or foreign bytes.
     /// Absence is only an observation; the caller must perform D-90 census.
     pub(super) fn read_pending(&self) -> Result<Option<PendingRepositoryOperation>, UpdateError> {
-        let Some(bytes) = read_optional(self.repository, PENDING_OPERATION, self.profile)? else {
+        let Some(bytes) = read_optional_record(self.repository, PENDING_OPERATION, self.profile)?
+        else {
             return Ok(None);
         };
         let pointer = decode_pending_repository_operation(&bytes)?;
@@ -84,7 +85,7 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
         attempt: &[u8; 32],
     ) -> Result<Option<InitialAdmissionRecord>, UpdateError> {
         let leaf = admission_leaf(attempt);
-        let Some(bytes) = read_optional(self.admissions, &leaf, self.profile)? else {
+        let Some(bytes) = read_optional_record(self.admissions, &leaf, self.profile)? else {
             return Ok(None);
         };
         let record = decode_initial_admission_record(&bytes)?;
@@ -234,19 +235,4 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
 
 fn admission_leaf(attempt: &[u8; 32]) -> String {
     format!("{}.json", hex_digest(attempt))
-}
-
-fn read_optional(
-    parent: &Dir,
-    leaf: &str,
-    profile: keld_guard::WindowsInstallProtectionProfile,
-) -> Result<Option<Vec<u8>>, UpdateError> {
-    match parent.symlink_metadata(leaf) {
-        Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(cause) => Err(error("repository record probe", cause)),
-        Ok(_) => {
-            let (_pinned, bytes) = read_record(parent, leaf, profile)?;
-            Ok(Some(bytes))
-        }
-    }
 }

@@ -37,8 +37,12 @@ mod initial_permit;
 mod initialize;
 mod load;
 mod locate;
+// This native D-23 store I/O requires the unconstructible D-90 eligibility
+// witness until the established KEL-53 owner qualifies its repository lease.
 #[allow(dead_code)]
 mod repository_census;
+#[allow(dead_code)]
+mod repository_metadata;
 
 #[cfg(test)]
 pub(crate) use activate::CRASH_CUT_HOOK;
