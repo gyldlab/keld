@@ -571,7 +571,13 @@ export const app = defineSessionFactAccessors({
     // listeners remain enrolled in the existing one-shot observer.
     if (event === "ready" && hasObservedHostReady()) return;
     const list = stateMapGet(listeners, event) ?? [];
-    list.push(listener);
+    stateDefineProperty(list, list.length, {
+      __proto__: null,
+      value: listener,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
     stateMapSet(listeners, event, list);
     if (event === "ready") ignoreIfUnawaited(observeReady());
   },

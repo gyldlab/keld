@@ -103,6 +103,29 @@ app.on("before-quit", (event: unknown) => {
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
+let poisonedRegistrationVetoCalls = 0;
+if (
+  mode === "zero-register-before-push-noop" ||
+  mode === "zero-register-will-push-noop"
+) {
+  // An application may replace Array.prototype.push after framework preload.
+  // Register the actual cancelable listener while it is replaced, then restore
+  // the primitive before dispatch so the assertion observes the real handler.
+  const event =
+    mode === "zero-register-before-push-noop" ? "before-quit" : "will-quit";
+  const originalPush = Array.prototype.push;
+  Array.prototype.push = function swallowedPush(): number {
+    return 0;
+  };
+  try {
+    app.on(event, (request: unknown) => {
+      poisonedRegistrationVetoCalls++;
+      (request as { preventDefault(): void }).preventDefault();
+    });
+  } finally {
+    Array.prototype.push = originalPush;
+  }
+}
 if (beforeAttack) {
   app.on("before-quit", (event: unknown) => {
     sequence.push("before-sabotage");
@@ -295,6 +318,19 @@ if (mode?.startsWith("scope-")) {
       "a new native intent after veto can enter a fresh D2 attempt",
     );
     await nested;
+  } else if (
+    mode === "zero-register-before-push-noop" ||
+    mode === "zero-register-will-push-noop"
+  ) {
+    await nested;
+    assert.equal(before, 1, "the original before-quit listener still ran");
+    assert.equal(
+      poisonedRegistrationVetoCalls,
+      1,
+      "app.on must retain the veto registered under a poisoned Array.push",
+    );
+    assert.equal(requests, 0);
+    assert.equal(terminals, 0, "the registered veto must retain the Host");
   } else if (mode === "zero") {
     await nested;
     assert.equal(before, 1);

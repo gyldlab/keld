@@ -66,6 +66,8 @@ const modes = [
   "zero-before-global-noop",
   "zero-before-global-throw",
   "zero-before-getter-spoof",
+  "zero-register-before-push-noop",
+  "zero-register-will-push-noop",
   "zero-before-reflect-noop",
   "zero-before-reflect-throw",
   "zero-before-slice-noop",
