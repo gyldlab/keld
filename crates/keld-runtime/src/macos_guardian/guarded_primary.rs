@@ -1,4 +1,5 @@
 //! Host-owned persistent guardian and exact registered-generation lifecycle.
+use super::error::typed_cleanup_io_error;
 use super::generation_host::{
     GenerationHostAdmission, is_initial_recovery_denied, is_post_shutdown_spawn_refused,
 };
@@ -738,7 +739,7 @@ impl GuardedPrimary {
         let cleanup_error = if attempt {
             terminate_and_release_generation(&mut current)
                 .err()
-                .map(|error| io::Error::other(error.to_string()))
+                .map(typed_cleanup_io_error)
         } else {
             current.is_some().then(|| {
                 io::Error::other(

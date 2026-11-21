@@ -53,6 +53,14 @@ pub(super) fn lifecycle_error(phase: &'static str, source: io::Error) -> Runtime
     RuntimeError::Lifecycle { phase, source }
 }
 
+/// Preserve a terminal Guardian's single typed cleanup cause in the same
+/// clone-aware collection used by multi-error lifecycle cleanup.
+pub(super) fn typed_cleanup_io_error(failure: RuntimeError) -> io::Error {
+    io::Error::other(GuardianCleanupCauses {
+        failures: vec![failure],
+    })
+}
+
 pub(super) fn collapse_failures(mut failures: Vec<RuntimeError>) -> RuntimeError {
     if failures.len() == 1
         && let Some(error) = failures.pop()
@@ -68,6 +76,24 @@ pub(super) fn collapse_failures(mut failures: Vec<RuntimeError>) -> RuntimeError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_cleanup_preserves_single_typed_echild_source() {
+        let failure = lifecycle_error(
+            "macOS guardian original child wait",
+            io::Error::from_raw_os_error(nix::libc::ECHILD),
+        );
+        let wrapped = typed_cleanup_io_error(failure);
+        let causes = wrapped
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<GuardianCleanupCauses>())
+            .expect("terminal cleanup must retain the typed source, not stringification");
+        assert!(
+            matches!(causes.failures(), [RuntimeError::Lifecycle { phase, source }]
+            if *phase == "macOS guardian original child wait"
+                && source.raw_os_error() == Some(nix::libc::ECHILD))
+        );
+    }
 
     #[test]
     fn aggregate_keeps_each_typed_failure_and_errno() {
