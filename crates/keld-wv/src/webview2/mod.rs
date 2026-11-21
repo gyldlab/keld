@@ -649,6 +649,7 @@ fn wait_for_launch_with_message_pump_until<T>(
     deadline: Instant,
     phase: WebView2LaunchPhase,
     phase_started: Instant,
+    launch_call_returned_at: Instant,
 ) -> Result<T, WvError> {
     // Only compare thread identity with the thread running the COM pump.
     // A match is not an independent proof of the OS apartment type.
@@ -698,6 +699,19 @@ fn wait_for_launch_with_message_pump_until<T>(
             let elapsed_ms = observed_at
                 .saturating_duration_since(phase_started)
                 .as_millis();
+            // The synchronous COM launch may consume the deadline before
+            // this thread can pump a single message. Distinguish that from
+            // an asynchronous completion that did not arrive after a quick
+            // launch return. Both still fail with the original WV-009.
+            let launch_call_returned_ms = launch_call_returned_at
+                .saturating_duration_since(phase_started)
+                .as_millis()
+                .min(u128::from(u16::MAX));
+            let launch_call_deadline_state = if launch_call_returned_at < deadline {
+                "returned_before_deadline"
+            } else {
+                "returned_at_or_after_deadline"
+            };
             let remaining_ms = deadline
                 .saturating_duration_since(phase_started)
                 .as_millis();
@@ -714,7 +728,7 @@ fn wait_for_launch_with_message_pump_until<T>(
                 })
                 .unwrap_or_else(|| String::from("unavailable"));
             eprintln!(
-                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} callback_thread_relation={callback_thread_relation} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
+                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} launch_call_returned_ms={launch_call_returned_ms} launch_call_deadline_state={launch_call_deadline_state} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} callback_thread_relation={callback_thread_relation} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
                 phase.name(),
             );
             return Err(profile_failure_with(
@@ -1760,6 +1774,7 @@ fn create_environment_with_options_until(
             )),
         )
     };
+    let launch_call_returned_at = Instant::now();
     launched.map_err(|error| environment_creation_error("launch", &error))?;
 
     let environment = wait_for_launch_with_message_pump_until(
@@ -1767,6 +1782,7 @@ fn create_environment_with_options_until(
         deadline,
         WebView2LaunchPhase::Environment,
         phase_started,
+        launch_call_returned_at,
     )?;
     environment.map_err(|error| environment_creation_error("completion", &error))
 }
@@ -1858,12 +1874,14 @@ fn create_controller_observed_until(
             )),
         )
     };
+    let launch_call_returned_at = Instant::now();
     launched.map_err(ControllerCreationError::Windows)?;
     wait_for_launch_with_message_pump_until(
         &rx,
         deadline,
         WebView2LaunchPhase::Controller,
         phase_started,
+        launch_call_returned_at,
     )
     .map_err(ControllerCreationError::Pump)?
     .map_err(ControllerCreationError::Windows)
@@ -4061,9 +4079,10 @@ mod tests {
         ] {
             let (_sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<()>>();
             let started = std::time::Instant::now();
-            let observed =
-                super::wait_for_launch_with_message_pump_until(&receiver, started, phase, started)
-                    .expect_err("an expired COM launch must refuse before pumping messages");
+            let observed = super::wait_for_launch_with_message_pump_until(
+                &receiver, started, phase, started, started,
+            )
+            .expect_err("an expired COM launch must refuse before pumping messages");
             let error = super::ControllerCreationError::Pump(observed).into_wv_error();
             let WvError::ProfileSelection(profile) = error else {
                 panic!("the real pump deadline must retain its typed profile error: {error}");
@@ -4092,6 +4111,7 @@ mod tests {
                 &receiver,
                 started + std::time::Duration::from_secs(1),
                 WebView2LaunchPhase::Controller,
+                started,
                 started,
             )
             .expect("ready callback before deadline"),
@@ -4126,6 +4146,15 @@ mod tests {
         } else {
             started + std::time::Duration::from_millis(500)
         };
+        // Synthetic timestamps test the emitted distinction without sleeping
+        // or extending any production deadline.
+        let launch_call_returned_at = match std::env::var("KELD_GH814_LAUNCH_CALL_CASE").as_deref()
+        {
+            Ok("before") | Err(_) => started + std::time::Duration::from_millis(100),
+            Ok("at") => started + std::time::Duration::from_millis(500),
+            Ok("after") => started + std::time::Duration::from_millis(600),
+            Ok(_) => panic!("unknown test-owned synchronous launch case"),
+        };
         match case.as_str() {
             "before" => sender
                 .send(LaunchCallback {
@@ -4158,9 +4187,14 @@ mod tests {
             "none" => {}
             _ => panic!("unknown test-owned callback case"),
         }
-        let failure =
-            super::wait_for_launch_with_message_pump_until(&receiver, deadline, phase, started)
-                .expect_err("expired native launch must fail even with a callback");
+        let failure = super::wait_for_launch_with_message_pump_until(
+            &receiver,
+            deadline,
+            phase,
+            started,
+            launch_call_returned_at,
+        )
+        .expect_err("expired native launch must fail even with a callback");
         assert!(
             failure.to_string().contains("KELD-WV-009"),
             "original lifecycle failure category changed"

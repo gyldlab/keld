@@ -181,6 +181,7 @@ fn expired_launch_pump_rejects_ready_result_before_queued_messages() {
         started,
         WebView2LaunchPhase::Controller,
         started,
+        started,
     )
     .expect_err("expired launch work must lose to the absolute deadline");
     assert!(
@@ -283,6 +284,58 @@ fn expired_launch_distinguishes_callback_enqueue_order_without_accepting_late_re
                 && !emitted.contains("pid=")
                 && !emitted.contains("ThreadId("),
             "diagnostics may not disclose URLs, profiles, PIDs or raw thread ids: {emitted}"
+        );
+    }
+}
+
+/// Both a fast-returning COM launch and one that consumed the whole deadline
+/// must remain WV-009 on expiry. A fixed emitted number or wrong boundary
+/// comparison must fail this independently timed test-owned control.
+#[test]
+fn expired_launch_distinguishes_synchronous_call_time_from_callback_delay() {
+    for (case, returned_ms, deadline_state) in [
+        ("before", "100", "returned_before_deadline"),
+        ("at", "500", "returned_at_or_after_deadline"),
+        ("after", "600", "returned_at_or_after_deadline"),
+    ] {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current keld-wv test executable"),
+        )
+        .args([
+            "--exact",
+            "webview2::tests::gh814_launch_timeout_log_child",
+            "--nocapture",
+        ])
+        .env("KELD_GH814_LAUNCH_LOG_PHASE", "controller")
+        .env("KELD_GH814_CALLBACK_QUEUE_CASE", "before")
+        .env("KELD_GH814_LAUNCH_CALL_CASE", case)
+        .output()
+        .expect("run exact synchronous-call diagnostic child");
+        assert!(
+            output.status.success(),
+            "WV-009 refusal must survive: {output:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("bounded ASCII diagnostic");
+        let emitted = stderr
+            .lines()
+            .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+            .expect("real launch timeout diagnostic");
+        assert!(
+            emitted.contains(&format!("launch_call_returned_ms={returned_ms}"))
+                && emitted.contains(&format!("launch_call_deadline_state={deadline_state}")),
+            "{case}: synchronous return must be distinguished from callback capture: {emitted}"
+        );
+        assert!(
+            emitted.contains("callback_channel_state=captured_before_deadline")
+                && emitted.contains("callback_captured_ms=250")
+                && emitted.contains("callback_thread_relation=matches_pump"),
+            "{case}: independent callback evidence must survive: {emitted}"
+        );
+        assert!(
+            !emitted.contains("ThreadId(")
+                && !emitted.contains("profile=")
+                && !emitted.contains("pid="),
+            "GH814 diagnostics must remain redacted: {emitted}"
         );
     }
 }
