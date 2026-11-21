@@ -15,6 +15,8 @@ use super::{
 use crate::UpdateError;
 use crate::records::decode_metadata_generation;
 
+mod source_contract;
+
 fn refusal_step(error: UpdateError) -> &'static str {
     match error {
         UpdateError::Baseline { step, .. } => step,
