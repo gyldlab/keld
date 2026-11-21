@@ -114,7 +114,10 @@ class ProductionStageDestinationTests(unittest.TestCase):
             path.write_bytes((original / name).read_bytes())
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected)
             self.assertEqual(path.stat().st_nlink, 1)
-        return self.source
+        # The CLI's Path.resolve(strict=True) canonicalizes the source root.
+        # The hostile pre-read hook must use this same spelling, or it will
+        # accidentally swap an output recheck after the original source read.
+        return self.source.resolve(strict=True)
 
     def test_pinned_source_hardlink_is_not_unique_provenance(self) -> None:
         source = self._owned_pristine()
