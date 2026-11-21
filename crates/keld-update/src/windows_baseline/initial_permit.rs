@@ -18,6 +18,9 @@ use crate::UpdateError;
 // legacy initializer uses this observation as an authority decision.
 pub(super) mod legacy_v2_denial;
 
+#[cfg(test)]
+mod source_contract;
+
 /// Private native issuer required before the first installation-tree mutation.
 ///
 /// The eventual KEL-53 implementation in this module must own the admitted
