@@ -535,4 +535,84 @@ mod externally_reaped_tests {
         );
         assert!(group.0.try_wait().expect("group is still owned").is_none());
     }
+
+    #[test]
+    fn externally_reaped_shutdown_and_wait_fatal_preserve_echild_without_pid_kill() {
+        // Exercise both additional observation owners independently. The
+        // prior poll_fatal regression does not execute either of these paths.
+        for wait_fatal in [false, true] {
+            let mut group = NativeChildOwner(
+                Command::new("/bin/sleep")
+                    .arg("30")
+                    .process_group(0)
+                    .spawn()
+                    .expect("own independent native group"),
+            );
+            let original = observe_group_identity(group.0.id()).expect("real native group birth");
+            let mut child = Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("own actual Guardian child");
+            let writer = child.stdin.take().expect("host liveness writer");
+            let mut guardian = HostGuardian::from_registered_parts(child, writer, None, original)
+                .expect("register native Guardian and group");
+            let stale_birth = original.altered_birth_for_test();
+            guardian.group = Some(stale_birth);
+
+            let pid = i32::try_from(guardian.guardian_pid()).expect("positive guardian PID");
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            )
+            .expect("terminate exact owned child before external reap");
+            rustix::process::waitpid(
+                rustix::process::Pid::from_raw(pid),
+                rustix::process::WaitOptions::empty(),
+            )
+            .expect("externally reap the exact child")
+            .expect("observed exact child exit");
+
+            let error = if wait_fatal {
+                guardian.wait_fatal().expect_err("wait must report ECHILD")
+            } else {
+                guardian
+                    .shutdown_until(Instant::now() + std::time::Duration::from_secs(1))
+                    .expect_err("shutdown must report ECHILD")
+            };
+            let RuntimeError::Lifecycle { phase, source } = &error else {
+                panic!("terminal cleanup must keep typed lifecycle errors: {error}");
+            };
+            assert_eq!(*phase, "macOS guardian cleanup");
+            let causes = source
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<GuardianCleanupCauses>())
+                .expect("original ECHILD and group refusal must remain separate typed causes");
+            assert_eq!(causes.failures().len(), 2, "no extra direct PID kill/wait");
+            assert!(
+                matches!(&causes.failures()[0], RuntimeError::Lifecycle { phase, source }
+                if *phase == if wait_fatal { "macOS guardian process-handle wait" }
+                    else { "macOS guardian orderly-shutdown wait" }
+                && source.raw_os_error() == Some(nix::libc::ECHILD))
+            );
+            assert!(
+                matches!(&causes.failures()[1], RuntimeError::Lifecycle { phase, source }
+                if *phase == "macOS guardian registered group identity changed"
+                    && source.kind() == io::ErrorKind::PermissionDenied)
+            );
+            assert_eq!(
+                guardian.group,
+                Some(stale_birth),
+                "never discard failed group custody"
+            );
+            assert!(
+                group
+                    .0
+                    .try_wait()
+                    .expect("inspect still-owned group")
+                    .is_none(),
+                "stale Guardian registration must not kill the unrelated live group"
+            );
+        }
+    }
 }
