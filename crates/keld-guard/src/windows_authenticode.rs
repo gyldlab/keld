@@ -35,6 +35,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 mod refusals;
+// Pure D-45 issuer/profile/role predicates only. The owning native producer
+// remains closed until T-82 grants the exact certificate/PE observations.
+mod d45_role_policy;
 pub use refusals::WindowsAuthenticodeError;
 use refusals::{parse_windows_signed_program_name, windows_identity_error};
 
