@@ -74,11 +74,21 @@ pub(crate) enum MetadataClientRefusal {
     TufClientNotQualified,
 }
 
-/// Private, non-cloneable admission authority. No constructor exists in this
-/// unqualified branch, so a caller cannot mint one from role JSON or digests.
+/// The pinned tough R5 source patch is a dependency candidate, not a verified
+/// KELD metadata admission. This private, uninhabited witness cannot be minted
+/// until T-82 joins that reviewed client to D-23/D-24 persisted floors and the
+/// *same* qualified D-90 KEL-53 repository lease. A role blob, a cached result,
+/// an apparent signed graph, or a standalone test pass is never this witness.
+/// Do not add an arbitrary constructor, Boolean bypass, or secondary lease.
+#[derive(Debug)]
+enum QualifiedT20D90RepositoryLeaseWitness {}
+
+/// Private, non-cloneable admission authority. Even a future accidental
+/// in-module constructor cannot safely instantiate this type while the T-82
+/// witness is uninhabited. Existing role intake remains refusal-only.
 #[derive(Debug)]
 pub(crate) struct ReadyRevision {
-    _private: (),
+    _qualified_repository_lease: QualifiedT20D90RepositoryLeaseWitness,
 }
 
 /// Production intake rejects missing/oversized role blobs before any future
