@@ -1,7 +1,11 @@
 # Spec: Host-authorized application exit and shell status
-Status: draft
-Linear: GH-523 (#517) · Owner: @0monish (approval pending) · Updated: 2026-11-06
-Source baseline: `0eb3ce203187f35c5276a4237189c906a5220d5a`
+- Status: draft
+- Tracker: GH-523
+- Owner: @0monish (draft owner; approval pending)
+- Updated: 2026-11-21
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
+
+The original draft was dated 2026-11-06. GH-523 is the tracker of record under #517.
 Publication: grouped future implementation pack; docs only, do not merge.
 
 ## 1. Goal & non-goals
@@ -28,54 +32,68 @@ architecture](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c
 source](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/browser.cc).
 - [Owner issue and CLI amendment](https://github.com/gyldlab/keld/issues/523).
 
-Verified baseline: The main app facade does not expose app.exit. Electron's pinned source skips cancelable quit callbacks,
+Historical baseline at the pinned source: the app facade does not expose `app.exit`. Electron's pinned source skips cancelable quit callbacks,
 destroys windows after loop readiness and has an earlier direct-exit branch. Current Keld CLI status behavior must be read in the
 implementation task; the issue's older baseline is not proof of today's CLI.
 
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
 boundary and approves none of those changes.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-### AC1
+### AC-1: An admitted ready-app exit is terminal and non-vetoable
+- **Given:** A ready app has live windows and an authenticated main role.
+- **When:** The host admits `app.exit(7)`.
+- **Then:** No `before-quit` or `will-quit` fires. The host destroys windows. `quit` carries 7. The host exits 7 without a successor role.
+- **Negative control:**
+  - **Single fault:** Implement the app call using Bun `process.exit`.
+  - **At-risk precondition:** The host supervisor would otherwise recover unexpected Bun role death.
+  - **Expected RED:** A recovery generation appears, violating the terminal no-successor assertion.
 
-Given a ready app with windows, when app.exit(7) is admitted, then no before-quit or will-quit fires, windows are destroyed, quit
-carries 7 and the host exits 7 without a successor generation.
+### AC-2: The parent shell receives the chosen host code
+- **Given:** A parent process launches the application under `keld dev`.
+- **When:** The host intentionally exits with code 7.
+- **Then:** The invoking parent sees exit status 7.
+- **Negative control:**
+  - **Single fault:** Map every nonzero host code to the CLI generic failure code.
+  - **At-risk precondition:** The authenticated host has committed intentional exit code 7.
+  - **Expected RED:** The parent observes the generic CLI failure status instead of 7.
 
-Independent negative control: Implement the call using Bun process.exit; the recovery-generation assertion must fail.
+### AC-3: An early exit uses the approved direct terminal branch
+- **Given:** An app's host loop has not reached readiness.
+- **When:** The host admits an authenticated early exit.
+- **Then:** The approved early terminal route exits directly without synthesizing `quit` or Ready.
+- **Negative control:**
+  - **Single fault:** Reuse the after-ready event sequence before the loop starts.
+  - **At-risk precondition:** An early exit is admitted while the native loop is not ready.
+  - **Expected RED:** A `quit` or Ready event appears, or early termination cannot complete.
 
-### AC2
+### AC-4: A stale or unauthenticated role cannot exit the host
+- **Given:** A role's identity is stale or its request is unauthenticated.
+- **When:** That role requests application exit.
+- **Then:** No terminal decision commits. A live authenticated reply channel returns a typed refusal when applicable.
+- **Negative control:**
+  - **Single fault:** Authorize exit using caller-supplied role identity.
+  - **At-risk precondition:** A stale or forged role supplies a privileged identity.
+  - **Expected RED:** The host commits an unauthorized terminal decision.
 
-Given keld dev launched by a parent process, when the host intentionally exits 7, then the parent observes status 7.
+### AC-5: Duplicate requests and role death cannot restart committed exit
+- **Given:** The host has already latched an intentional exit and its validated code.
+- **When:** A duplicate request arrives or the exiting role dies.
+- **Then:** Cleanup stays idempotent and supervisor recovery never creates another role generation.
+- **Negative control:**
+  - **Single fault:** Clear the intentional-exit classification before child teardown.
+  - **At-risk precondition:** A role dies after terminal exit is committed but before cleanup finishes.
+  - **Expected RED:** The supervisor starts a recovery generation or repeats terminal cleanup.
 
-Independent negative control: Map every nonzero host code to the CLI's generic failure code.
-
-### AC3
-
-Given an app before the host loop is ready, when an admitted exit occurs, then it takes the explicitly approved early terminal
-route without synthesizing quit or Ready.
-
-Independent negative control: Reuse the after-ready event sequence before the loop is running.
-
-### AC4
-
-Given a stale or unauthenticated role, when it requests exit, then no terminal decision is committed and a typed refusal is
-returned if the link is live.
-
-Independent negative control: Authorize by caller-supplied role or window identity.
-
-### AC5
-
-Given a terminal exit is already committed, when duplicate delivery or role death occurs, then cleanup remains idempotent and the
-supervisor never treats that death as recoverable.
-
-Independent negative control: Clear the intentional-exit classification before child teardown.
-
-### AC6
-
-Given an invalid code under the approved integer contract, when called, then validation fails before terminal side effects.
-
-Independent negative control: Coerce NaN or a fractional value to a successful terminal code.
+### AC-6: Invalid codes cannot cause terminal side effects
+- **Given:** An exit argument violates the approved signed integer contract.
+- **When:** The app calls `exit` with that argument.
+- **Then:** Validation rejects the call before the host commits terminal state or destroys windows.
+- **Negative control:**
+  - **Single fault:** Coerce `NaN` into an accepted exit code.
+  - **At-risk precondition:** The app submits `NaN` or a fractional/out-of-range value.
+  - **Expected RED:** The host accepts an invalid code and begins terminal teardown.
 
 ## 4. Design
 
@@ -122,26 +140,29 @@ propagation. Do not change crash retry budgets, updater semantics or unrelated C
 This publication changes only `docs/specs/gh523-host-authorized-app-exit.md` and grouped-PR/issue metadata. Shared policies,
 architecture, generated schemas, code and unrelated work remain with their existing owners.
 
-## 6. Tasks (ordered, each independently reviewable)
+## 6. Tasks
 
-### T1
+### T-1: Approve the exact terminal-code and conformance contracts
+- **Blocked by:** B-1, B-2
+- [ ] Approve the KEL-96, supervisor and CLI terminal-code amendment.
+- [ ] Record pinned source-backed conformance cells and the ready/early branch split.
 
-- [ ] Approve the KEL-96/supervisor/CLI terminal-code contract and record pending source-backed exit cells.
+### T-2: Commit one authenticated intentional-exit decision
+- **Blocked by:** T-1
+- [ ] Implement validated host exit admission and one atomic terminal latch.
+- [ ] Test duplicate requests, stale identities and terminal-vs-crash classification.
 
-### T2
+### T-3: Connect native exit paths and parent status propagation
+- **Blocked by:** T-2, B-2
+- [ ] Connect ready and early native termination branches.
+- [ ] Propagate the selected code through the owned CLI contract in the same vertical slice.
 
-- [ ] Implement validated intentional-exit admission and one atomic terminal latch with duplicate/stale request controls.
+### T-4: Qualify host status and original application exit paths
+- **Blocked by:** T-3, B-3
+- [ ] Run separate ready, early, invalid-code and role-death parent-process fixtures.
+- [ ] Exercise original app exit sites and preserve normal crash-recovery positive controls.
 
-### T3
-
-- [ ] Connect ready and early native terminal paths plus CLI propagation in the same vertical slice.
-
-### T4
-
-- [ ] Run separate ready/early/invalid/child-death parent-process fixtures and original app exit sites; retain crash recovery
-controls.
-
-## 7. Test plan
+## 7. Test plan & evidence
 
 Every AC has a distinct observable and negative mutation in section 3. Map the resulting tests and evidence rows to GH-523;
 preserve pending-fail/unknown status until the actual implementing commit passes the relevant fixture.
@@ -150,11 +171,16 @@ Use a parent process that records actual child exit status and role-generation e
 from a mock response or forced harness kill. Assert cleanup order without arbitrary sleep and keep a normal crash-recovery
 positive control.
 
-Documentation validation in this batch covers immutable reference/readback, all ten sections, independent controls,
-source-versus-proposal wording and file limits. Runtime, native and original-app tests are planned, not executed. GitHub CI status
-belongs to the exact published head; a documentation-only green run does not prove platform behavior.
-The user restricted this session to GitHub. Local `just ci`, native execution, hooks and machine session closeout were not run.
-Official upstream GitHub sources were used within that source restriction; no Context7 or external-machine evidence is claimed.
+Documentation validation covers immutable source readback, all ten sections, independent controls, proposal wording and file limits.
+Runtime, native and original-app tests remain planned, without new execution evidence from this specification migration.
+The original publishing session was GitHub-only and reported no local `just ci` or native run.
+Documentation checks in the migration cannot qualify any OS behavior.
+
+### E-1: Draft-source and structure evidence only
+- **Run:** `git diff --check` and the trusted `spec-structure check` against a separate merge-source verification checkout.
+- **n:** 1 GH-523 draft specification with 6 original acceptance criteria.
+- **Environment:** macOS source worktree at PR #1432 `bba88b22f58b0de6763028a9f6a8ce62bc854a57`.
+- **Limits:** Document structure and change hygiene only. No native exit, event ordering or CLI status acceptance is proved.
 
 ## 8. Review gates triggered
 
@@ -170,11 +196,37 @@ policy; do not introduce a new independent timeout.
 
 No numerical product performance claim is made without a reproducible pinned workload, environment and receipt.
 
-## 10. Open questions (block implementation)
+## 10. Open questions, blockers & unknowns
 
-1. Approve exact code range and per-platform shell normalization.
-2. Approve ready/early event delivery and failure disposition where the app link has already died.
-3. Approve the single schema allocation and CLI contract wording.
+### Q-1: What signed code range and per-platform shell normalization can be approved?
+Record valid host integer input, POSIX shell truncation and Windows semantics. Code 7 remains the portable fixture.
+
+### Q-2: How must ready and early exit behave if the app link is already dead?
+Approve the two event paths and host failure disposition. Do not replay an uncertain exit into a successor role.
+
+### Q-3: Which generated exit Call allocation and CLI contract wording are approved?
+Use the existing lifecycle family. Allocate one generated schema entry and approve the exact CLI status rule before implementation.
+
+### B-1: Lifecycle and recovery-ownership amendment is not approved by this draft
+- **Status:** open
+- **Owner:** @0monish (GH-523 draft owner), coordinating KEL-75 and KEL-96 lifecycle owners.
+- **Impact:** T-1 cannot authorize new exit semantics or relabel unexpected role death without a named owner decision.
+- **Check:** Read the approved, pinned supervisor and KEL-96 intentional-exit amendment, with both early and ready cases.
+
+### B-2: Code range, generated schema and CLI status mapping require approval
+- **Status:** open
+- **Owner:** @0monish (GH-523 tracker), coordinating the existing CLI and generated-contract owners.
+- **Impact:** T-1 and T-3 cannot deliver a new exit Call or claim parent status propagation.
+- **Check:** Verify a pinned owner decision for the code range, generated allocation and revised `keld dev` status wording.
+
+### B-3: Platform and original-app terminal acceptance has not run for this draft
+- **Status:** open
+- **Owner:** @0monish (GH-523 tracker), with the macOS native and original-app owners.
+- **Impact:** T-4 cannot claim actual ordered exit, process status or no recovery from a documentation result.
+- **Check:** Run the real parent-process early/ready fixtures and original-app sites on the selected pinned macOS build.
+
+### U-1: Current CLI implementation and other-platform exit normalization need a fresh pin
+Inspect current code and source-backed OS fixtures before adopting the historic KEL-96 and CLI assumptions.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
