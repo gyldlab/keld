@@ -178,7 +178,7 @@ impl WindowsPreflightImage {
     #[allow(dead_code)] // T-82 pending: no production Direct-discovery witness exists yet.
     fn verify_full_bound(
         self,
-        direct: WindowsD45DirectDiscoveryEligibility,
+        direct: &WindowsD45DirectDiscoveryEligibility,
     ) -> Result<VerifiedWindowsImage, WindowsAuthenticodeError> {
         // The Direct witness must bind an exact authenticated byte count and
         // digest before any full-file read; preflight performs no such scan.
@@ -227,7 +227,9 @@ fn sha256_retained_windows_image(
         ));
     }
     let mut hasher = Sha256::new();
-    let mut bytes = [0_u8; WINDOWS_HOST_DIGEST_CHUNK_BYTES];
+    // Keep the 64-KiB bounded source-read buffer on the heap. A signed Host
+    // cannot force a large stack allocation in this verifier.
+    let mut bytes = vec![0_u8; WINDOWS_HOST_DIGEST_CHUNK_BYTES];
     let mut offset = 0_u64;
     while offset < expected_bytes {
         let remaining = expected_bytes - offset;
@@ -959,7 +961,7 @@ mod tests {
             observed_app_id: "com.example.app".into(),
         };
         let error = preflight
-            .verify_full_bound(WindowsD45DirectDiscoveryEligibility {
+            .verify_full_bound(&WindowsD45DirectDiscoveryEligibility {
                 original_host_sha256: [0_u8; 32],
                 expected_host_bytes: u64::try_from(b"bounded owner mismatch fixture".len())
                     .expect("fixture source size fits u64"),

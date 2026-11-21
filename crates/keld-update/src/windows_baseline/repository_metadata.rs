@@ -1,7 +1,7 @@
 //! D-23 protected metadata records through the single KEL-53 repository owner.
 //!
 //! This retained-handle file adapter grants neither TUF authority nor a
-//! ReadyRevision. The sole native metadata owner must hold the repository-wide
+//! `ReadyRevision`. The sole native metadata owner must hold the repository-wide
 //! lease and the complete D-90 census/reader witness through each operation.
 //! D-90 has no qualified witness producer on this base, so these operations
 //! cannot authorize installation or package selection.
@@ -49,7 +49,7 @@ pub(super) enum NativeMetadataInspection {
         /// Exact protected current record.
         current: CurrentRecord,
         /// Exact canonically decoded selected generation.
-        generation: GenerationRecord,
+        generation: Box<GenerationRecord>,
     },
 }
 
@@ -64,7 +64,7 @@ pub(super) enum NativeRepositoryRestart {
     /// Only the exact recorded initial admission owner may resume or abort.
     InitialAdmission {
         /// Journal read through its derived retained-parent leaf.
-        record: InitialAdmissionRecord,
+        record: Box<InitialAdmissionRecord>,
         /// Existing D-64 diagnostic; no effect or cleanup authority.
         disposition: AdmissionInspection,
     },
@@ -79,7 +79,7 @@ pub(super) struct RepositoryMetadataIo<'lease> {
     repository: &'lease Dir,
     generations: &'lease Dir,
     expected: &'lease RepositoryAnchor,
-    _eligibility: &'lease RepositoryLedgerCensus,
+    eligibility: &'lease RepositoryLedgerCensus,
     profile: keld_guard::WindowsInstallProtectionProfile,
 }
 
@@ -99,7 +99,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
             repository,
             generations,
             expected,
-            _eligibility: eligibility,
+            eligibility,
             profile,
         }
     }
@@ -114,12 +114,12 @@ impl<'lease> RepositoryMetadataIo<'lease> {
             self.repository,
             admissions,
             self.expected,
-            self._eligibility,
+            self.eligibility,
             self.profile,
         );
         match journal.inspect_pointed_attempt()? {
             Some((record, disposition)) => Ok(NativeRepositoryRestart::InitialAdmission {
-                record,
+                record: Box::new(record),
                 disposition,
             }),
             None => self.inspect().map(NativeRepositoryRestart::Metadata),
@@ -152,13 +152,13 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                             "pending current differs from the exact accepted Ready genesis",
                         ));
                     }
-                } else if let Some((_generation, bytes)) = self.read_generation(1)? {
-                    if sha256(&bytes) != anchor.initial_generation_sha256 {
-                        return Err(error(
-                            "metadata pending enrollment",
-                            "unpointed genesis differs from the pending anchor digest",
-                        ));
-                    }
+                } else if let Some((_generation, bytes)) = self.read_generation(1)?
+                    && sha256(&bytes) != anchor.initial_generation_sha256
+                {
+                    return Err(error(
+                        "metadata pending enrollment",
+                        "unpointed genesis differs from the pending anchor digest",
+                    ));
                 }
                 Ok(NativeMetadataInspection::EnrollmentPending { anchor, current })
             }
@@ -189,7 +189,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
                 Ok(NativeMetadataInspection::Established {
                     anchor,
                     current,
-                    generation,
+                    generation: Box::new(generation),
                 })
             }
         }

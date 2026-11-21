@@ -311,7 +311,7 @@ fn d45_trusted_signed_host_verifies_original_hfile_after_path_substitution() {
     let mut independently_pinned_digest = [0_u8; 32];
     independently_pinned_digest.copy_from_slice(&original_sha);
     let verified = preflight
-        .verify_full_bound(WindowsD45DirectDiscoveryEligibility {
+        .verify_full_bound(&WindowsD45DirectDiscoveryEligibility {
             original_host_sha256: independently_pinned_digest,
             expected_host_bytes: u64::try_from(original_bytes.len())
                 .expect("the signed fixture length fits u64"),

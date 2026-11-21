@@ -6,7 +6,7 @@
 //! differently. It never authorizes v1 initialization or creates an object.
 //!
 //! The `local_app_data` input MUST come from a D-42 admitted worker's
-//! SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL) result, opened and
+//! `SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL)` result, opened and
 //! retained without reparse traversal. No such native issuer exists yet:
 //! callers MUST NOT pass LOCALAPPDATA, a caller path, or a fabricated Dir as
 //! evidence. The parent initializer must remain fail-closed for commissioned

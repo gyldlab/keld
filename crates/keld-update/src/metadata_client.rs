@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn missing_each_role_refuses() {
-        let candidate = [b'{'];
+        let candidate = b"{";
         for (role, root, timestamp, snapshot, targets) in [
             (
                 TufRole::Root,
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn one_byte_over_each_independent_role_cap_refuses() {
-        let candidate = [b'{'];
+        let candidate = b"{";
         for (role, max_bytes) in D21_ROLE_LIMITS {
             let over = vec![b'X'; max_bytes + 1];
             let mut root = &candidate[..];
