@@ -118,7 +118,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         enrollments: &'lease Dir,
         repository: &'lease Dir,
         generations: &'lease Dir,
-        operations: RetainedOperationParents<'lease>,
+        operations: &RetainedOperationParents<'lease>,
         expected: &'lease RepositoryAnchor,
         eligibility: &'lease RepositoryLedgerCensus,
         profile: keld_guard::WindowsInstallProtectionProfile,
