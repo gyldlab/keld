@@ -42,10 +42,16 @@ mod metadata_store;
 // repository owner. These types do not mint ReadyRevision or writer authority.
 #[cfg(windows)]
 pub(crate) use metadata_store::{
-    AnchorRecord, CurrentRecord, EnrollmentState, GenerationPhase, GenerationRecord,
-    decode_metadata_anchor, decode_metadata_current, decode_metadata_generation,
-    encode_metadata_anchor, encode_metadata_current, encode_metadata_generation,
+    AnchorRecord, CurrentRecord, EnrollmentState, decode_metadata_anchor, decode_metadata_current,
+    decode_metadata_generation, encode_metadata_anchor, encode_metadata_current,
+    encode_metadata_generation,
 };
+// D-20's read-only role/body comparison needs the same canonical D-23 types
+// in unit tests, without constructing a repository writer or native witness.
+#[cfg(test)]
+pub(crate) use metadata_store::RootRefresh;
+#[cfg(any(windows, test))]
+pub(crate) use metadata_store::{GenerationPhase, GenerationRecord, MetadataRoleReference};
 
 const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";

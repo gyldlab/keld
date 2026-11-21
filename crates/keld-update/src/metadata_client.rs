@@ -18,6 +18,8 @@
 
 use std::io::Read;
 
+mod d23_binding;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TufRole {
     Root,
@@ -71,6 +73,9 @@ pub(crate) enum MetadataClientRefusal {
     MissingRole(TufRole),
     RoleExceedsCap(TufRole),
     RoleReadFailed(TufRole),
+    RecordedGenerationNotReady,
+    RecordedRoleMissing(TufRole),
+    RecordedRoleMismatch(TufRole),
     TufClientNotQualified,
 }
 
@@ -101,6 +106,13 @@ pub(crate) struct ReadyRevision {
 pub(crate) fn verify_ready_revision(
     roles: SignedRoleBytes<'_>,
 ) -> Result<ReadyRevision, MetadataClientRefusal> {
+    require_role_bounds(roles)?;
+    Err(MetadataClientRefusal::TufClientNotQualified)
+}
+
+// Shared D-21 preflight for raw roles and the D-23 recorded-body adaptation.
+// It validates lengths only. Neither route authenticates a TUF signature.
+fn require_role_bounds(roles: SignedRoleBytes<'_>) -> Result<(), MetadataClientRefusal> {
     for (role, length) in roles.roles() {
         if length == 0 {
             return Err(MetadataClientRefusal::MissingRole(role));
@@ -109,7 +121,7 @@ pub(crate) fn verify_ready_revision(
             return Err(MetadataClientRefusal::RoleExceedsCap(role));
         }
     }
-    Err(MetadataClientRefusal::TufClientNotQualified)
+    Ok(())
 }
 
 /// Reads real role streams to their reported EOF within the D-21 individual
