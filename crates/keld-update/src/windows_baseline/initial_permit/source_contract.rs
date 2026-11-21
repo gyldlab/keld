@@ -9,8 +9,8 @@
 const SOURCE: &str = include_str!("../initial_permit.rs");
 
 // Keep offsets unchanged so the existing method/field slicers operate on
-// actual Rust tokens. Quoted text and comments can contain convincing fake
-// permit calls; replacing them with spaces makes those mutations visible.
+// actual Rust tokens. Quoted text, comments and inert macro token trees can
+// contain convincing fake permit calls. Mask them before checking the calls.
 // This bounded lexical check does not prove control-flow reachability or OS
 // effects; native execution must prove those once an issuer exists.
 fn hide_non_code(source: &str) -> Result<String, &'static str> {
@@ -115,7 +115,67 @@ fn hide_non_code(source: &str) -> Result<String, &'static str> {
             }
         }
     }
+    hide_macro_token_trees(&mut visible)?;
     String::from_utf8(visible).map_err(|_| "invalid D-46 source encoding")
+}
+
+// Exclude the argument tokens of macro invocations: `stringify!(call)` contains
+// valid Rust call tokens but never executes the call. This is deliberately a
+// source-only lexical check, not a macro expander or a control-flow proof.
+fn hide_macro_token_trees(visible: &mut [u8]) -> Result<(), &'static str> {
+    let mut at = 0;
+    while at < visible.len() {
+        if visible[at] != b'!'
+            || at == 0
+            || !(visible[at - 1].is_ascii_alphanumeric()
+                || matches!(visible[at - 1], b'_' | b']' | b')'))
+        {
+            at += 1;
+            continue;
+        }
+        let mut open = at + 1;
+        while visible.get(open).is_some_and(u8::is_ascii_whitespace) {
+            open += 1;
+        }
+        let close = match visible.get(open).copied() {
+            Some(b'(') => b')',
+            Some(b'[') => b']',
+            Some(b'{') => b'}',
+            _ => {
+                at += 1;
+                continue;
+            }
+        };
+        let mut stack = vec![close];
+        let mut cursor = open + 1;
+        while let Some(&byte) = visible.get(cursor) {
+            match byte {
+                b'(' => stack.push(b')'),
+                b'[' => stack.push(b']'),
+                b'{' => stack.push(b'}'),
+                b')' | b']' | b'}' => {
+                    if stack.pop() != Some(byte) {
+                        return Err("invalid D-46 macro token tree");
+                    }
+                    if stack.is_empty() {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+        if !stack.is_empty() {
+            return Err("unterminated D-46 macro token tree");
+        }
+        for byte in &mut visible[at..=cursor] {
+            if !matches!(*byte, b'\n' | b'\r') {
+                *byte = b' ';
+            }
+        }
+        at = cursor + 1;
+    }
+    Ok(())
 }
 
 fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
@@ -306,6 +366,21 @@ fn single_fault_permit_mutations_fail_before_a_native_issuer_exists() {
             "durable fence replaced with inert multi-hash raw byte string",
             "self.issuer.require_durable_creation_armed()?;",
             "let _ = br##\"self.issuer.require_durable_creation_armed()?;\"##;",
+        ),
+        (
+            "durable fence replaced with inert stringify call",
+            "self.issuer.require_durable_creation_armed()?;",
+            "let _ = stringify!(self.issuer.require_durable_creation_armed()?;);",
+        ),
+        (
+            "durable fence replaced with inert stringify braces",
+            "self.issuer.require_durable_creation_armed()?;",
+            "let _ = stringify! { self.issuer.require_durable_creation_armed()?; };",
+        ),
+        (
+            "durable fence replaced with inert stringify brackets",
+            "self.issuer.require_durable_creation_armed()?;",
+            "let _ = stringify![self.issuer.require_durable_creation_armed()?;];",
         ),
         (
             "durable fence replaced with inert block comment",
