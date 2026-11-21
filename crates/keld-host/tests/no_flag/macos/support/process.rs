@@ -569,6 +569,38 @@ fn shipping_direct_host_capture_rejects_foreign_group_without_signal_authority()
 }
 
 #[test]
+fn shipping_direct_host_capture_rejects_foreign_bun_after_host_attestation() {
+    let mut outsider = native_outsider();
+    let host = Command::new("/bin/cat")
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("owned isolated direct-Host stand-in");
+    let host_pid = host.id();
+    assert_eq!(process_group(host_pid), host_pid);
+    let mut cleanup = ShippingLaunchCleanup::new(host);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cleanup.record_direct_host_groups(host_pid, outsider.0.id());
+    }));
+    assert!(
+        refused.is_err(),
+        "foreign Bun must fail the second ancestry gate"
+    );
+    assert_eq!(
+        cleanup.host_group,
+        Some(host_pid),
+        "the separately attested Host remains owned"
+    );
+    assert!(
+        cleanup.bun_group.is_none(),
+        "foreign Bun gained signal custody"
+    );
+    drop(cleanup);
+    assert_outsider_echo(&mut outsider);
+}
+
+#[test]
 fn shipping_cleanup_unparented_birth_cannot_gain_group_authority() {
     let mut outsider = native_outsider();
     let refused = std::panic::catch_unwind(|| {
