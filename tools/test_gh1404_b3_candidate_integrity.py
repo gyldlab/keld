@@ -191,6 +191,38 @@ class CandidateIntegrityTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         self.source = checkout
 
+    def test_clone_disables_maintenance_before_first_sparse_git_operation(self):
+        """Catch a removed first config even if the later census config stays."""
+        checkout = Path(self.temp.name) / "immutable-source-fixture"
+        original_run = subprocess.run
+        inspected = []
+
+        def verify_clone_order(command, *args, **kwargs):
+            if (not inspected and command[:4] ==
+                    ["git", "-C", str(checkout), "sparse-checkout"]):
+                # This is the first Git operation after clone/config in the
+                # fixture. A later maintenance setting cannot protect it.
+                config = original_run(
+                    ["git", "-C", str(checkout), "config", "--local", "--get",
+                     "maintenance.auto"],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(config.returncode, 0,
+                                 "temporary clone must set maintenance.auto first")
+                self.assertEqual(config.stdout.strip(), "false")
+                inspected.append("sparse-first")
+            return original_run(command, *args, **kwargs)
+
+        with mock.patch.object(subprocess, "run", side_effect=verify_clone_order):
+            self.isolated_selected_source()
+        self.assertEqual(inspected, ["sparse-first"],
+                         "did not inspect the first real sparse Git operation")
+        selected = original_run(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(selected, SELECTED)
+
     def test_refuses_uncommitted_post_selected_build_fixture(self):
         self.isolated_selected_source()
         changed = self.source / "crates/keld-cli/tests/fixtures/gh1404-minimal-app/keld.build.ts"
