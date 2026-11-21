@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Private D-WIRE v2 byte-contract work only. T-82 API/wire and native Host
+# authorization remain uncommissioned; no public route uses this feature.
+kel270-dwire-v2 = []
+
 [dependencies]
 
 [target.'cfg(windows)'.dependencies]
