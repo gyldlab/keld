@@ -302,12 +302,96 @@ python3 tools/gh1404_renderer_proposal/stage_production_source.py \
   --output-root /path/to/new/gh1404-g1-source-overlay
 git -C /path/to/pristine/drawio-source apply --check --whitespace=error \
   /path/to/new/gh1404-g1-source-overlay/gh1404-g1-production.patch
+GH1404_PINNED_SOURCE_ROOT=/path/to/pristine/drawio-source \
+  python3 -B tools/gh1404_renderer_proposal/test_stage_production_source.py
 ```
 
 The overlay contains the two full corrected JavaScript files at their original
 application paths, the combined source patch and an input/output hash manifest.
-The tool refuses unexpected upstream digests and an already-existing output.
-It does not mutate the source checkout, compile the renderer or install an app.
+The tool refuses unexpected upstream digests, an already-existing output, and
+an output path inside any `.app` bundle, including a symlink alias to one.
+It pins the existing destination ancestor through POSIX no-follow directory
+handles **before** the four source generators run. Missing intermediate parents
+and the final output directory are created relative to those handles; all
+subdirectories and files use directory-relative no-follow/exclusive operations.
+An output parent renamed and replaced by a symlink during source verification
+causes a refusal before output creation. A symlink substituted immediately
+after output or source-directory creation is also refused. If the pathname
+changes after opening the output directory, writes stay on the original
+directory handle and the final output is marked unqualified.
+Before printing success, the tool reopens every advertised nested directory
+and output file using no-follow directory handles. It requires each name to
+retain its captured device/inode identity and every file to match its original
+length and SHA-256. A name rebound after source writing therefore refuses the
+overlay even when all writes remained within the original directory handles.
+Verification opens output files nonblocking and rejects non-regular inodes,
+including a FIFO swapped into the advertised JavaScript path, without waiting
+for a pipe writer. Directory-path FIFO replacements are refused by the
+directory-only open.
+The source manifest is written only after the two candidate JavaScript files
+and patch pass their first exact-inode/content verification and the advertised
+output-root path still names the pinned descriptor. A real subprocess
+`SIGKILL` before that verification leaves an incomplete overlay with **no**
+manifest and no success stdout; a new attempt must use a different output
+path. This is producer-crash staging evidence, **not** a KELD Host-death or
+installed-app recovery test. A manifest alone cannot authorize consumption:
+the separate source/build owner still needs the producer's successful exit,
+fresh output identity verification and final approved build-input custody.
+These checks are point-in-time evidence: a separate process running under the
+**same UID** with write permission can still mutate paths after verification,
+or physically move an already-open directory inode into an application bundle.
+The latter could put staged bytes inside the bundle before the CLI refuses;
+the staging tool does not provide containment against that actor. Only run it
+in an isolated task-owned staging folder, and require new source/build-owner
+verification at the consumption boundary. It does not modify its input
+checkout, compile the renderer or install an app.
+It does not carry the original application's `drawio/LICENSE` or other graph
+resources: the separately qualified original application build must preserve
+those source inputs and record their hashes before any installed test.
+
+### Additional G1 source and crash custody (21 November 2026)
+
+The previous source-stage parent edc40a48ea8d12da02af90469ea8ac2f3d96fdd4
+accepted a foreign source-path substitution between its pathname validation and
+the subsequent read. It also created the final manifest name before the JSON
+file had been fully written. Independent review reproduced both exposures.
+
+The new source-stage correction opens the two original files using retained
+read-only, no-follow, nonblocking file descriptors beneath a pinned no-follow
+source root. Each leaf must be a single-link, regular file on the same root
+filesystem, must match its hard-coded pristine upstream SHA-256, and must retain
+the original device, inode, size, mode, link count and timestamps. The generator
+uses only buffered bytes read through those handles. Source-root identity,
+intermediate directory identities, original file names and contents are
+reverified before and after publishing output. Hardlinks, swapped symlinks,
+changed originals and source-directory or source-root replacement refuse.
+
+For a completed output, the tool fsyncs staged source files and directories,
+writes the full manifest to a new random temporary name using an exclusive
+no-follow open, fsyncs that complete file, and atomically links the finished
+inode into the final manifest name without replacement under the pinned
+directory handle. The directory is fsynced before and after removing the
+temporary link. A real SIGKILL during the manifest write leaves only a partial
+temporary file; the final manifest name does not exist. A preexisting final
+symlink cannot be overwritten or followed. An aborted directory cannot be
+reused as a verified stage even if some source files were written.
+
+Six adversarial staging cases were added to the original 18, including
+hardlink rejection, a source swap immediately before opening the source file,
+source file and source-root rebinding after generation, real SIGKILL during
+temporary manifest writing, and refusal of a competing final manifest name.
+All six demonstrated exact RED on the parent; the corrected real pinned
+source suite passes 24/24. The real staged outputs remain byte-for-byte the
+same: SVG probe 40/40 and bounds probe 13/13, with unchanged candidate source
+and patch SHA-256 values. No installed application or signed release is used.
+
+These output files do NOT update the normal draw.io compiled application:
+the pinned upstream Ant app target compiles prebuilt mxgraph/mxClient.js into
+client.min.js and app.min.js, rather than compiling the two raw G1 source
+files. Original mxGraph precompile reconstruction, full-source/legal inputs,
+source-owner approval, signed build, and installed G0-G12 acceptance are
+separate mandatory gates. Same-UID late modification remains a consumption
+boundary hazard even after an atomic manifest was fully published.
 
 ### Current focused evidence (20 November 2026)
 
