@@ -366,9 +366,17 @@ if (mode?.startsWith("scope-")) {
       ["veto", "survivor"],
       "off must remove only the ordinary listener and keep veto delivery order",
     );
-    assert.equal(before, 1, "the earlier before-quit listener must survive off");
+    assert.equal(
+      before,
+      1,
+      "the earlier before-quit listener must survive off",
+    );
     assert.equal(requests, 0);
-    assert.equal(terminals, 0, "a removed ordinary listener cannot erase a veto");
+    assert.equal(
+      terminals,
+      0,
+      "a removed ordinary listener cannot erase a veto",
+    );
   } else if (mode === "zero") {
     await nested;
     assert.equal(before, 1);
