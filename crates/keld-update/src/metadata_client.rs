@@ -383,7 +383,7 @@ mod tests {
         let mut reservations = Vec::new();
         let complete =
             read_complete_role_observing_reservations(TufRole::Targets, &mut source, |target| {
-                reservations.push(target)
+                reservations.push(target);
             })
             .expect("one-byte reads still produce the complete bounded role");
 
