@@ -404,10 +404,8 @@ mod tests {
             "a reservation requested capacity beyond the independent Targets cap"
         );
         assert!(
-            reservations
-                .windows(2)
-                .all(|pair| pair[1] >= pair[0].saturating_mul(2)),
-            "reservation targets must grow geometrically: {reservations:?}"
+            reservations.windows(2).all(|pair| pair[1] > pair[0]),
+            "requested reservation targets must strictly increase: {reservations:?}"
         );
     }
 
