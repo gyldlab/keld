@@ -1,5 +1,6 @@
 //! One owner for host-side primary generation control and recovery transitions.
 use super::generation_wire::initial_generation_record_timeout;
+use super::guarded_primary::NativeSignalAuthority;
 use super::process_group::{require_attested_group_absence, validate_guardian_child_group};
 use super::{
     BoundRoleGeneration, CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED,
@@ -377,10 +378,17 @@ pub(super) fn run_generation_host(
                                 let signalled = generation.signal_if_armed();
                                 *current_generation_owner = Some(generation);
                                 signalled?;
-                                require_attested_group_absence(
-                                    group,
-                                    generation.clear_absence_deadline(absence_deadline),
-                                )?;
+                                // A completed birth-attested dual-ESRCH proof
+                                // belongs to this original generation. Never
+                                // probe its recycled numeric PGID a second
+                                // time, which could observe an unrelated birth.
+                                if generation.native_signal != NativeSignalAuthority::AbsenceProven
+                                {
+                                    require_attested_group_absence(
+                                        group,
+                                        generation.clear_absence_deadline(absence_deadline),
+                                    )?;
+                                }
                             }
                             #[cfg(test)]
                             None => {} // Synthetic EOF/transition-only fixtures.
