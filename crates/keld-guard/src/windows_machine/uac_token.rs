@@ -49,6 +49,11 @@ pub use refusals::WindowsTokenError;
 /// It has no method that authorizes a filesystem effect.
 ///
 /// The retained token is query-only, and the observation cannot cross threads.
+// T-82 has not granted the remaining token information classes. Keep this
+// non-authorizing native observation private until a real D-42 consumer can
+// enforce the complete profile; constructing it for the existing v1 writer
+// would silently suggest that partial preflight grants installation access.
+#[allow(dead_code, reason = "KEL-270 T-82 blocks production D-42 admission")]
 #[must_use = "a worker observation is not installation authorization"]
 pub(crate) struct WindowsPerUserWorkerPreflight {
     worker_thread: ThreadId,
@@ -58,6 +63,7 @@ pub(crate) struct WindowsPerUserWorkerPreflight {
     _thread_only: PhantomData<Rc<()>>,
 }
 
+#[allow(dead_code, reason = "KEL-270 T-82 blocks production D-42 admission")]
 impl WindowsPerUserWorkerPreflight {
     /// Observe the executing worker after dispatch, without minting authority.
     ///
@@ -120,6 +126,7 @@ impl WindowsPerUserWorkerPreflight {
     }
 }
 
+#[allow(dead_code, reason = "used by staged private D-42 worker preflight")]
 fn require_unimpersonated_worker() -> Result<(), WindowsTokenError> {
     match thread_is_impersonating() {
         Ok(false) => Ok(()),
