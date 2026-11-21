@@ -93,6 +93,16 @@ pub(crate) fn verify_ready_revision(
 mod tests {
     use super::{MetadataClientRefusal, SignedRoleBytes, TufRole, verify_ready_revision};
 
+    // Independent D-21 oracles. Do not derive fixture lengths from the
+    // production TufRole::max_bytes implementation under test: a changed cap
+    // must make the exact-cap or cap-plus-one regression fail.
+    const D21_ROLE_LIMITS: [(TufRole, usize); 4] = [
+        (TufRole::Root, 65_536),
+        (TufRole::Timestamp, 16_384),
+        (TufRole::Snapshot, 262_144),
+        (TufRole::Targets, 1_048_576),
+    ];
+
     fn inputs<'a>(
         root: &'a [u8],
         timestamp: &'a [u8],
@@ -159,13 +169,8 @@ mod tests {
     #[test]
     fn one_byte_over_each_independent_role_cap_refuses() {
         let candidate = [b'{'];
-        for role in [
-            TufRole::Root,
-            TufRole::Timestamp,
-            TufRole::Snapshot,
-            TufRole::Targets,
-        ] {
-            let over = vec![b'X'; role.max_bytes() + 1];
+        for (role, max_bytes) in D21_ROLE_LIMITS {
+            let over = vec![b'X'; max_bytes + 1];
             let mut root = &candidate[..];
             let mut timestamp = &candidate[..];
             let mut snapshot = &candidate[..];
@@ -185,10 +190,10 @@ mod tests {
 
     #[test]
     fn at_each_exact_cap_still_refuses_without_tuf_authentication() {
-        let root = vec![b'{'; TufRole::Root.max_bytes()];
-        let timestamp = vec![b'{'; TufRole::Timestamp.max_bytes()];
-        let snapshot = vec![b'{'; TufRole::Snapshot.max_bytes()];
-        let targets = vec![b'{'; TufRole::Targets.max_bytes()];
+        let root = vec![b'{'; 65_536];
+        let timestamp = vec![b'{'; 16_384];
+        let snapshot = vec![b'{'; 262_144];
+        let targets = vec![b'{'; 1_048_576];
         assert_eq!(
             verify_ready_revision(inputs(&root, &timestamp, &snapshot, &targets)).unwrap_err(),
             MetadataClientRefusal::TufClientNotQualified
