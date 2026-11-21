@@ -1249,10 +1249,54 @@ fn seccomp_programs() -> Result<[BpfProgram; 2], LinuxStrictError> {
 
 #[cfg(test)]
 mod readiness_tests {
+    use std::fs::File;
+    use std::io::Write as _;
+    use std::process::Command;
+
+    use nix::fcntl::OFlag;
+    use nix::unistd::pipe2;
+
     use super::{
         LAUNCHER_READY_FULL, LAUNCHER_READY_PARTIAL, LAUNCHER_READY_UNAVAILABLE,
-        LinuxLandlockStatus, parse_launcher_ready,
+        LinuxLandlockStatus, parse_launcher_ready, wait_for_launcher_ready,
     };
+
+    #[test]
+    fn clean_fast_exit_drains_real_pipe_before_readiness_decision() {
+        // This tests only the readiness race. Bubblewrap and Landlock are
+        // qualified separately by Linux strict-boundary integration tests.
+        for (record, valid) in [
+            (LAUNCHER_READY_FULL, true),
+            (b"KLS1 landlock=fully-enforced\ntrailing".as_slice(), false),
+            (b"".as_slice(), false),
+        ] {
+            let (reader, writer) = pipe2(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
+                .expect("isolated nonblocking readiness pipe");
+            let mut readiness = File::from(reader);
+            let mut publisher = File::from(writer);
+            publisher
+                .write_all(record)
+                .expect("publish exact readiness bytes");
+            drop(publisher);
+
+            let mut child = Command::new("/bin/true")
+                .spawn()
+                .expect("short-lived process fixture");
+            assert!(child.wait().expect("process exited").success());
+            let observed = wait_for_launcher_ready(&mut child, &mut readiness);
+            if valid {
+                assert_eq!(
+                    observed.expect("valid buffered readiness survives clean exit"),
+                    LinuxLandlockStatus::FullyEnforced
+                );
+            } else {
+                assert!(
+                    observed.is_err(),
+                    "invalid or missing readiness is never accepted"
+                );
+            }
+        }
+    }
 
     #[test]
     fn readiness_records_map_to_the_exact_landlock_state() {
