@@ -14,7 +14,9 @@
 use super::initial_admission_journal::InitialAdmissionJournalIo;
 use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
-use super::repository_member_diagnostics::require_only_pointed_repository_member;
+use super::repository_member_diagnostics::{
+    require_no_repository_pending_siblings, require_only_pointed_repository_member,
+};
 use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -433,6 +435,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
     }
 
     fn require_no_pending(&self) -> Result<(), UpdateError> {
+        // Even without a published D-68 pointer, a flushed pending-* sibling
+        // at the retained repository root belongs to an interrupted writer.
+        require_no_repository_pending_siblings(self.repository)?;
         if read_optional_record(self.repository, PENDING_OPERATION, self.profile)?.is_some() {
             return Err(error(
                 "metadata pending-operation fence",

@@ -11,7 +11,9 @@
 
 use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
-use super::repository_member_diagnostics::require_only_pointed_repository_member;
+use super::repository_member_diagnostics::{
+    require_no_repository_pending_siblings, require_only_pointed_repository_member,
+};
 use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -67,6 +69,10 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
     /// Reads the exact protected pointer, refusing malformed or foreign bytes.
     /// Absence is only an observation; the caller must perform D-90 census.
     pub(super) fn read_pending(&self) -> Result<Option<PendingRepositoryOperation>, UpdateError> {
+        // A crash before the absent-target D-68 publication leaves only the
+        // prepared sibling in this same retained parent. Refuse to misread
+        // that state as a fresh repository or an ordinary metadata restart.
+        require_no_repository_pending_siblings(self.repository)?;
         let Some(bytes) = read_optional_record(self.repository, PENDING_OPERATION, self.profile)?
         else {
             return Ok(None);

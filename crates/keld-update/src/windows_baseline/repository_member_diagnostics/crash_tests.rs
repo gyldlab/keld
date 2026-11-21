@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use super::require_only_pointed_repository_member;
+use super::{require_no_repository_pending_siblings, require_only_pointed_repository_member};
 use crate::UpdateError;
 use crate::records::{
     PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor,
@@ -84,6 +84,22 @@ fn journal_membership_crash_child() {
             let bytes = encode_pending_repository_operation(&pending())
                 .expect("canonical pending operation fixture");
             synced_new(&root.join("pending-operation.json"), &bytes);
+        }
+        "d68-prepared-before-pointer" => {
+            synced_new(
+                &root.join(format!("pending-{}", "6d".repeat(32))),
+                b"flushed-unpublished-d68-pointer",
+            );
+        }
+        "d68-pointed-with-preparation-residue" => {
+            synced_new(&admission, b"pointed-admission-record");
+            let bytes = encode_pending_repository_operation(&pending())
+                .expect("canonical pending operation fixture");
+            synced_new(&root.join("pending-operation.json"), &bytes);
+            synced_new(
+                &root.join(format!("pending-{}", "6d".repeat(32))),
+                b"unaccounted-second-publication",
+            );
         }
         "d68-with-unpointed-recovery" => {
             synced_new(&admission, b"pointed-admission-record");
@@ -175,6 +191,18 @@ fn expected_members(cut: &str) -> Vec<(PathBuf, Vec<u8>)> {
             b"orphan-admitted-record".to_vec(),
         )],
         "d68-pointer-without-d64" => vec![pointer],
+        "d68-prepared-before-pointer" => vec![(
+            PathBuf::from(format!("pending-{}", "6d".repeat(32))),
+            b"flushed-unpublished-d68-pointer".to_vec(),
+        )],
+        "d68-pointed-with-preparation-residue" => vec![
+            admitted_journal_member,
+            pointer,
+            (
+                PathBuf::from(format!("pending-{}", "6d".repeat(32))),
+                b"unaccounted-second-publication".to_vec(),
+            ),
+        ],
         "d68-with-unpointed-recovery" => vec![
             admitted_journal_member,
             pointer,
@@ -265,6 +293,14 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
         ("d64-admitted-before-d68", "repository member namespace"),
         ("d68-pointer-without-d64", "repository pointed membership"),
         ("d68-with-unpointed-recovery", "repository member namespace"),
+        (
+            "d68-prepared-before-pointer",
+            "repository pending publication residue",
+        ),
+        (
+            "d68-pointed-with-preparation-residue",
+            "repository pending publication residue",
+        ),
     ] {
         let root = tempfile::tempdir().expect("independent native crash-cut root");
         for directory in ["admissions", "recoveries", "transitions"] {
@@ -289,26 +325,37 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
         } else {
             None
         };
+        let expects_pointer = matches!(
+            cut,
+            "d68-pointer-without-d64"
+                | "d68-with-unpointed-recovery"
+                | "d68-pointed-with-preparation-residue"
+        );
         assert_eq!(
             pointed,
-            cut.starts_with("d68-").then(pending),
+            expects_pointer.then(pending),
             "the exact decoded repository, app, owner SID, operation kind and attempt must match at {cut}"
         );
         let admissions = Dir::open_ambient_dir(root.path().join("admissions"), ambient_authority())
             .expect("restart retains admissions parent");
+        let repository = Dir::open_ambient_dir(root.path(), ambient_authority())
+            .expect("restart retains exact repository parent");
         let recoveries = Dir::open_ambient_dir(root.path().join("recoveries"), ambient_authority())
             .expect("restart retains recoveries parent");
         let transitions =
             Dir::open_ambient_dir(root.path().join("transitions"), ambient_authority())
                 .expect("restart retains transitions parent");
-        let refused = require_only_pointed_repository_member(
-            &admissions,
-            &recoveries,
-            &transitions,
-            &owner(),
-            pointed.as_ref(),
-        )
-        .expect_err("unresolved physical crash residue cannot become eligible metadata");
+        let refused = require_no_repository_pending_siblings(&repository)
+            .and_then(|()| {
+                require_only_pointed_repository_member(
+                    &admissions,
+                    &recoveries,
+                    &transitions,
+                    &owner(),
+                    pointed.as_ref(),
+                )
+            })
+            .expect_err("unresolved physical crash residue cannot become eligible metadata");
         match refused {
             UpdateError::Baseline { step, .. } => assert_eq!(step, expected_step, "{cut}"),
             other => panic!("unexpected native crash-cut refusal for {cut}: {other}"),

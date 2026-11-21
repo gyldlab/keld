@@ -8,7 +8,7 @@ use std::thread;
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use super::require_only_pointed_repository_member;
+use super::{require_no_repository_pending_siblings, require_only_pointed_repository_member};
 use crate::UpdateError;
 use crate::records::{PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor};
 
@@ -316,6 +316,44 @@ fn differently_cased_pointed_leaf_does_not_pass_windows_namespace_check() {
     );
     assert_eq!(
         fs::read(&wrong_case).expect("preserve alias"),
+        b"case-alias"
+    );
+}
+
+#[test]
+fn canonical_pending_pointer_leaf_is_exempt_from_repository_sibling_refusal() {
+    let (root, ..) = fixture();
+    let repository = retained(root.path());
+    fs::write(
+        root.path().join("pending-operation.json"),
+        b"present-pointer-diagnosis-is-owned-by-the-protected-reader",
+    )
+    .expect("create exact canonical D68 pointer leaf");
+    require_no_repository_pending_siblings(&repository)
+        .expect("one canonical name is only a namespace observation, not byte authentication");
+    assert_eq!(
+        fs::read(root.path().join("pending-operation.json")).expect("pointer remains unchanged"),
+        b"present-pointer-diagnosis-is-owned-by-the-protected-reader"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn wrong_case_pending_pointer_alias_cannot_bypass_native_sibling_guard() {
+    let (root, ..) = fixture();
+    let repository = retained(root.path());
+    let alias = root.path().join("Pending-Operation.json");
+    fs::write(&alias, b"case-alias").expect("create noncanonical D68 pointer alias");
+    let refused = require_no_repository_pending_siblings(&repository)
+        .expect_err("NTFS case-insensitive lookup does not validate the exact D68 leaf");
+    match refused {
+        UpdateError::Baseline { step, .. } => {
+            assert_eq!(step, "repository pending publication residue");
+        }
+        other => panic!("unexpected pending pointer alias result: {other}"),
+    }
+    assert_eq!(
+        fs::read(&alias).expect("retain alias evidence"),
         b"case-alias"
     );
 }

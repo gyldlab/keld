@@ -13,6 +13,45 @@ use super::error;
 use crate::UpdateError;
 use crate::records::{PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor};
 
+/// Refuse a partly published protected record beside the fixed D-68 pointer.
+///
+/// `record_publication::prepare_record` creates `pending-<random>` in the
+/// same retained parent as `pending-operation.json` before its absent-target
+/// publish. A process exit at that cut leaves no D-68 pointer but does leave
+/// durable native evidence. It must block new admission and ordinary metadata
+/// selection. With a pointer present, a second pending sibling is also
+/// unaccounted for and requires the original writer's recovery.
+///
+/// The exact canonical D-68 pointer name is the only `pending-` exception;
+/// actual record identity and bytes are checked separately by the protected
+/// reader. This is a local negative observation, not an authenticated KEL-53
+/// repository-wide census or permission to delete anything.
+pub(super) fn require_no_repository_pending_siblings(repository: &Dir) -> Result<(), UpdateError> {
+    for entry in repository
+        .entries()
+        .map_err(|cause| error("repository pending namespace", cause))?
+    {
+        let entry = entry.map_err(|cause| error("repository pending namespace", cause))?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            error(
+                "repository pending namespace",
+                "non-UTF-8 repository member prevents a complete pending-sibling observation",
+            )
+        })?;
+        if name
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("pending-"))
+            && name != "pending-operation.json"
+        {
+            return Err(error(
+                "repository pending publication residue",
+                "an unaccounted protected record sibling or noncanonical pending pointer blocks restart and admission",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse an unpointed D-64 journal, unknown leaf or incomplete publication
 /// in the retained KEL-53 admissions directory.
 ///
