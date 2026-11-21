@@ -31,11 +31,13 @@ import {
   stateMapSet,
   stateMapValues,
 } from "@keld/kipc";
-import type {
-  WindowEvent,
-  WindowRef,
-  WindowRequest,
-  WindowResponse,
+import {
+  decodeWindowRequest,
+  encodeWindowRequest,
+  type WindowEvent,
+  type WindowRef,
+  type WindowRequest,
+  type WindowResponse,
 } from "./window-codec.ts";
 import type { DesktopSnapshot, WindowSnapshot } from "./window-source.ts";
 export type { DesktopSnapshot } from "./window-source.ts";
@@ -745,25 +747,26 @@ export function invokeWindowBlocking(request: WindowRequest): WindowResponse {
     );
   }
   const session = connectedLink;
-  const frozenRequest = snapshotHostCloseVerdict(request);
+  const frozenRequest = snapshotWindowRequest(request);
   if (isWindowCreate(frozenRequest)) windowCreateAttemptEpoch += 1n;
   const response = session.callWindowBlocking(frozenRequest);
   acceptHostCloseReply(frozenRequest, response, session);
   return response;
 }
 
-/** Copy the exact pair/sequence/verdict sent before a mutable caller can act. */
-function snapshotHostCloseVerdict(request: WindowRequest): WindowRequest {
-  if (request.variant !== "CloseReply") return request;
-  const { id, incarnation } = request.window;
-  const close_seq = request.close_seq;
-  const verdict = request.verdict;
-  return Object.freeze({
-    variant: "CloseReply" as const,
-    window: Object.freeze({ id, incarnation }),
-    close_seq,
-    verdict,
-  });
+/**
+ * Decode the one canonical encoded request before deciding whether it creates
+ * a window. Call admission and the Host-bound encoder must see the same stable
+ * discriminant, even if a caller supplied a getter/proxy that changes variant
+ * between reads. This also copies the exact CloseReply identity and verdict.
+ * The actual window operation still runs through the existing app link/Guard.
+ */
+function snapshotWindowRequest(request: WindowRequest): WindowRequest {
+  const canonical = decodeWindowRequest(encodeWindowRequest(request));
+  if ("window" in canonical) stateFreeze(canonical.window);
+  if (canonical.variant === "CreateWithPreload")
+    stateFreeze(canonical.additional_arguments);
+  return stateFreeze(canonical);
 }
 
 /** Host reply, not a locally requested verdict, is the only clearing oracle. */
@@ -797,7 +800,7 @@ export function invokeWindow(request: WindowRequest): Promise<WindowResponse> {
     );
   }
   const session = connectedLink;
-  const frozenRequest = snapshotHostCloseVerdict(request);
+  const frozenRequest = snapshotWindowRequest(request);
   const tracked = isWindowCreate(frozenRequest);
   if (tracked) {
     windowCreateAttemptEpoch += 1n;

@@ -90,6 +90,13 @@ const modes = [
   "zero-will-create",
   "zero-preexisting-pending-create",
   "zero-preexisting-pending-preload",
+  "zero-dynamic-from-create",
+  "zero-dynamic-from-preload",
+  "zero-dynamic-proxy-from-preload",
+  "zero-dynamic-will-blocking-from-create",
+  "zero-dynamic-will-blocking-from-preload",
+  "zero-dynamic-to-create",
+  "zero-dynamic-to-preload",
   "zero-before-pending-create",
   "zero-before-pending-preload",
   "zero-before-transient-create",
@@ -183,6 +190,7 @@ for (const { facts, mode } of cases) {
     } else if (
       mode === "zero-will-create" ||
       mode?.startsWith("zero-preexisting-pending-") ||
+      (mode?.startsWith("zero-dynamic-") && mode.includes("-from-")) ||
       mode?.startsWith("zero-before-pending-") ||
       mode?.startsWith("zero-before-transient-") ||
       mode?.startsWith("zero-will-pending-") ||

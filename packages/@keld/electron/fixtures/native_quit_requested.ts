@@ -2,6 +2,10 @@
 // No authenticated Host/native/menu/original-editor milestone is fabricated.
 import assert from "node:assert/strict";
 import { LifecycleLink, type LifecycleHandler } from "../../api/src/link.ts";
+import {
+  decodeWindowRequest,
+  encodeWindowRequest,
+} from "../../api/src/window-codec.ts";
 import type { WindowRef, WindowRequest } from "../../api/src/window-codec.ts";
 const mode = process.argv[2];
 const requestFailure = new Error(
@@ -16,6 +20,8 @@ const outbound: WindowRequest[] = [];
 let resolveClose: ((value: unknown) => void) | undefined;
 let rejectWindow: ((reason: unknown) => void) | undefined;
 let pendingCreate: Promise<unknown> | undefined;
+let actualWireVariant: string | undefined;
+let dynamicVariantReads = 0;
 let reportRequest: (() => void) | undefined;
 const requestObserved = new Promise<void>((resolve) => {
   reportRequest = resolve;
@@ -50,12 +56,20 @@ const session = {
     outbound.push(request);
     requests++;
     reportRequest?.();
+    if (mode?.startsWith("zero-dynamic-"))
+      actualWireVariant = decodeWindowRequest(
+        encodeWindowRequest(request),
+      ).variant;
     throw requestFailure;
   },
   callWindow(request: WindowRequest) {
     outbound.push(request);
     requests++;
     reportRequest?.();
+    if (mode?.startsWith("zero-dynamic-"))
+      actualWireVariant = decodeWindowRequest(
+        encodeWindowRequest(request),
+      ).variant;
     if (mode === "request-error") return Promise.reject(requestFailure);
     if (mode?.includes("-sync-throw-")) throw requestFailure;
     if (mode?.includes("-transient-")) return Promise.reject(requestFailure);
@@ -94,14 +108,55 @@ const { captureOriginalWindowQuitScope, invokeWindow, invokeWindowBlocking } =
   await import("../../api/src/app.ts");
 function startControlledCreate(): void {
   const geometry = { width: 800, height: 600, x: null, y: null };
-  const request: WindowRequest = mode?.endsWith("-preload")
-    ? {
-        variant: "CreateWithPreload",
-        ...geometry,
-        preload_absolute: "/admitted/original-preload.js",
-        additional_arguments: [],
-      }
-    : { variant: "Create", ...geometry };
+  const variantToCreate = mode?.includes("-to-") === true;
+  const desiredVariant = mode?.endsWith("-preload")
+    ? "CreateWithPreload"
+    : "Create";
+  const nextVariant = () => {
+    dynamicVariantReads += 1;
+    return variantToCreate
+      ? dynamicVariantReads <= 3
+        ? "SetMaximized"
+        : desiredVariant
+      : dynamicVariantReads === 1
+        ? desiredVariant
+        : desiredVariant === "CreateWithPreload" && dynamicVariantReads === 2
+          ? desiredVariant
+          : "SetMaximized";
+  };
+  const dynamicFields = {
+    ...geometry,
+    maximized: false,
+    window: { id: 7, incarnation: 258n },
+    preload_absolute: "/admitted/original-preload.js",
+    additional_arguments: ["--original-graph"],
+  };
+  const request: WindowRequest = mode?.startsWith("zero-dynamic-")
+    ? mode.includes("-proxy-")
+      ? (new Proxy(
+          { variant: "SetMaximized", ...dynamicFields },
+          {
+            get(target, key, receiver) {
+              return key === "variant"
+                ? nextVariant()
+                : Reflect.get(target, key, receiver);
+            },
+          },
+        ) as unknown as WindowRequest)
+      : ({
+          get variant() {
+            return nextVariant();
+          },
+          ...dynamicFields,
+        } as unknown as WindowRequest)
+    : mode?.endsWith("-preload")
+      ? {
+          variant: "CreateWithPreload",
+          ...geometry,
+          preload_absolute: "/admitted/original-preload.js",
+          additional_arguments: [],
+        }
+      : { variant: "Create", ...geometry };
   if (mode?.includes("-blocking-")) {
     try {
       invokeWindowBlocking(request);
@@ -241,7 +296,7 @@ if (willAttack) {
       (event as { preventDefault(): void }).preventDefault = () => {};
   });
 }
-if (mode?.startsWith("zero-will")) {
+if (mode?.startsWith("zero-will") || mode?.startsWith("zero-dynamic-will-")) {
   app.on("will-quit", (event: unknown) => {
     willQuit++;
     sequence.push("will-quit");
@@ -252,7 +307,8 @@ if (mode?.startsWith("zero-will")) {
     if (
       willQuit === 1 &&
       (mode?.startsWith("zero-will-pending-") ||
-        mode?.startsWith("zero-will-transient-"))
+        mode?.startsWith("zero-will-transient-") ||
+        mode?.startsWith("zero-dynamic-will-"))
     ) {
       startControlledCreate();
       return;
@@ -281,7 +337,11 @@ if (mode?.startsWith("zero-will")) {
 const ready = app.whenReady();
 if (mode !== "pre-ready") await ready;
 assert.ok(handlers);
-if (mode?.startsWith("zero-preexisting-pending-")) startControlledCreate();
+if (
+  mode?.startsWith("zero-preexisting-pending-") ||
+  (mode?.startsWith("zero-dynamic-") && !mode.includes("-will-"))
+)
+  startControlledCreate();
 if (mode?.startsWith("live-census-")) snapshot.document.current = false;
 // Poison one ordinary global at a time, only during the actual native intent.
 // Source imports already captured their framework intrinsics before this point.
@@ -409,6 +469,44 @@ if (mode?.startsWith("scope-")) {
       "a new native intent after veto can enter a fresh D2 attempt",
     );
     await nested;
+  } else if (mode?.startsWith("zero-dynamic-") && mode.includes("-from-")) {
+    assert.equal(requests, 1);
+    assert.equal(
+      actualWireVariant,
+      mode.endsWith("-preload") ? "CreateWithPreload" : "Create",
+      "wire must keep first Create/WithPreload discriminant",
+    );
+    await assert.rejects(nested, /KELD-COMPAT-012/);
+    assert.equal(terminals, 0, "encoded Create must block terminal Quit");
+    assert.equal(admitted, true, "failed preflight keeps existing app link");
+    rejectWindow?.(requestFailure);
+    assert.equal(await pendingCreate, requestFailure);
+    handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+    await nested;
+    assert.equal(terminals, 1, "later zero-window Quit can succeed");
+  } else if (mode?.startsWith("zero-dynamic-") && mode.includes("-to-")) {
+    assert.equal(requests, 1);
+    assert.ok(actualWireVariant);
+    if (
+      actualWireVariant === "Create" ||
+      actualWireVariant === "CreateWithPreload"
+    ) {
+      await assert.rejects(nested, /KELD-COMPAT-012/);
+      assert.equal(
+        terminals,
+        0,
+        "wire Create cannot bypass local negative evidence",
+      );
+      rejectWindow?.(requestFailure);
+      assert.equal(await pendingCreate, requestFailure);
+      handlers.onQuitRequested?.(session as unknown as LifecycleLink);
+      await nested;
+      assert.equal(terminals, 1);
+    } else {
+      assert.equal(actualWireVariant, "SetMaximized");
+      await nested;
+      assert.equal(terminals, 1, "only non-Create wire permits terminal Quit");
+    }
   } else if (
     mode === "zero-register-before-push-noop" ||
     mode === "zero-register-will-push-noop"
