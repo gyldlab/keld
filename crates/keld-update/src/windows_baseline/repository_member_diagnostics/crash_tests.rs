@@ -1,4 +1,4 @@
-//! Independent process-exit cuts at D-64/D-68 native operation membership.
+//! Negative process-exit residue observations at D-64/D-68 operation membership.
 //!
 //! These test the existing retained-directory *negative* observation after
 //! another process exits without teardown. They do not call the gated writer,
@@ -8,6 +8,8 @@
 //! so neither journal/metadata writer can be constructed through that path.
 //! These fixtures test local refusal and byte preservation only. In particular,
 //! generic `pending-*` residue is not a completed D-64/D-68 publication cut.
+//! Existing `KELD_D64_D68_NATIVE_CRASH_*` selectors are test harness names,
+//! not evidence of a native KEL-53 writer crash or power-loss recovery.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -57,13 +59,13 @@ fn synced_new(path: &Path, bytes: &[u8]) {
         .write(true)
         .create_new(true)
         .open(path)
-        .expect("create one crash-cut fixture leaf");
-    file.write_all(bytes).expect("write exact crash-cut bytes");
-    file.sync_all().expect("flush crash-cut fixture file bytes");
+        .expect("create one isolated process-exit fixture leaf");
+    file.write_all(bytes).expect("write exact fixture bytes");
+    file.sync_all().expect("flush fixture file bytes");
 }
 
 #[test]
-#[ignore = "private D64/D68 native crash-cut subprocess entry point"]
+#[ignore = "private D64/D68 process-exit residue subprocess entry point"]
 fn journal_membership_crash_child() {
     let root = PathBuf::from(std::env::var_os(ROOT_ENV).expect("isolated crash root"));
     let cut = std::env::var(CUT_ENV).expect("requested crash boundary");
@@ -298,7 +300,7 @@ fn run_crash_child(root: &Path, cut: &str) {
 }
 
 #[test]
-fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
+fn native_restart_refuses_unresolved_repository_residue_after_process_exit() {
     for (cut, expected_step) in [
         ("d64-prepared", "repository member namespace"),
         ("d64-admitted-before-d68", "repository member namespace"),
@@ -313,7 +315,7 @@ fn native_restart_refuses_each_unresolved_d64_d68_process_exit_cut() {
             "repository pending publication residue",
         ),
     ] {
-        let root = tempfile::tempdir().expect("independent native crash-cut root");
+        let root = tempfile::tempdir().expect("independent repository residue fixture root");
         for directory in ["admissions", "recoveries", "transitions"] {
             fs::create_dir(root.path().join(directory)).expect("isolated operation parent");
         }
