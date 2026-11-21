@@ -200,6 +200,11 @@ fn read_ordinary_v2(source: &impl ImageSource) -> Result<ExpectedAppIdentityV2, 
         return Err(container_invalid("v2 section is not the last PE raw data"));
     }
     let (cert_start, cert_size) = layout.certificate;
+    if (cert_start == 0) != (cert_size == 0) {
+        return Err(container_invalid(
+            "v2 certificate directory has only one of offset and size",
+        ));
+    }
     if (cert_start, cert_size) != (0, 0)
         && (u64::from(cert_start) < raw_end
             || u64::from(cert_start) + u64::from(cert_size) > layout.len)

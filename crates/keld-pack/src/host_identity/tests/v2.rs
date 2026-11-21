@@ -257,6 +257,31 @@ fn signed_pe_shape_is_readable_but_never_claimed_to_be_authenticated() {
 }
 
 #[test]
+fn half_present_certificate_table_directory_refuses_before_payload_decoding() {
+    // A nonzero certificate offset with zero size is not an unsigned image
+    // (both fields zero) or a complete signed-image directory (both nonzero).
+    // The offset-only case at EOF previously passed the ordinary v2 reader.
+    let mut offset_only = canonical();
+    let certificate = optional_of(&offset_only) + CERTIFICATE_TABLE;
+    let image_end = u32::try_from(offset_only.len()).expect("bounded synthetic PE");
+    put_u32(&mut offset_only, certificate, image_end);
+    valid_pe_fixture(&offset_only);
+    assert_eq!(
+        container_detail(read_ordinary_v2_bytes(&offset_only)),
+        "v2 certificate directory has only one of offset and size"
+    );
+
+    let mut size_only = canonical();
+    let certificate = optional_of(&size_only) + CERTIFICATE_TABLE;
+    put_u32(&mut size_only, certificate + 4, 16);
+    valid_pe_fixture(&size_only);
+    assert_eq!(
+        container_detail(read_ordinary_v2_bytes(&size_only)),
+        "v2 certificate directory has only one of offset and size"
+    );
+}
+
+#[test]
 fn nonpristine_image_and_embedding_second_time_are_denied() {
     let image = canonical();
     assert!(embed_ordinary_v2(&image, &payload()).is_err());
