@@ -24,6 +24,9 @@ Keep the approved GH-531 close state machine, existing forceful/legacy `Lifecycl
 - Independent source evidence: `4635f001bb3aa185f8470c4c1658829460f57b4d` on current #1581 ancestry: 18/20 pass, two intentionally RED (clean Destroyed-to-terminal and hidden Opening in `will-quit`); 104/104 native-quit intent Bun fixtures pass. W5 unpublished `b2426a9d7` source-model terminal tests 12/12 pass, but an independent hidden-Opening
   negative still submits terminal. None is installed-app acceptance.
 
+- Official AppKit baseline (checked 2026-11-21): Apple states that `NSTerminateLater` runs `NSModalPanelRunLoopMode` until `replyToApplicationShouldTerminate:` receives YES or NO. The asynchronous reply is mandatory after returning Later, and `applicationWillTerminate:` is the relevant native cleanup notification. These contracts establish API
+behavior, **not** progress of Tao's specific callbacks or KELD's shutdown workers. Sources: [NSApplication terminate:](https://developer.apple.com/documentation/appkit/nsapplication/terminate%28_%3A%29), [replyToApplicationShouldTerminate:](https://developer.apple.com/documentation/appkit/nsapplication/reply%28toapplicationshouldterminate%3A%29).
+
 ## 3. Proposed binary acceptance decisions (review keys, not canonical ACs)
 
 **R1 — Qualified selected original only.** Given the current authenticated Ready+Subscribed original role, a conditional prepare may reach its Host owner. Given an unselected/retired/different generation, there is no `will-quit` authorization, terminal commit, window release or successor authority. Negative: replace exact owner identity with stale G1; the current G2 remains active.
@@ -100,6 +103,9 @@ The existing `NSTerminateCancel` + app-driven shutdown remains the **fail-closed
 The exact post-irreversible-teardown failure outcome is a second owner decision: no YES or successful zero-exit is permissible; preserve the recorded error, avoid indefinite pending AppKit reply and prove a bounded non-success/fatal disposition. Do not invent a cleanup timeout or promise to restore already destroyed windows. The sender/Guardian/Bun
 join dependency graph and failure bound must be approved and tested before enabling the delayed reply.
 
+**Nested modal-loop falsifier:** Apple's documented `NSTerminateLater` enters `NSModalPanelRunLoopMode`. The native experiment must prove that Tao's window Destroyed notifications, app-link proxy, required CFRunLoop modes, main-thread cleanup and final reply still make progress in that mode. Hold an owned sender and confirm the main thread can
+drain it without a circular dependency on a callback that only runs after the modal reply. If this fails, **reject delayed reply**, keep current cancel-only path as a safety fallback, and do not report OS Quit success. No speculative run-loop workaround or new unsafe selector is authorized here.
+
 ### 4.5 Source and capability boundaries
 
 Proposed implementation sites after approval: `crates/keld-ipc/src/lifecycle.rs` plus generated KIPC TypeScript codecs/fixtures; `crates/keld-core/src/app_session.rs` guarded terminal owner and `app_session/window_router.rs`/`window_registry.rs` authoritative current registry predicate; `packages/@keld/api/src/link.ts` and `app.ts` conditional
@@ -144,6 +150,7 @@ Each target must have a truly separate witness from the layer being tested. Use 
 | C10 | A Host Create is Opening but no Created fact exists **before** Prepare: `will-quit` must not run. If a Create wins **after** Prepare during the callback, invalidated token makes Commit retryable; mutant source-only check must fail | Core + KIPC; `4635f001` hidden Opening source oracle intentionally RED, still model-only |
 | C11 | Qualified real Dock, app-menu, Command-Q and AppleEvent: same before-quit/veto owner, no direct terminate; unqualified attempts cancel; native callback/role birth pinned | AppKit on disposable signed exact bundle; current source adapter cancels, no full OS pass |
 | C12 | Native reply held through actual UI/renderer/Guardian/Bun cleanup; NO/YES reply once for same attempt, no success before clean kernel/owned-worker receipts; mutant early YES must fail | GH-443/AppKit + release owner, requires experiment |
+| C12b | With `NSTerminateLater` and a held native sender, show that Tao UI/renderer Destroyed, Core app wake, Guardian/Bun join and reply callbacks actually progress in Apple's nested `NSModalPanelRunLoopMode`; if the modal mode starves any required callback, Later is NO-GO | GH-443/Tao native Mac only; Apple documents the modal run-loop requirement |
 | C13 | Held sender crosses approved cleanup bound: measured non-success, no normal zero-exit or forged cleanup; healthy relaunch after failure; mutant convert failure to success must fail | Core + release, deadline/failure decision pending |
 | C14 | Existing `LifecycleRequest::Quit` with pending Create retains its previously approved forceful behavior and reply/error ordering; mutant sharing conditional refusal with legacy must fail | Core: `window_router_accepted_quit_reply_precedes_teardown_failure_with_pending_create` |
 | C15 | Prepare, Cancel and Commit wire discriminants + typed Retained/Prepared/Accepted responses pass schemas, stale-token, malformed and older-peer negatives; old enum bytes unchanged and unsupported peer never force-quits | KIPC/API codegen and independent schema review |
