@@ -255,7 +255,9 @@ fn d45_wintrust_retains_original_signed_hfile_after_parent_alias_substitution() 
             offline_refusal.detail(),
             "the verified Authenticode signature has no Keld app-id description"
                 | "the verified signature has no authenticated Keld app-id attribute"
-        ) || offline_refusal.detail().contains("during the cache-only preflight"),
+        ) || offline_refusal
+            .detail()
+            .contains("during the cache-only preflight"),
         "a genuinely signed foreign Host must fail closed if local trust is not cached or the app-id is not Keld: {offline_refusal}"
     );
     assert!(
