@@ -42,7 +42,7 @@ const MAX_SID_BYTES: usize = 8 + 15 * size_of::<u32>();
 mod refusals;
 pub use refusals::WindowsTokenError;
 
-/// Bounded value-only copy of the current process's OS-observed TokenUser SID.
+/// Bounded value-only copy of the current process's OS-observed `TokenUser` SID.
 ///
 /// The existing safe process-SID reader opens its own process token. Thus this
 /// copy cannot establish the SID of the *retained* D-42 token, and must never
@@ -98,7 +98,7 @@ impl ObservedUserSid {
                 .eq([1u8, 1, 0, 0, 0, 0, 0, 5])
             && matches!(
                 u32::from_le_bytes([self.bytes[8], self.bytes[9], self.bytes[10], self.bytes[11]]),
-                18 | 19 | 20
+                18..=20
             )
     }
 }
