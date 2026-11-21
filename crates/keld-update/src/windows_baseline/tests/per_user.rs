@@ -316,8 +316,18 @@ fn replay_during_live_bootstrap_and_after_commit_cannot_reseed() {
     let provenance = trust.installation.install_root.join("install-provenance");
     let provenance_before = fs::read(&provenance).expect("durable final provenance");
 
-    initialize_windows_per_user_baseline(&verified, &source, &trust)
+    let replay_refusal = initialize_windows_per_user_baseline(&verified, &source, &trust)
         .expect_err("a committed bootstrap cannot be replayed");
+    assert!(
+        matches!(
+            replay_refusal,
+            UpdateError::Baseline {
+                step: "fresh install",
+                ..
+            }
+        ),
+        "a committed install must refuse the existing provenance at the fresh-install census"
+    );
     assert_eq!(
         fs::read(update.join("current")).expect("current"),
         current_before
@@ -327,6 +337,21 @@ fn replay_during_live_bootstrap_and_after_commit_cannot_reseed() {
         floor_before
     );
     assert_eq!(fs::read(provenance).expect("provenance"), provenance_before);
+    let versions = update.join("versions");
+    let mut version_names = fs::read_dir(&versions)
+        .expect("enumerate the native versions directory after replay")
+        .map(|entry| entry.expect("read versions directory entry").file_name())
+        .collect::<Vec<_>>();
+    version_names.sort();
+    assert_eq!(
+        version_names,
+        vec![std::ffi::OsString::from("1.0.0")],
+        "replay must not create any orphan stage or second version beside the one published baseline"
+    );
+    assert!(
+        versions.join("1.0.0").join(".complete").is_file(),
+        "the sole retained version remains a completed baseline"
+    );
 }
 
 #[test]
