@@ -1556,6 +1556,53 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         Ok(())
     }
 
+    /// Report only the current thread's COM apartment category. This reuses
+    /// the fixture's existing non-mutating apartment query and discloses no
+    /// thread ID, process ID, HRESULT, directory or profile identity.
+    fn gh814_successor_apartment_phase(
+        observation: &windows::core::Result<(
+            windows::Win32::System::Com::APTTYPE,
+            windows::Win32::System::Com::APTTYPEQUALIFIER,
+        )>,
+    ) -> &'static str {
+        use windows::Win32::System::Com::{APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER_NONE};
+
+        match observation {
+            Ok((kind, qualifier))
+                if matches!(*kind, APTTYPE_STA | APTTYPE_MAINSTA)
+                    && *qualifier == APTTYPEQUALIFIER_NONE =>
+            {
+                "successor-apartment-sta-observed"
+            }
+            Ok(_) => "successor-apartment-other-observed",
+            Err(_) => "successor-apartment-query-failed",
+        }
+    }
+
+    #[test]
+    fn gh814_successor_apartment_phase_distinguishes_sta_mta_and_failed_query() {
+        use windows::Win32::System::Com::{
+            APTTYPE_MAINSTA, APTTYPE_MTA, APTTYPE_STA, APTTYPEQUALIFIER_NONE,
+        };
+
+        for kind in [APTTYPE_STA, APTTYPE_MAINSTA] {
+            assert_eq!(
+                gh814_successor_apartment_phase(&Ok((kind, APTTYPEQUALIFIER_NONE))),
+                "successor-apartment-sta-observed"
+            );
+        }
+        assert_eq!(
+            gh814_successor_apartment_phase(&Ok((APTTYPE_MTA, APTTYPEQUALIFIER_NONE))),
+            "successor-apartment-other-observed"
+        );
+        assert_eq!(
+            gh814_successor_apartment_phase(&Err(windows::core::Error::from(
+                windows::Win32::Foundation::E_POINTER,
+            ))),
+            "successor-apartment-query-failed"
+        );
+    }
+
     #[test]
     #[ignore = "real Windows COM environment ownership and native HWND Close"]
     fn windows_com_engine_lifetime_subprocess() -> Result<(), WvError> {
@@ -1630,6 +1677,11 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let next_plan = super::super::windows_profile_plan(&root, successor)?;
             let mut engine = profile_fixture_engine(&root, successor)?;
             observe_com_phase("successor-engine-ready");
+            // The old hosted failure occurred after engine-ready and before
+            // controller-ready. Sample the existing COM apartment observer
+            // at that exact boundary, before the original launch deadline.
+            // This is a point observation, not proof of later callback delivery.
+            observe_com_phase(gh814_successor_apartment_phase(&apartment()));
             observe_com_phase("successor-create-start");
             let id = engine.create(&blank_spec())?;
             observe_com_phase("successor-create-ready");
