@@ -1453,11 +1453,26 @@ mod tests {
             .expect("obtain a distinct actual thread identity");
         assert_ne!(foreign_worker, original_worker);
         preflight.worker_thread = foreign_worker;
-        assert!(preflight.revalidate().is_err());
+        assert!(
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 actual worker ThreadId",
+                    ..
+                })
+            ),
+            "a foreign worker must refuse at the actual-thread check"
+        );
         preflight.worker_thread = original_worker;
         assert!(
-            preflight.revalidate().is_err(),
-            "a failed worker check must not regain authority after a clean replay"
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "a clean thread replay must return prior invalidation, not an unrelated token error"
         );
     }
 
@@ -1477,8 +1492,14 @@ mod tests {
         );
         drop(revert);
         assert!(
-            preflight.revalidate().is_err(),
-            "reverting thread impersonation must not reactivate a revoked observation"
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "reverting impersonation must return prior invalidation, not an unrelated token error"
         );
     }
 
@@ -1500,8 +1521,14 @@ mod tests {
         );
         preflight.initiating_session = actual_session;
         assert!(
-            preflight.revalidate().is_err(),
-            "restoring the expected session cannot reactivate an invalidated preflight"
+            matches!(
+                preflight.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "restoring the session must return prior invalidation, not an unrelated token error"
         );
     }
 
@@ -1616,14 +1643,31 @@ mod tests {
         let session = token_session_id(&token).expect("query actual process session");
         let mut worker = worker_from_actual_os_for_negative_test(session, token);
         worker.observed_user_sid = other;
+        // A service process refuses the observed user before comparing SIDs.
+        // An ordinary process must reach the actual SID mismatch. Neither
+        // path may be mistaken for an unrelated elevation failure.
+        let expected_operation = if actual.is_builtin_service() {
+            "current_process_sid(TokenUser)"
+        } else {
+            "D-42 current-process TokenUser"
+        };
         assert!(
-            worker.revalidate().is_err(),
-            "a worker with a foreign SID snapshot must reject the real process TokenUser"
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os { operation, .. }) if operation == expected_operation
+            ),
+            "a foreign SID must trigger the observed user check before elevation"
         );
         worker.observed_user_sid = actual;
         assert!(
-            worker.revalidate().is_err(),
-            "restoring the original SID cannot reactivate an invalidated worker"
+            matches!(
+                worker.revalidate(),
+                Err(WindowsTokenError::Os {
+                    operation: "D-42 worker preflight",
+                    ..
+                })
+            ),
+            "restoring the original SID must return prior invalidation"
         );
     }
 
