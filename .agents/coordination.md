@@ -23,8 +23,8 @@ detail (`SECURITY.md`); cite them by ID.
 - New task trees MUST use `just work-start` under primary `.keld-work/worktrees/`.
   `work-run` owns session scratch/logs; `work-status` lists managed/legacy trees.
 - Preserve primary, dirty, active, open-PR, unique and user work. Before authorized
-  deletion, refresh exact paths/claims, reject reparse escapes and retain evidence per
-  workflow closeout. Use Git for registered trees; verify absence. No
+  deletion, refresh exact paths/claims, reject reparse escapes; retain evidence per
+  workflow closeout. Use Git for registered trees; verify absence before pruning. No
   prefix-only janitor or tool-denial bypass.
 - Record removed/retained/blocked resources, reason, owner, next action. Workflow owns
   claims/closeout. Legacy resources stay until explicit migration.
