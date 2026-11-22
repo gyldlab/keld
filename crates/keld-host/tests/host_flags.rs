@@ -66,6 +66,7 @@ fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
                     }
                     captured.extend_from_slice(&chunk[..n.min(remaining)]);
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => break Err(error),
             }
         };
@@ -76,8 +77,13 @@ fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
         if overflow.load(Ordering::Acquire) {
             stop_owned_host_child(&mut child, "Host refusal exceeded 8192 stderr bytes");
         }
-        if let Some(status) = child.try_wait().expect("query test-owned Host child") {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => stop_owned_host_child(
+                &mut child,
+                &format!("cannot query test-owned Host child: {error}"),
+            ),
         }
         if Instant::now() >= until {
             stop_owned_host_child(
