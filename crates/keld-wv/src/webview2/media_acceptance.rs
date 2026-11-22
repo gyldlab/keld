@@ -94,6 +94,97 @@ pub(super) fn observe_com_phase(stage: &'static str) {
     });
 }
 
+// Test-only native observation. GetModuleHandleW reads the module table of
+// THIS fixture process. A browser version query or an installed file alone
+// cannot establish which Evergreen DLL the failing process loaded.
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "GetModuleHandleW"]
+    fn gh814_get_module_handle_w(name: *const u16) -> *mut std::ffi::c_void;
+    #[link_name = "GetModuleFileNameW"]
+    fn gh814_get_module_file_name_w(
+        module: *mut std::ffi::c_void,
+        buffer: *mut u16,
+        capacity: u32,
+    ) -> u32;
+}
+
+fn gh814_loaded_module_path(name: &str) -> Result<Option<std::path::PathBuf>, WvError> {
+    use std::os::windows::ffi::OsStringExt as _;
+
+    if name.is_empty() || name.contains('\0') {
+        return Err(failure("invalid module probe name"));
+    }
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: the NUL-terminated name is valid for the duration of this
+    // read-only current-process module query; no module reference is acquired.
+    let handle = unsafe { gh814_get_module_handle_w(wide.as_ptr()) };
+    if handle.is_null() {
+        return Ok(None);
+    }
+    let mut buffer = [0_u16; 4096];
+    // SAFETY: the handle came from this process's module table; buffer is
+    // writable for exactly capacity UTF-16 units. The API copies a path.
+    let count =
+        unsafe { gh814_get_module_file_name_w(handle, buffer.as_mut_ptr(), buffer.len() as u32) }
+            as usize;
+    if count == 0 || count >= buffer.len() {
+        return Err(failure(
+            "current-process module path query failed or truncated",
+        ));
+    }
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..count]));
+    if !path
+        .file_name()
+        .and_then(|part| part.to_str())
+        .is_some_and(|part| part.eq_ignore_ascii_case(name))
+    {
+        return Err(failure(
+            "current-process module name changed during observation",
+        ));
+    }
+    Ok(Some(path))
+}
+
+fn gh814_module_file_digest(path: &Path) -> Result<String, WvError> {
+    use sha2::Digest as _;
+
+    let mut source = std::fs::File::open(path).map_err(failure)?;
+    let mut sha = sha2::Sha256::new();
+    let mut block = [0_u8; 64 * 1024];
+    loop {
+        let count = source.read(&mut block).map_err(failure)?;
+        if count == 0 {
+            break;
+        }
+        sha.update(&block[..count]);
+    }
+    Ok(format!("{:x}", sha.finalize()))
+}
+
+fn gh814_observe_first_controller(stage: &'static str, apartment: &'static str, digest: bool) {
+    let module = match gh814_loaded_module_path("EmbeddedBrowserWebView.dll") {
+        Ok(None) => String::from("module=not_loaded file_sha256=none"),
+        Err(_) => String::from("module=query_failed file_sha256=none"),
+        Ok(Some(path)) => {
+            let file_hash = if digest {
+                gh814_module_file_digest(&path).unwrap_or_else(|_| String::from("unreadable"))
+            } else {
+                String::from("not_sampled_before_launch")
+            };
+            format!("module=loaded file_sha256={file_hash}")
+        }
+    };
+    // Do not disclose the module path, user profile, PID or COM thread ID.
+    // The file digest describes the on-disk image at observation time, not
+    // immutable mapped bytes. Existing launch-timeout stderr owns the actual
+    // callback-channel, same-STA thread comparison and pump-return evidence.
+    println!(
+        "KELD_GH814_FIRST_CONTROLLER stage={stage} process=current apartment={apartment} {module}"
+    );
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
 pub(super) fn fixture_manifest() -> PermissionsManifest {
     EVIDENCE.with_borrow_mut(|e| e.manifest.take().unwrap_or_default())
 }
@@ -1798,6 +1889,29 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         );
     }
 
+    /// Native failure-first control for the same-process DLL observer. Both a
+    /// loaded system DLL and a non-existent module name must yield different
+    /// results. A fixed `loaded` or `not_loaded` answer fails this test.
+    #[test]
+    fn gh814_current_process_module_probe_distinguishes_loaded_and_missing() -> Result<(), WvError>
+    {
+        let loaded = gh814_loaded_module_path("kernel32.dll")?
+            .ok_or_else(|| failure("kernel32.dll must be loaded in this Windows test process"))?;
+        assert!(loaded.is_absolute(), "native module path must be absolute");
+        assert!(
+            loaded
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("kernel32.dll")),
+            "returned native module must match the exact requested DLL"
+        );
+        assert!(
+            gh814_loaded_module_path("gh814-not-loaded-control-20261122.dll")?.is_none(),
+            "an uninstalled module must not be inferred from an Evergreen version or disk file"
+        );
+        Ok(())
+    }
+
     #[test]
     #[ignore = "real Windows COM environment ownership and native HWND Close"]
     fn windows_com_engine_lifetime_subprocess() -> Result<(), WvError> {
@@ -1880,7 +1994,32 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             // This is a point observation, not proof of later callback delivery.
             observe_com_phase(gh814_successor_apartment_phase(&apartment()));
             observe_com_phase("successor-create-start");
-            let id = engine.create(&blank_spec())?;
+            gh814_observe_first_controller(
+                "pending",
+                gh814_successor_apartment_phase(&apartment()),
+                false,
+            );
+            let id = match engine.create(&blank_spec()) {
+                Ok(id) => {
+                    gh814_observe_first_controller(
+                        "ready",
+                        gh814_successor_apartment_phase(&apartment()),
+                        true,
+                    );
+                    id
+                }
+                Err(error) => {
+                    // Preserve the product's original error (including WV-009)
+                    // and its 15-second deadline. The native DLL is observed
+                    // only AFTER refusal, not as a blocking launch preflight.
+                    gh814_observe_first_controller(
+                        "failed",
+                        gh814_successor_apartment_phase(&apartment()),
+                        true,
+                    );
+                    return Err(error);
+                }
+            };
             observe_com_phase("successor-create-ready");
             let window = &engine.view(id)?.window;
             // SAFETY: this fixture owns the live HWND. Posting the actual Close
