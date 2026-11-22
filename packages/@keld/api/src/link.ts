@@ -87,6 +87,7 @@ import {
   linkError,
   nativeFacadeBootSelected,
   quitAndCloseLink,
+  stateApply,
   stateFreeze,
   type KeldCallError,
   type WorkerReceiveTable,
@@ -123,6 +124,12 @@ const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
   eventChannels: [LIFECYCLE_CHANNEL],
   callReceivers: [{ policy: "echoReceiver" }],
 };
+
+/**
+ * Window response decoding must use the pre-application native Promise
+ * settlement method. A post-preload override must not forge a Host reply.
+ */
+const trustedWindowLinkThen = Promise.prototype.then;
 
 /**
  * The role's one app-link, owned by the GH-527 transport Worker: lifecycle
@@ -513,13 +520,17 @@ export class LifecycleLink {
           ),
       );
     }
-    return this.#link
-      .call(
+    // The raw WorkerLink Promise is the only completion source. Do not trust
+    // a late, application-replaced Promise.prototype.then to decode a fake reply.
+    return stateApply(
+      trustedWindowLinkThen,
+      this.#link.call(
         WINDOW_CHANNEL,
         encodeWindowRequest(request),
         APP_LINK_IO_DEADLINE_MS,
-      )
-      .then(decodeWindowResponse);
+      ),
+      [decodeWindowResponse],
+    ) as Promise<WindowResponse>;
   }
 
   /** One bounded guarded install, with the actual Host generation as its receipt. */

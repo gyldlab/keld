@@ -714,6 +714,11 @@ export function onWindowFactApplied(
   };
 }
 
+// This Host-owned module captures native Promise settlement before application
+// code may replace Promise.prototype.then. Only genuine transport outcomes
+// may retire Create reservations.
+const trustedWindowPromiseThen = Promise.prototype.then;
+
 // Supplemental role-local negative evidence, not a Host window census. A
 // Create/WithPreload may be admitted while Opening has no published Source
 // fact, and a failed transient Create may return the Source to zero. Neither
@@ -806,24 +811,33 @@ export function invokeWindow(request: WindowRequest): Promise<WindowResponse> {
     windowCreateAttemptEpoch += 1n;
     pendingWindowCreateCalls += 1;
   }
+  // A Create reservation must end once, and only on an actual call result.
+  let released = false;
+  const releaseCreate = (): void => {
+    if (!tracked || released) return;
+    released = true;
+    pendingWindowCreateCalls -= 1;
+  };
   let result: Promise<WindowResponse>;
   try {
     result = session.callWindow(frozenRequest);
   } catch (error) {
-    if (tracked) pendingWindowCreateCalls -= 1;
+    releaseCreate();
     throw error;
   }
-  return result.then(
-    (response) => {
-      if (tracked) pendingWindowCreateCalls -= 1;
+  // Do not call result.then: applications can replace Promise.prototype.then
+  // after preload and impersonate the Host's completion while Create is Opening.
+  return stateApply(trustedWindowPromiseThen, result, [
+    (response: WindowResponse) => {
+      releaseCreate();
       acceptHostCloseReply(frozenRequest, response, session);
       return response;
     },
-    (error: unknown) => {
-      if (tracked) pendingWindowCreateCalls -= 1;
+    (error: unknown): never => {
+      releaseCreate();
       throw error;
     },
-  );
+  ]) as Promise<WindowResponse>;
 }
 
 /** Package-private FS invocation; public exports expose only typed read/write. */
