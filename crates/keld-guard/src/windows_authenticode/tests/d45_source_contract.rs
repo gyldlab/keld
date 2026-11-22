@@ -54,7 +54,7 @@ fn contract(guard: &str, role: &str) -> Result<(), &'static str> {
     check_wintrust_verify_close(&guard)?;
     check_primary_leaf_scope_domain(raw_guard, &guard)?;
     check_primary_leaf_certificate_abi(&guard, &macro_visible_guard)?;
-    check_native_issuer_policy(&guard, &role)
+    check_native_issuer_policy(&guard, &macro_visible_guard, &role)
 }
 
 fn check_retained_ownership(guard: &str) -> Result<(), &'static str> {
@@ -587,12 +587,151 @@ fn cfg_before_unsafe_attribute_cannot_hide_original_leaf_owner() {
     );
 }
 
-fn check_native_issuer_policy(guard: &str, role: &str) -> Result<(), &'static str> {
-    check_native_chain_observations(guard)?;
+const D45_VERIFIED_OWNER_REFUSAL: &str = "D-45 verified-state owner and caller";
+
+// Keep the verified-state extractor and its VERIFY/CLOSE caller as single,
+// unconditional Rust function items. A genuine #[cfg(test)] first definition
+// followed by a forged release definition otherwise satisfies method(), which
+// extracts only the first matching body.
+fn require_unique_unconditional_owner(
+    guard: &str,
+    name: &str,
+    required_attributes: &str,
+) -> Result<(), &'static str> {
+    let signature = format!("fn{name}(");
+    count(guard, &signature, 1, D45_VERIFIED_OWNER_REFUSAL)?;
+    if guard.contains(&format!("fnr#{name}(")) {
+        return Err(D45_VERIFIED_OWNER_REFUSAL);
+    }
+    let (preceding, _) = guard
+        .split_once(&signature)
+        .ok_or(D45_VERIFIED_OWNER_REFUSAL)?;
+    let (_, attributes) = preceding
+        .rsplit_once('}')
+        .ok_or(D45_VERIFIED_OWNER_REFUSAL)?;
+    if attributes != required_attributes {
+        return Err(D45_VERIFIED_OWNER_REFUSAL);
+    }
+    Ok(())
+}
+
+// The regular source mask intentionally hides macro token trees. Read the
+// second, offset-preserving mask at the already selected function owner so a
+// block-scoped macro generating a forged local verifier cannot disappear.
+fn visible_owner_body(
+    guard: &str,
+    macro_visible_guard: &str,
+    name: &str,
+) -> Result<String, &'static str> {
+    let signature = format!("fn {name}(");
+    let at = guard.find(&signature).ok_or(D45_VERIFIED_OWNER_REFUSAL)?;
+    let source = macro_visible_guard
+        .get(at..)
+        .ok_or(D45_VERIFIED_OWNER_REFUSAL)?;
+    function_body(source, name)
+        .map(compact)
+        .map_err(|_| D45_VERIFIED_OWNER_REFUSAL)
+}
+
+fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), &'static str> {
+    let bytes = body.as_bytes();
+    for (at, &byte) in bytes.iter().enumerate() {
+        if byte != b'!' || !matches!(bytes.get(at + 1), Some(b'(' | b'[' | b'{')) {
+            continue;
+        }
+        let mut start = at;
+        while start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || matches!(bytes[start - 1], b'_' | b':' | b'#')
+                || bytes[start - 1] >= 0x80)
+        {
+            start -= 1;
+        }
+        if !allowed.contains(&&body[start..at]) {
+            return Err(D45_VERIFIED_OWNER_REFUSAL);
+        }
+    }
+    Ok(())
+}
+
+fn check_verified_state_owner_and_caller(
+    guard: &str,
+    macro_visible_guard: &str,
+) -> Result<(), &'static str> {
+    let live = compact(guard);
+    require_unique_unconditional_owner(
+        &live,
+        "windows_identity_from_image_with_policy",
+        "#[allow(unsafe_code,clippy::too_many_lines)]",
+    )?;
+    require_unique_unconditional_owner(
+        &live,
+        "windows_identity_from_verified_trust_state",
+        "#[allow(unsafe_code)]",
+    )?;
+    // The only live mentions are the function declaration and the one call
+    // from the WinVerifyTrust VERIFY/CLOSE owner. This also rejects local
+    // bindings, imports, and cfg-selected raw-identifier alternatives.
+    count(
+        &live,
+        "windows_identity_from_verified_trust_state",
+        2,
+        D45_VERIFIED_OWNER_REFUSAL,
+    )?;
+    let caller = method(guard, "windows_identity_from_image_with_policy")?;
+    count(
+        &caller,
+        "windows_identity_from_verified_trust_state(&trust_data,offline)",
+        1,
+        D45_VERIFIED_OWNER_REFUSAL,
+    )?;
+    let extractor = method(guard, "windows_identity_from_verified_trust_state")?;
+    let test_capture = "#[cfg(test)]windows_d45_capture_chain_for_test(signer);";
+    count(&extractor, test_capture, 1, D45_VERIFIED_OWNER_REFUSAL)?;
+    if caller.contains("#[cfg") || extractor.replacen(test_capture, "", 1).contains("#[cfg") {
+        return Err(D45_VERIFIED_OWNER_REFUSAL);
+    }
+
+    // Calls to other macros can expand into local functions at the caller.
+    // Preserve the existing harmless stringify! and dormant macro_rules!
+    // controls; reject invocations outside the three known standard macros.
+    let caller_visible = visible_owner_body(
+        guard,
+        macro_visible_guard,
+        "windows_identity_from_image_with_policy",
+    )?;
+    let extractor_visible = visible_owner_body(
+        guard,
+        macro_visible_guard,
+        "windows_identity_from_verified_trust_state",
+    )?;
+    require_expected_identity_macros(&caller_visible, &["matches", "format", "stringify"])?;
+    require_expected_identity_macros(&extractor_visible, &["format", "stringify"])?;
+    let macro_source = compact(macro_visible_guard);
+    for name in ["matches", "format", "stringify"] {
+        if macro_source.contains(&format!("macro_rules!{name}"))
+            || macro_source.contains(&format!("macro_rules!r#{name}"))
+        {
+            return Err(D45_VERIFIED_OWNER_REFUSAL);
+        }
+    }
+    Ok(())
+}
+
+fn check_native_issuer_policy(
+    guard: &str,
+    macro_visible_guard: &str,
+    role: &str,
+) -> Result<(), &'static str> {
+    check_native_chain_observations(guard, macro_visible_guard)?;
     check_dwire_issuer_membership(guard, role)
 }
 
-fn check_native_chain_observations(guard: &str) -> Result<(), &'static str> {
+fn check_native_chain_observations(
+    guard: &str,
+    macro_visible_guard: &str,
+) -> Result<(), &'static str> {
+    check_verified_state_owner_and_caller(guard, macro_visible_guard)?;
     let verified_state = method(guard, "windows_identity_from_verified_trust_state")?;
     let chain = method(guard, "windows_d45_chain_facts_from_signer")?;
     let selected = method(guard, "windows_d45_selected_cert_contexts")?;
@@ -707,6 +846,179 @@ fn check_dwire_issuer_membership(guard: &str, role: &str) -> Result<(), &'static
         "destination issuer policy enforcement",
     )?;
     Ok(())
+}
+
+#[test]
+fn cfg_shadowed_verified_state_owner_fails_source_contract() {
+    let original = "fn windows_identity_from_verified_trust_state(";
+    assert_eq!(GUARD.matches(original).count(), 1, "stale verified owner");
+    let test_only = GUARD.replacen(
+        original,
+        "#[cfg(test)]\nfn windows_identity_from_verified_trust_state(",
+        1,
+    );
+    let forged_release = concat!(
+        "\n#[cfg(not(test))]\n",
+        "fn windows_identity_from_verified_trust_state(",
+        "_trust_data: &WINTRUST_DATA, _observe_d45_chain: bool",
+        ") -> Result<WindowsTrustObservation, WindowsAuthenticodeError> {\n",
+        "    Ok(WindowsTrustObservation {\n",
+        "        identity: WindowsAuthenticodeIdentity {\n",
+        "            publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+        "        },\n",
+        "        d45_chain_facts: None,\n",
+        "    })\n",
+        "}\n",
+    );
+    for release_owner in [
+        forged_release.to_owned(),
+        forged_release.replace(
+            "fn windows_identity_from_verified_trust_state(",
+            "fn r#windows_identity_from_verified_trust_state(",
+        ),
+    ] {
+        assert_eq!(
+            contract(&format!("{test_only}{release_owner}"), ROLE),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "a test-only genuine extractor must not conceal a forged release extractor"
+        );
+    }
+}
+
+#[test]
+fn block_scoped_verified_state_function_shadow_fails_source_contract() {
+    let callsite = "    let identity_result = validate_windows_signature_cardinality(";
+    assert_eq!(GUARD.matches(callsite).count(), 1, "stale VERIFY callsite");
+    let shadow = GUARD.replacen(
+        callsite,
+        concat!(
+            "    #[cfg(not(test))]\n",
+            "    fn windows_identity_from_verified_trust_state(",
+            "_: &WINTRUST_DATA, _: bool",
+            ") -> Result<WindowsTrustObservation, WindowsAuthenticodeError> {\n",
+            "        Err(windows_identity_error(\"forged\", \"forged\"))\n",
+            "    }\n",
+            "    let identity_result = validate_windows_signature_cardinality("
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&shadow, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a local release-only function must not shadow the verified module owner"
+    );
+}
+
+#[test]
+fn block_scoped_macro_verified_state_shadow_fails_source_contract() {
+    let callsite = "    let identity_result = validate_windows_signature_cardinality(";
+    assert_eq!(GUARD.matches(callsite).count(), 1, "stale VERIFY callsite");
+    let shadow = GUARD.replacen(
+        callsite,
+        concat!(
+            "    #[cfg(not(test))]\n",
+            "    macro_rules! forged_verified_state {\n",
+            "        ($name:ident) => {\n",
+            "            fn $name(_: &WINTRUST_DATA, _: bool)",
+            " -> Result<WindowsTrustObservation, WindowsAuthenticodeError> {\n",
+            "                Err(windows_identity_error(\"forged\", \"forged\"))\n",
+            "            }\n",
+            "        };\n",
+            "    }\n",
+            "    #[cfg(not(test))]\n",
+            "    forged_verified_state!(windows_identity_from_verified_trust_state);\n",
+            "    let identity_result = validate_windows_signature_cardinality("
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&shadow, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a macro may create a local release-only function invisible to the normal source mask"
+    );
+    let always_shadow = shadow.replace("    #[cfg(not(test))]\n", "");
+    assert_ne!(always_shadow, shadow, "stale cfg shadow anchor");
+    assert_eq!(
+        contract(&always_shadow, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "even without cfg attributes an active local macro must fail the caller oracle"
+    );
+}
+
+#[test]
+fn block_scoped_standard_macro_redefinition_fails_source_contract() {
+    let anchor = "let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(anchor).count(), 1, "stale policy owner");
+    let forged = GUARD.replacen(
+        anchor,
+        concat!(
+            "macro_rules! matches { ($($arg:tt)*) => {\n",
+            "        return Err(windows_identity_error(\"forged\", \"forged\"));\n",
+            "    }; }\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&forged, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a local override of an otherwise approved macro must not bypass native VERIFY"
+    );
+}
+
+#[test]
+fn cfg_verified_caller_and_extractor_branch_fail_source_contract() {
+    let caller = "fn windows_identity_from_image_with_policy(";
+    assert_eq!(GUARD.matches(caller).count(), 1, "stale VERIFY owner");
+    let test_only = GUARD.replacen(
+        caller,
+        "#[cfg(test)]\nfn windows_identity_from_image_with_policy(",
+        1,
+    );
+    assert_eq!(
+        contract(&test_only, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "the verified-state caller cannot be compiled only for tests"
+    );
+    let provider =
+        "let provider = unsafe { WTHelperProvDataFromStateData(trust_data.hWVTStateData) };";
+    assert_eq!(GUARD.matches(provider).count(), 1, "stale provider owner");
+    let release_bypass = GUARD.replacen(
+        provider,
+        concat!(
+            "#[cfg(not(test))]\n",
+            "    return Err(windows_identity_error(\"forged\", \"forged\"));\n",
+            "    let provider = unsafe { WTHelperProvDataFromStateData(trust_data.hWVTStateData) };"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&release_bypass, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a release-only early return cannot leave the good test-only provider calls as evidence"
+    );
+}
+
+#[test]
+fn inert_verified_owner_names_and_macro_definitions_remain_green() {
+    let callsite = "    let identity_result = validate_windows_signature_cardinality(";
+    assert_eq!(GUARD.matches(callsite).count(), 1, "stale VERIFY callsite");
+    let harmless = GUARD.replacen(
+        callsite,
+        concat!(
+            "    /* fn windows_identity_from_verified_trust_state() { } */\n",
+            "    let _audit_note = r#\"fn windows_identity_from_verified_trust_state()\"#;\n",
+            "    let _inert = stringify!(fn windows_identity_from_verified_trust_state() {});\n",
+            "    macro_rules! r#dormant_verified { () => { } }\n",
+            "    let identity_result = validate_windows_signature_cardinality("
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&harmless, ROLE),
+        Ok(()),
+        "comments, literals, stringify and unused local macros are not alternate live verifier owners"
+    );
 }
 
 #[test]
