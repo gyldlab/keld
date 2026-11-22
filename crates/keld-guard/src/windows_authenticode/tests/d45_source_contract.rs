@@ -988,6 +988,44 @@ fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), 
     Ok(())
 }
 
+// No new item or block attributes may alter either live WinTrust identity
+// owner. In particular, #![cfg(not(test))] inside a statement block can
+// hide a release-only return before WinVerifyTrust while preserving all of
+// the original source calls. The only original exception is the exact
+// #[cfg(test)] chain-observation probe in the verified-state extractor.
+fn d45_reject_owner_body_attributes(
+    body: &str,
+    allow_test_capture: bool,
+) -> Result<(), &'static str> {
+    let bytes = body.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'#' {
+            at += 1;
+            continue;
+        }
+        let after_hash = d45_skip_space(bytes, at + 1);
+        let inner = bytes.get(after_hash) == Some(&b'!');
+        let opening = d45_skip_space(bytes, after_hash + usize::from(inner));
+        if bytes.get(opening) != Some(&b'[') {
+            at += 1;
+            continue;
+        }
+        let end = d45_macro_tree_end(bytes, opening)?;
+        let attribute = compact(&body[opening + 1..end - 1]);
+        let exact_original_probe = allow_test_capture
+            && !inner
+            && attribute == "cfg(test)"
+            && compact(&body[at..])
+                .starts_with("#[cfg(test)]windows_d45_capture_chain_for_test(signer);");
+        if !exact_original_probe {
+            return Err(D45_VERIFIED_OWNER_REFUSAL);
+        }
+        at = end;
+    }
+    Ok(())
+}
+
 fn check_verified_state_owner_and_caller(
     guard: &str,
     macro_visible_guard: &str,
@@ -1022,6 +1060,14 @@ fn check_verified_state_owner_and_caller(
     let extractor = method(guard, "windows_identity_from_verified_trust_state")?;
     let test_capture = "#[cfg(test)]windows_d45_capture_chain_for_test(signer);";
     count(&extractor, test_capture, 1, D45_VERIFIED_OWNER_REFUSAL)?;
+    d45_reject_owner_body_attributes(
+        function_body(guard, "windows_identity_from_image_with_policy")?,
+        false,
+    )?;
+    d45_reject_owner_body_attributes(
+        function_body(guard, "windows_identity_from_verified_trust_state")?,
+        true,
+    )?;
     if caller.contains("#[cfg") || extractor.replacen(test_capture, "", 1).contains("#[cfg") {
         return Err(D45_VERIFIED_OWNER_REFUSAL);
     }
@@ -1671,6 +1717,55 @@ fn spaced_test_probe_cfg_is_not_a_release_macro_expansion() {
         contract(&release_probe, ROLE),
         Err(D45_VERIFIED_OWNER_REFUSAL),
         "a release-only thread_local item macro is not the approved test probe"
+    );
+}
+
+#[test]
+fn release_only_inner_and_spaced_cfg_blocks_fail_verified_caller_contract() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale verified caller");
+    for attribute in [
+        "#![cfg(not(test))]",
+        "# ! [ cfg ( not(test) ) ]",
+        "#![r#cfg(not(test))]",
+        "# /*inert*/ ! [cfg(not(test))]",
+        "# [cfg(not(test))]",
+    ] {
+        let mut forged_block = String::from("    { ");
+        forged_block.push_str(attribute);
+        forged_block.push_str(concat!(
+            "\n        return Ok(WindowsTrustObservation {\n",
+            "            identity: WindowsAuthenticodeIdentity {\n",
+            "                publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "            }, d45_chain_facts: None,\n",
+            "        });\n",
+            "    }\n",
+        ));
+        forged_block.push_str(offline);
+        let forged = GUARD.replacen(offline, &forged_block, 1);
+        assert_eq!(
+            contract(&forged, ROLE),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "release-only inner/outer cfg attribute bypassed D45 owner contract: {attribute}"
+        );
+    }
+    let inert = GUARD.replacen(
+        offline,
+        &format!("    let _audit = stringify!(#![cfg(not(test))]);\n{offline}"),
+        1,
+    );
+    assert_eq!(
+        contract(&inert, ROLE),
+        Ok(()),
+        "a cfg token sequence inside stringify! is not an active attribute"
+    );
+    assert_eq!(
+        d45_reject_owner_body_attributes(
+            "#[cfg(test)] windows_d45_capture_chain_for_test(signer);",
+            true,
+        ),
+        Ok(()),
+        "original extractor test capture remains the unique permitted body attribute"
     );
 }
 
