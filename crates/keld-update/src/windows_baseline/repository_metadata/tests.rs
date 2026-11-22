@@ -38,12 +38,15 @@ fn wrong_case_physical_enrollment_anchor_refuses_before_canonical_read() {
         let alias_path = fixture.path().join(&alias);
         let original_bytes = b"unaltered-noncanonical-enrollment";
         fs::write(&alias_path, original_bytes).expect("persist physical noncanonical anchor");
-        // The native Windows fixture demonstrates why the original derived
-        // lowercase read could have admitted the wrong physical name.
-        assert_eq!(
-            fs::read(fixture.path().join(&canonical)).expect("NTFS case-insensitive alias"),
-            original_bytes
-        );
+        // On ordinary case-insensitive NTFS the canonical lookup may resolve
+        // this differently cased physical name. On an explicitly case-sensitive
+        // Windows directory, the lookup may instead be NotFound; the retained
+        // namespace must reject the physical alias in either configuration.
+        match fs::read(fixture.path().join(&canonical)) {
+            Ok(canonical_read) => assert_eq!(canonical_read, original_bytes),
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
+            Err(cause) => panic!("unexpected canonical alias lookup failure: {cause}"),
+        }
         let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
             .expect("retain the actual enrollment parent");
         let error = require_canonical_anchor_leaf(&retained, &canonical)
@@ -59,6 +62,17 @@ fn wrong_case_physical_enrollment_anchor_refuses_before_canonical_read() {
                 .count(),
             1,
             "negative namespace inspection must not modify or rename the anchor"
+        );
+        let physical_name = fs::read_dir(fixture.path())
+            .expect("enumerate the physical original entry after refusal")
+            .next()
+            .expect("original physical alias must be retained")
+            .expect("read physical alias name")
+            .file_name();
+        assert_eq!(
+            physical_name.as_os_str(),
+            std::ffi::OsStr::new(&alias),
+            "refusal must retain the exact native physical entry spelling"
         );
     }
 }
