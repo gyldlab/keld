@@ -312,6 +312,35 @@ if (Test-Path -LiteralPath $OutputDirectory) {
 }
 [IO.Directory]::Move($temporary, $OutputDirectory)
 $temporaryCreated = $false
+
+# A successful rename is not proof that the published bytes are still the
+# checked bytes. Reopen every published slot through its final path before
+# reporting nonauthorizing candidate custody. A failed readback deliberately
+# leaves the final directory for inspection; it must not be reported as ready,
+# silently overwritten, or recursively deleted from a caller-selected parent.
+$null = Require-CanonicalLocalPath $OutputDirectory 'published stage directory'
+$publishedManifest = Join-Path $OutputDirectory 'manifest.json'
+$null = Require-CanonicalLocalPath $publishedManifest 'published manifest'
+$publishedManifestItem = Get-Item -LiteralPath $publishedManifest -ErrorAction Stop
+if ($publishedManifestItem -isnot [IO.FileInfo] -or
+    (Get-FileHash -LiteralPath $publishedManifest -Algorithm SHA256).Hash -cne $manifestSha256) {
+    Refuse 'published manifest changed after atomic rename'
+}
+$publishedRecipe = Join-Path $OutputDirectory 'bindings/keld-mcp-stdio.json'
+$null = Require-CanonicalLocalPath $publishedRecipe 'published provider recipe'
+if ((Get-FileHash -LiteralPath $publishedRecipe -Algorithm SHA256).Hash -cne $recipeDigest) {
+    Refuse 'published provider recipe changed after atomic rename'
+}
+foreach ($entry in $images) {
+    $publishedImage = Join-Path $OutputDirectory $entry.destination
+    $null = Require-CanonicalLocalPath $publishedImage "published image $($entry.role)"
+    $publishedItem = Get-Item -LiteralPath $publishedImage -ErrorAction Stop
+    if ($publishedItem -isnot [IO.FileInfo] -or
+        $publishedItem.Length -ne $entry.length -or
+        (Get-FileHash -LiteralPath $publishedImage -Algorithm SHA256).Hash -cne $entry.sha256) {
+        Refuse "published image $($entry.role) changed after atomic rename"
+    }
+}
 } catch {
     $failure = $_
     if ($temporaryCreated) {

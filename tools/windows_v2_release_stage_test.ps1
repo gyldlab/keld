@@ -152,10 +152,76 @@ try {
     }
     Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postcopy-cleanup'
 
+    # An atomic rename does not replace exact published-path readback.
+    # In a disposable test-only script, bypass signer verification solely
+    # to exercise a synthetic cut, then corrupt the moved manifest.
+    $publishTestOnly = $stageSource.Remove($authStart, $authEnd - $authStart)
+    $moveAnchor = '[IO.Directory]::Move($temporary, $OutputDirectory)'
+    if ($publishTestOnly.IndexOf($moveAnchor) -lt 0 -or
+        $publishTestOnly.IndexOf($moveAnchor) -ne $publishTestOnly.LastIndexOf($moveAnchor)) {
+        throw 'KEL270_STAGE_NEGATIVE_FAILURE publish mutation anchor missing/ambiguous'
+    }
+    $postMoveCorrupt = '[IO.File]::WriteAllText((Join-Path $OutputDirectory ''manifest.json''), ''INJECTED_FOREIGN_MANIFEST_BYTES'')'
+    $publishTestOnly = $publishTestOnly.Replace(
+        $moveAnchor, $moveAnchor + [Environment]::NewLine + $postMoveCorrupt)
+    $publishFaultScript = Join-Path $fixture 'fault-stage-after-move.ps1'
+    [IO.File]::WriteAllText($publishFaultScript, $publishTestOnly,
+        (New-Object System.Text.UTF8Encoding($false)))
+    $publishFaultOutput = Join-Path $fixture 'postmove-output'
+    $ErrorActionPreference = 'Continue'
+    try {
+        $publishFaultResult = (& $powershell '-NoProfile' '-NonInteractive' '-File' $publishFaultScript '-PinsFile' $validPinsFile '-OutputDirectory' $publishFaultOutput 2>&1 | Out-String)
+        $publishFaultExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = 'Stop'
+    }
+    $publishedFaultManifest = Join-Path $publishFaultOutput 'manifest.json'
+    if ($publishFaultExit -eq 0 -or
+        $publishFaultResult -notmatch 'published manifest changed after atomic rename' -or
+        $publishFaultResult -match 'KEL270_STAGE_IMAGES_PREPARED' -or
+        -not (Test-Path -LiteralPath $publishedFaultManifest) -or
+        [IO.File]::ReadAllText($publishedFaultManifest) -cne 'INJECTED_FOREIGN_MANIFEST_BYTES') {
+        throw "KEL270_STAGE_NEGATIVE_FAILURE case=postmove-readback exit=$publishFaultExit output=$publishFaultResult"
+    }
+    Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postmove-readback'
+
+    # The same post-rename boundary must independently protect provider
+    # binding and binary bytes, not just the manifest describing them.
+    foreach ($publicationCase in @(
+        @{ name = 'postmove-provider-readback'; relative = 'bindings/keld-mcp-stdio.json'; expected = 'published provider recipe changed after atomic rename' },
+        @{ name = 'postmove-image-readback'; relative = 'bin/keld-host.exe'; expected = 'published image app-host changed after atomic rename' }
+    )) {
+        $changedBytes = 'INJECTED_FOREIGN_PUBLISHED_BYTES'
+        $slotCorrupt = '[IO.File]::WriteAllText((Join-Path $OutputDirectory ''{0}''), ''{1}'')' -f $publicationCase.relative, $changedBytes
+        $slotTestOnly = $stageSource.Remove($authStart, $authEnd - $authStart)
+        $slotTestOnly = $slotTestOnly.Replace(
+            $moveAnchor, $moveAnchor + [Environment]::NewLine + $slotCorrupt)
+        $slotScript = Join-Path $fixture ($publicationCase.name + '.ps1')
+        [IO.File]::WriteAllText($slotScript, $slotTestOnly,
+            (New-Object System.Text.UTF8Encoding($false)))
+        $slotOutput = Join-Path $fixture $publicationCase.name
+        $ErrorActionPreference = 'Continue'
+        try {
+            $slotResult = (& $powershell '-NoProfile' '-NonInteractive' '-File' $slotScript '-PinsFile' $validPinsFile '-OutputDirectory' $slotOutput 2>&1 | Out-String)
+            $slotExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = 'Stop'
+        }
+        $corruptedSlot = Join-Path $slotOutput $publicationCase.relative
+        if ($slotExit -eq 0 -or
+            $slotResult -notmatch [regex]::Escape($publicationCase.expected) -or
+            $slotResult -match 'KEL270_STAGE_IMAGES_PREPARED' -or
+            -not (Test-Path -LiteralPath $corruptedSlot) -or
+            [IO.File]::ReadAllText($corruptedSlot) -cne $changedBytes) {
+            throw "KEL270_STAGE_NEGATIVE_FAILURE case=$($publicationCase.name) exit=$slotExit output=$slotResult"
+        }
+        Write-Output "KEL270_STAGE_NEGATIVE_PASS case=$($publicationCase.name)"
+    }
+
     if ((Get-FileHash -LiteralPath $fake -Algorithm SHA256).Hash -cne $hash) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE: source changed during refusals'
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=9 source_unchanged=true positive_signed_release=NOT_RUN'
+    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=12 source_unchanged=true positive_signed_release=NOT_RUN'
 } finally {
     # Only this invocation's newly allocated disposable negative fixture.
     Remove-Item -LiteralPath $fixture -Recurse -Force
