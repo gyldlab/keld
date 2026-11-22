@@ -13,8 +13,9 @@ use windows_sys::Win32::System::JobObjects::{
 
 use super::super::{
     JOB_PROCESS_ID_LIST_GROWTH_LIMIT, JOB_PROCESS_ID_LIST_HEADER_WORDS,
-    JOB_PROCESS_ID_LIST_INITIAL_IDS, WindowsProcessJob, create_job_completion_port,
-    list_job_process_ids, list_job_process_ids_from, list_job_process_ids_with,
+    JOB_PROCESS_ID_LIST_INITIAL_IDS, JOB_PROCESS_ID_LIST_MAX_IDS, WindowsProcessJob,
+    create_job_completion_port, list_job_process_ids, list_job_process_ids_from,
+    list_job_process_ids_with,
 };
 use super::{RELEASE_WAIT, spawn_blocking_descendant};
 
@@ -146,6 +147,54 @@ fn the_process_id_lister_grows_on_error_more_data_and_reads_the_full_list() {
     assert!(capacities[1] >= 40, "{capacities:?}");
     assert_eq!(snapshot.ids, wanted);
     assert_eq!(snapshot.assigned, 40);
+}
+
+#[test]
+fn an_oversized_reported_job_count_refuses_before_retry_or_allocation() {
+    // The real Job query may return a count larger than our safe snapshot
+    // budget. Reproducing 65K+1 *reported* IDs on an initial one-ID buffer
+    // is safe; an unchecked second query would allocate about 512 KiB and
+    // trip this test's explicit second-call guard (failure-first RED).
+    let mut calls = 0_u32;
+    let refusal = list_job_process_ids_with(1, "test bounded Job snapshot", |buffer| {
+        calls += 1;
+        assert_eq!(calls, 1, "oversized Job count must refuse before a retake");
+        let declared = u32::try_from(JOB_PROCESS_ID_LIST_MAX_IDS + 1).expect("bound fits u32");
+        write_process_id_record(buffer, declared, &[]);
+        Err(io::Error::from_raw_os_error(ERROR_MORE_DATA.cast_signed()))
+    })
+    .expect_err("an oversized Job-assigned count must be refused before allocating it");
+    assert_eq!(
+        calls, 1,
+        "a refused count cannot authorize another kernel query"
+    );
+    assert!(
+        refusal
+            .to_string()
+            .contains("exceeds bounded Job snapshot capacity"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn an_oversized_initial_capacity_refuses_before_any_kernel_query() {
+    let mut calls = 0_u32;
+    let refusal = list_job_process_ids_with(
+        JOB_PROCESS_ID_LIST_MAX_IDS + 1,
+        "test oversized initial Job snapshot",
+        |_| {
+            calls += 1;
+            panic!("initial capacity above the fixed memory budget must not be queried");
+        },
+    )
+    .expect_err("oversized initial capacity must be refused");
+    assert_eq!(calls, 0);
+    assert!(
+        refusal
+            .to_string()
+            .contains("exceeds bounded Job snapshot capacity"),
+        "{refusal}"
+    );
 }
 
 #[test]
