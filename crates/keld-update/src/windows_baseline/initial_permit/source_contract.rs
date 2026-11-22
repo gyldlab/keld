@@ -37,7 +37,7 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
     // unconditional return would leave those strings intact. Constrain this
     // small private native helper to its current exhaustive three-way match.
     let helper_compact = helper.split_whitespace().collect::<String>();
-    const NATIVE_MODE_HELPER: &str = concat!(
+    let native_mode_helper: &str = concat!(
         "fnrequire_native_baseline_authority(authority:BaselineAuthority)->io::Result<()>{",
         "matchauthority{",
         "BaselineAuthority::MachineSystem=>keld_guard::require_windows_system_token(),",
@@ -47,7 +47,7 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
         "keld_guard::require_windows_machine_uac_owner_token()",
         "}}}",
     );
-    if helper_compact != NATIVE_MODE_HELPER {
+    if helper_compact != native_mode_helper {
         return Err("unreviewed native v1 guard control flow");
     }
     let end = visible[initializer_start..]
@@ -82,7 +82,7 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
 // check through the first native effect; any additional live statement fails.
 fn require_legacy_effect_order(initializer: &str) -> Result<(), &'static str> {
     let compact = initializer.split_whitespace().collect::<String>();
-    const PREFIX_BEFORE_EFFECT: &str = concat!(
+    let prefix_before_effect: &str = concat!(
         "token_check(authority).map_err(|cause|error(,cause))?;",
         "crate::provenance::match_identity(&trust.installation,verified.installation())?;",
         "letmutretained_source=",
@@ -90,7 +90,7 @@ fn require_legacy_effect_order(initializer: &str) -> Result<(), &'static str> {
         "letroots=open_roots(trust,true).map_err(|cause|error(,cause))?;",
         "require_native_baseline_authority(authority).map_err(|cause|error(,cause))?;",
     );
-    const PROTECTED_EFFECTS: &[&str] = &[
+    let protected_effects: &[&str] = &[
         "letmutlock=acquire_bootstrap_lock(&roots)?;",
         "seed_activation_lock(&roots)?;",
         "publish_baseline_version(&mutretained_source,&roots,authority,&mutobserve)?;",
@@ -101,16 +101,16 @@ fn require_legacy_effect_order(initializer: &str) -> Result<(), &'static str> {
         .find("token_check(authority).map_err(|cause|error(,cause))?;")
         .ok_or("initial native token check missing")?;
     let first_effect = compact
-        .find(PROTECTED_EFFECTS[0])
+        .find(protected_effects[0])
         .ok_or("KEL-53 bootstrap creation missing")?;
-    if compact.get(precheck_start..first_effect) != Some(PREFIX_BEFORE_EFFECT) {
+    if compact.get(precheck_start..first_effect) != Some(prefix_before_effect) {
         return Err("unreviewed statement or effect before native bootstrap recheck");
     }
     // The entire initializer is the scope, not just the admitted prefix.
     // Each real protected call must appear once and in the established order;
     // a duplicate before the guard cannot be hidden behind its later copy.
     let mut remaining = &compact[first_effect..];
-    for &effect in PROTECTED_EFFECTS {
+    for &effect in protected_effects {
         if compact.matches(effect).count() != 1 {
             return Err("missing or repeated KEL-53 protected effect");
         }
@@ -259,13 +259,13 @@ fn native_effect_recheck_single_fault_mutations_are_refused() {
 fn pre_token_effect_fails_with_owner_mode_and_later_effect_checks_intact() {
     legacy_effect_authority_contract(LEGACY_INITIALIZER)
         .expect("unchanged v1 owner/mode checks and KEL-53 bootstrap order are accepted");
-    const INITIAL_TOKEN: &str =
+    let initial_token: &str =
         "    token_check(authority).map_err(|cause| error(\"installer authority\", cause))?;";
-    assert_eq!(LEGACY_INITIALIZER.matches(INITIAL_TOKEN).count(), 1);
+    assert_eq!(LEGACY_INITIALIZER.matches(initial_token).count(), 1);
     let premature_create = LEGACY_INITIALIZER.replacen(
-        INITIAL_TOKEN,
+        initial_token,
         &format!(
-            "    let _ = std::fs::create_dir(&trust.installation.install_root);\n{INITIAL_TOKEN}"
+            "    let _ = std::fs::create_dir(&trust.installation.install_root);\n{initial_token}"
         ),
         1,
     );
