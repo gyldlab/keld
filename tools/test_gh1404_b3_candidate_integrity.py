@@ -1,6 +1,7 @@
 """Mutation controls for a source-only B-3 archive/installed-lock receipt."""
 
 import base64
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -14,6 +15,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest import mock
+import zlib
 
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -41,6 +43,80 @@ def packed(name, version, dependencies, extras=None):
             info.mode = 0o644
             archive.addfile(info, io.BytesIO(data))
     return output.getvalue(), files
+
+
+class ArchiveBudgetTest(unittest.TestCase):
+    def test_gzip_decoder_error_becomes_labeled_refusal(self):
+        data, _ = packed("@keld/api", "0.0.1", {})
+        with mock.patch.object(gzip.GzipFile, "read", side_effect=zlib.error("decoder failure")):
+            with self.assertRaisesRegex(ValueError, "^fixture: invalid gzip archive$"):
+                verifier.archive_members(data, "fixture")
+
+    def test_tar_recursion_at_open_and_iteration_becomes_labeled_refusal(self):
+        data, _ = packed("@keld/api", "0.0.1", {})
+        for after_first_header in (False, True):
+            with self.subTest(after_first_header=after_first_header):
+                parsed = 0
+                next_member = tarfile.TarFile.next
+
+                def fail_next(archive):
+                    nonlocal parsed
+                    if parsed >= int(after_first_header):
+                        raise RecursionError("parser nesting limit")
+                    parsed += 1
+                    return next_member(archive)
+
+                with mock.patch.object(tarfile.TarFile, "next", fail_next):
+                    with self.assertRaisesRegex(ValueError, "^fixture: tar metadata nesting outside bound$"):
+                        verifier.archive_members(data, "fixture")
+
+    def test_inflated_tar_equality_passes_and_one_byte_over_refuses(self):
+        data, expected = packed("@keld/api", "0.0.1", {})
+        size = len(gzip.decompress(data))
+        with mock.patch.object(verifier, "MAX_TAR_STREAM", size, create=True):
+            files, directories, count = verifier.archive_members(data, "fixture")
+        self.assertEqual({name: (body, 0o644) for name, body in expected.items()}, files)
+        self.assertEqual({}, directories)
+        self.assertEqual(2, count)
+        with mock.patch.object(verifier, "MAX_TAR_STREAM", size - 1, create=True):
+            with self.assertRaisesRegex(ValueError, "expanded tar stream outside bound"):
+                verifier.archive_members(data, "fixture")
+
+    def test_cumulative_budget_checked_before_extracting_next_member(self):
+        data, expected = packed("@keld/api", "0.0.1", {}, {"z-note.txt": b"ordinary file content\n" * 20})
+        extract = tarfile.TarFile.extractfile
+        visited = []
+
+        def record_extract(archive, member):
+            visited.append(member.name)
+            return extract(archive, member)
+
+        limit = sum(map(len, expected.values()))
+        with mock.patch.object(verifier, "MAX_ARCHIVE", limit):
+            files, _, _ = verifier.archive_members(data, "fixture")
+        self.assertEqual(set(expected), set(files))
+        with mock.patch.object(verifier, "MAX_ARCHIVE", limit - 1):
+            with mock.patch.object(tarfile.TarFile, "extractfile", record_extract):
+                with self.assertRaisesRegex(ValueError, "^fixture: excessive expanded bytes$"):
+                    verifier.archive_members(data, "fixture")
+        self.assertEqual(["package/entry.js", "package/package.json"], visited)
+
+    def test_archive_scan_stops_at_first_member_over_count(self):
+        data, expected = packed("@keld/api", "0.0.1", {}, {"z-extra.js": b"export {};\n"})
+        original = tarfile.TarFile.next
+        visited = set()
+
+        def observe_next(archive):
+            member = original(archive)
+            if member is not None:
+                visited.add(member.name)
+            return member
+
+        with mock.patch.object(verifier, "MAX_MEMBERS", 1):
+            with mock.patch.object(tarfile.TarFile, "next", observe_next):
+                with self.assertRaisesRegex(ValueError, "archive member count outside bound"):
+                    verifier.archive_members(data, "fixture")
+        self.assertEqual({"package/" + name for name in sorted(expected)[:2]}, visited)
 
 
 class CandidateIntegrityTest(unittest.TestCase):

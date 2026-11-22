@@ -441,7 +441,7 @@ where
 fn report_guardian_phase_failure(ledger: &GuardianPhaseLedger, site: GuardianFailureSite) {
     // Purely observational, failure-only, and deliberately independent of
     // Host KELD-CORE-037 attribution or any authenticated Host link state.
-    eprintln!("{}", ledger.failure_report(site));
+    let _ = writeln!(io::stderr().lock(), "{}", ledger.failure_report(site));
 }
 
 /// Authenticated host shutdown attribution observed by the liveness loop.

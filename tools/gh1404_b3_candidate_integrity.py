@@ -8,6 +8,7 @@ candidate lock and an actual offline-installed tree prepared outside the repo.
 
 import argparse
 import base64
+import gzip
 from hashlib import sha256, sha512
 from io import BytesIO
 import json
@@ -18,9 +19,12 @@ import stat
 import subprocess
 import sys
 import tarfile
+import zlib
 
 
 MAX_ARCHIVE = 32 * 1024 * 1024
+# Separate envelope for tar headers, extended metadata and record padding.
+MAX_TAR_STREAM = 2 * MAX_ARCHIVE
 MAX_MEMBER = 8 * 1024 * 1024
 MAX_MEMBERS = 1000
 FIXTURE = "crates/keld-cli/tests/fixtures/gh1404-minimal-app"
@@ -200,16 +204,43 @@ def installed_package_closure(candidate):
     return inventory
 
 
+def iter_tar_members(archive, label):
+    members = iter(archive)
+    while True:
+        try:
+            member = next(members)
+        except StopIteration:
+            return
+        except RecursionError as error:
+            raise ValueError(label + ": tar metadata nesting outside bound") from error
+        yield member
+
+
 def archive_members(data, label):
     require(0 < len(data) <= MAX_ARCHIVE, label + ": archive size outside bound")
     files = {}
     directories = {}
     seen = {}
+    # Bound the complete expanded stream before tarfile can read metadata that
+    # is not returned as an ordinary member.
+    try:
+        with gzip.GzipFile(fileobj=BytesIO(data)) as expanded:
+            tar_bytes = expanded.read(MAX_TAR_STREAM + 1)
+    except EOFError as error:
+        raise ValueError(label + ": truncated gzip archive") from error
+    except zlib.error as error:
+        raise ValueError(label + ": invalid gzip archive") from error
+    require(0 < len(tar_bytes) <= MAX_TAR_STREAM, label + ": expanded tar stream outside bound")
     total = 0
-    with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as archive:
-        members = archive.getmembers()
-        require(0 < len(members) <= MAX_MEMBERS, label + ": archive member count outside bound")
-        for member in members:
+    member_count = 0
+    try:
+        archive = tarfile.open(fileobj=BytesIO(tar_bytes), mode="r:")
+    except RecursionError as error:
+        raise ValueError(label + ": tar metadata nesting outside bound") from error
+    with archive:
+        for member in iter_tar_members(archive, label):
+            member_count += 1
+            require(member_count <= MAX_MEMBERS, label + ": archive member count outside bound")
             if member.isdir() and member.name in {"package", "package/"}:
                 require(member.mode & ~0o777 == 0 and member.mode & 0o022 == 0,
                         label + ": unsafe archive root directory mode")
@@ -237,13 +268,14 @@ def archive_members(data, label):
             require(not member.name.endswith("/"), label + ": unsafe archive file path")
             require(0 <= member.size <= MAX_MEMBER, label + ": oversized archive member")
             require(member.mode & ~0o777 == 0, label + ": invalid archive member mode")
+            require(total + member.size <= MAX_ARCHIVE, label + ": excessive expanded bytes")
             opened = archive.extractfile(member)
             require(opened is not None, label + ": unreadable archive member")
             content = opened.read(MAX_MEMBER + 1)
             require(len(content) == member.size, label + ": truncated archive member")
             total += len(content)
-            require(total <= MAX_ARCHIVE, label + ": excessive expanded bytes")
             files[relative] = (content, member.mode & 0o777)
+    require(member_count > 0, label + ": archive member count outside bound")
     # The archive may omit explicit parent entries, but every file parent must
     # exist in the installed tree. Empty explicit directories must also exist.
     for relative in [*files, *directories]:
@@ -253,7 +285,7 @@ def archive_members(data, label):
             require(parent not in files, label + ": archive file/directory collision")
             directories.setdefault(parent, None)
     require("package.json" in files, label + ": missing package.json")
-    return files, directories, len(members)
+    return files, directories, member_count
 
 
 def compare_installed(candidate, location, files, archive_directories, label):
