@@ -619,8 +619,8 @@ fn run_case(
     require(
         output.status.success(),
         format!(
-            "shipping CLI public Quit failed; exit code {:?}",
-            output.status.code()
+            "shipping CLI public Quit failed; exit code {code:?}",
+            code = output.status.code()
         ),
     )?;
     let exits = [
