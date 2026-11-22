@@ -6,14 +6,17 @@ use super::{
     Arc, AtomicBool, CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED,
     CONTROL_REGISTERED, CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED, Child, ChildPreparer,
     Command, CommandExt, GUARDIAN_SHUTDOWN_DEADLINE, GenerationControlPeer,
-    GenerationControlRecord, GenerationLease, Instant, Mutex, Ordering, PreparedChild,
-    REGISTRATION_ENV, RevocationCause, RuntimeError, SpawnAdmission, Stdio, collapse_failures,
-    control_exchange, control_exchange_with_cancellation, io, lifecycle_error,
+    GenerationControlRecord, GenerationLease, GuardianPhase, GuardianPhaseLedger, Instant, Mutex,
+    Ordering, PreparedChild, REGISTRATION_ENV, RevocationCause, RuntimeError, SpawnAdmission,
+    Stdio, collapse_failures, control_exchange, control_exchange_with_cancellation, io,
+    lifecycle_error,
 };
 
 pub(super) struct GuardedPrimaryPreparer<C> {
     pub(super) command_factory: C,
     pub(super) control: Arc<Mutex<GenerationControlPeer>>,
+    /// First-generation diagnostic only. No ownership or admission authority.
+    pub(super) phase_ledger: Arc<GuardianPhaseLedger>,
     pub(super) host_unavailable: Arc<AtomicBool>,
     pub(super) preparation_cancelled: Arc<AtomicBool>,
     /// First genuine KGC1 PREPARED was validated. A later local factory or
@@ -68,6 +71,13 @@ where
                 ));
             }
         };
+        if attempt == 1 {
+            // The transport-level PREPARED ACK remains a distinct admission
+            // fact. The diagnostic records it only after its nonempty UTF-8
+            // app-link payload was decoded; an invalid reply must not advance
+            // the apparent usable-preparation milestone.
+            self.phase_ledger.record(GuardianPhase::Kgc1Prepared);
+        }
         // The factory MUST NOT install its own `pre_exec` hook. std runs such
         // hooks in registration order, so one added here would run BEFORE
         // the SpawnAdmission gate below, could fork, and would void the
@@ -84,22 +94,36 @@ where
                 ));
             }
         };
+        if attempt == 1 {
+            self.phase_ledger.record(GuardianPhase::BunFactoryReturned);
+        }
         command
             .env_remove(REGISTRATION_ENV)
             .process_group(0)
             .stdin(Stdio::null());
         let registration_control = Arc::clone(&self.control);
+        let phase_for_reporter = Arc::clone(&self.phase_ledger);
         let group_witness = LocalGroupWitness::default();
         let reporter_group_witness = group_witness.clone();
         let admission = SpawnAdmission::install(&mut command, move |pid| {
             reporter_group_witness.register_child(pid)?;
+            if attempt == 1 {
+                // The actual child's gated reporter is alive, but Bun has not
+                // received its Host-approved pre-exec permit.
+                phase_for_reporter.record(GuardianPhase::BunSpawnReported);
+            }
             control_exchange(
                 &registration_control,
                 &GenerationControlRecord::new(CONTROL_SPAWNED, attempt).with_pid(pid),
                 CONTROL_REGISTERED,
                 attempt,
             )
-            .map(|_| ())
+            .map(|_| {
+                if attempt == 1 {
+                    // ACK observed; never infer Bun exec or IPC HELLO from it.
+                    phase_for_reporter.record(GuardianPhase::Kgc1Registered);
+                }
+            })
             .map_err(classify_registration_reply)
         })?;
         Ok(PreparedChild {

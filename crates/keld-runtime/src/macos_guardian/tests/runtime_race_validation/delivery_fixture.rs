@@ -21,6 +21,8 @@ use super::{
 
 pub(super) struct CutFixture {
     pub(super) supervisor: Option<Supervisor>,
+    /// Observations from the real initial KGC1 exchange and pre-exec reporter.
+    pub(super) phase_ledger: Arc<super::super::super::GuardianPhaseLedger>,
     pub(super) plane: ControlPlane,
     pub(super) phase_entered: Receiver<()>,
     pub(super) phase_release: Sender<()>,
@@ -84,6 +86,7 @@ impl CutFixture {
             Ok(command)
         };
         let cancelled = Arc::new(AtomicBool::new(false));
+        let phase_ledger = Arc::new(super::super::super::GuardianPhaseLedger::new());
         let supervisor = Supervisor::start_prepared(
             RestartPolicy::default(),
             ReturnedLeasePreparer {
@@ -94,6 +97,7 @@ impl CutFixture {
                         reader: GenerationControlReader::new(),
                     })),
                     host_unavailable: Arc::new(AtomicBool::new(false)),
+                    phase_ledger: Arc::clone(&phase_ledger),
                     preparation_cancelled: Arc::clone(&cancelled),
                     initial_prepared: Arc::new(AtomicBool::new(false)),
                     refused_registration_retired: Arc::new(AtomicBool::new(false)),
@@ -108,6 +112,7 @@ impl CutFixture {
         std::fs::write(initial_release, b"release-g1").expect("release actual registered G1");
         Self {
             supervisor: Some(supervisor),
+            phase_ledger,
             plane,
             phase_entered,
             phase_release,
@@ -276,4 +281,66 @@ impl Drop for CutFixture {
         let _ = self.plane.commands.send(RelayCommand::AwaitClosure);
         drop(self.supervisor.take());
     }
+}
+
+#[test]
+fn native_initial_guardian_phase_reaches_real_kgc1_registered_but_not_host_hello() {
+    let mut fixture = CutFixture::start(DeliveryCut::Zero);
+    // The fixture uses an already-provisioned private generation-control
+    // stream, not a KGR1 bootstrap handshake. It must not fake that stage.
+    assert!(
+        !fixture
+            .phase_ledger
+            .test_observed(super::super::super::GuardianPhase::Kgr1Authenticated)
+    );
+    let deadline = Instant::now() + COLLECTION;
+    loop {
+        let actual_kgc1_stages = [
+            super::super::super::GuardianPhase::Kgc1Prepared,
+            super::super::super::GuardianPhase::BunFactoryReturned,
+            super::super::super::GuardianPhase::BunSpawnReported,
+            super::super::super::GuardianPhase::Kgc1Registered,
+        ];
+        if actual_kgc1_stages
+            .into_iter()
+            .all(|stage| fixture.phase_ledger.test_observed(stage))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "genuine KGC1 initial stages missing: {}",
+            fixture
+                .phase_ledger
+                .failure_report(super::super::super::GuardianFailureSite::SupervisorTerminal)
+        );
+        std::thread::yield_now();
+    }
+    let receipt = fixture
+        .phase_ledger
+        .failure_report(super::super::super::GuardianFailureSite::SupervisorTerminal);
+    assert!(receipt.contains("kgc1_prepared_ms="));
+    assert!(receipt.contains("bun_factory_ms="));
+    assert!(receipt.contains("bun_spawn_reported_ms="));
+    assert!(receipt.contains("kgc1_registered_ms="));
+    assert!(receipt.contains("host_hello=not-measured"));
+    assert!(receipt.contains("host_init_ack=not-measured"));
+    assert!(receipt.contains("host_bound=not-measured"));
+
+    // Continue through this fixture's genuine successor admission and owned Q
+    // cleanup. Dropping its live Host/relay at this point would require the
+    // rescue path, which is not a green native lifecycle oracle.
+    let response = fixture.release_after_clear();
+    fixture.accept_actual_q();
+    fixture
+        .plane
+        .commands
+        .send(RelayCommand::AwaitClosure)
+        .expect("actual zero-byte successor control close");
+    let observation = fixture.collect(&response);
+    observation
+        .relay
+        .expect("native KGC1 relay joined normally");
+    observation.host.expect("native KGC1 host joined normally");
+    assert!(observation.endpoint_gone && observation.no_effect);
 }

@@ -46,6 +46,9 @@ mod guarded_lease;
 use self::guarded_lease::GuardedPrimaryLease;
 use self::guarded_lease::GuardedPrimaryPreparer;
 
+mod startup_phase;
+use self::startup_phase::{GuardianFailureSite, GuardianPhase, GuardianPhaseLedger};
+
 mod supervised_lease;
 use self::supervised_lease::SupervisedGuardianPreparer;
 
