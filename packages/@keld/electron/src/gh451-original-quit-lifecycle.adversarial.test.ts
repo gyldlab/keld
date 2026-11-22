@@ -406,7 +406,6 @@ test("will-quit veto clears D2 before an already-queued next-turn Quit retry", a
     "before-quit",
     "will-quit",
     "terminal",
-    "quit",
   ]);
   expect(f.read<number>("terminalCalls")).toBe(1);
 });

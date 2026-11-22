@@ -331,7 +331,6 @@ if (mode?.startsWith("zero-will") || mode?.startsWith("zero-dynamic-will-")) {
   });
   app.on("quit", () => {
     quitEvents++;
-    sequence.push("quit");
   });
 }
 const ready = app.whenReady();
@@ -639,13 +638,13 @@ if (mode?.startsWith("scope-")) {
     assert.equal(before, 2, "retry must emit a fresh before-quit");
     assert.equal(willQuit, 2, "retry must emit a fresh will-quit");
     assert.equal(terminals, mode === "zero-will-veto" ? 0 : 1);
-    assert.equal(quitEvents, mode === "zero-will-veto" ? 0 : 1);
-    assert.deepEqual(
-      sequence,
-      mode === "zero-will-veto"
-        ? ["before-quit", "will-quit", "before-quit", "will-quit"]
-        : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
-    );
+    assert.equal(quitEvents, 0, "Host admission is not a terminal quit event");
+    assert.deepEqual(sequence, [
+      "before-quit",
+      "will-quit",
+      "before-quit",
+      "will-quit",
+    ]);
   } else if (
     mode?.startsWith("zero-preexisting-pending-") ||
     mode?.startsWith("zero-before-pending-") ||

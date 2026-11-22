@@ -541,10 +541,9 @@ function quit(): Promise<void> {
       );
     }
     ignoreIfUnawaited(observeReady());
-    return apiApp.quit().then(() => {
-      // The terminal owner has accepted the Quit; no event on rejection/veto.
-      emit("quit");
-    });
+    // Host admission does not provide an Electron Event or a final exit code.
+    // Keep the public "quit" event unsupported until both facts are available.
+    return apiApp.quit();
   });
 }
 
