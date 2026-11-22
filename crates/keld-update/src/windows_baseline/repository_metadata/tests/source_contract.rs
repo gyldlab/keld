@@ -130,6 +130,24 @@ fn check_contract(source: &str) -> Result<(), &'static str> {
 /// This source shape is not an OS writer lease or a D-90 census witness.
 fn d90_callsite_contract(metadata: &str, journal: &str) -> Result<(), &'static str> {
     let visible = lex::hide_inert_text(metadata)?;
+    // Every metadata entry that can read CURRENT or publish a protected record
+    // must refuse pending/root aliases before its first live statement.
+    for method in [
+        "inspect",
+        "publish_pending_anchor",
+        "publish_immutable_generation",
+        "publish_initial_current",
+    ] {
+        let publisher = body(&visible, method)?;
+        exactly(&publisher, "self.require_no_pending()?;", 1)?;
+        let brace = publisher.find('{').ok_or("D90 publisher body missing")?;
+        if !publisher[brace + 1..]
+            .trim_start()
+            .starts_with("self.require_no_pending()?;")
+        {
+            return Err("D90 publisher bypasses first-effect root namespace guard");
+        }
+    }
     let restart = body(&visible, "inspect_restart")?;
     ordered(
         &restart,
@@ -242,6 +260,28 @@ fn removing_only_initial_admission_pending_root_guard_goes_red() {
         d90_callsite_contract(SOURCE, &mutant),
         Err("D90 source lost or duplicated the retained root guard")
     );
+}
+
+#[test]
+fn removing_any_current_publisher_root_fence_goes_red() {
+    d90_callsite_contract(SOURCE, JOURNAL_SOURCE).expect("baseline publisher guard must pass");
+    for method in [
+        "inspect",
+        "publish_pending_anchor",
+        "publish_immutable_generation",
+        "publish_initial_current",
+    ] {
+        let mutant = replace_one_call_in(
+            SOURCE,
+            method,
+            "self.require_no_pending()?;",
+            "let _ = self.repository;",
+        );
+        assert!(
+            d90_callsite_contract(&mutant, JOURNAL_SOURCE).is_err(),
+            "{method}: current or protected publication bypassed the first root check"
+        );
+    }
 }
 
 #[test]
