@@ -4,7 +4,7 @@
 //! packages/@keld/api/src/window-codec.ts; assertions consume their actual bytes.
 use super::super::super::{
     DirectPrimaryOwnerCommand, HostAppError, PlatformPrimaryOwnerHandle, PrimaryLinkIdentity,
-    PrimaryRouter, PrimaryRouterHandle, RecoveryArm, SessionShutdownState,
+    PrimaryRouter, PrimaryRouterHandle, RecoveryArm, SESSION_LIFECYCLE_QUIT, SessionShutdownState,
 };
 use keld_runtime::SupervisorOutcome;
 use keld_runtime::primary::{
@@ -212,6 +212,106 @@ fn setter_requires_native_confirmation(
     })?;
     command(control, "MAX-FACT")?;
     assert_eq!(read_control(control)?, "MAX-FACT Maximized 1:1 2 true");
+    Ok(())
+}
+
+/// GH-451: a real Runtime/Bun-owned Window Create can remain Opening after
+/// Core enqueues native construction. Lifecycle Quit on that SAME authenticated
+/// link owns the terminal transition; a later native build must be cleaned up
+/// without publishing a Created fact or reply for the retired caller.
+/// The controlled native port is not signed AppKit acceptance.
+#[test]
+fn authenticated_opening_create_then_lifecycle_quit_cleans_late_native_build() -> TestResult {
+    let mut role = RoleProcess::start()?;
+    let (bound, mut control) = role.bind()?;
+    let principal = bound.principal();
+    assert_eq!(principal.owner(), RoleOwner::Primary);
+    let (owner_tx, owner_rx) = mpsc::channel();
+    let (native_tx, native_rx) = mpsc::channel();
+    let router = router_for_bound(bound, owner_tx, native_tx)?;
+    let handle = router.handle();
+    assert!(
+        handle
+            .current
+            .lock()
+            .expect("current authenticated role")
+            .as_ref()
+            .expect("active role")
+            .identity
+            == PrimaryLinkIdentity::Role(principal)
+    );
+
+    command(&mut control, "SUBSCRIBE")?;
+    assert_eq!(read_control(&mut control)?, "SUBSCRIBE 1");
+    publish_ready(&role, &handle, &owner_rx)?;
+    command(&mut control, "READY")?;
+    assert_eq!(read_control(&mut control)?, "READY 00");
+
+    command(&mut control, "CREATE-OPENING")?;
+    assert_eq!(read_control(&mut control)?, "CREATE-OPENING SENT");
+    let AppWindowCommand::CreateWindow { build, .. } = native_rx.recv_timeout(BOUND)? else {
+        return Err(std::io::Error::other("authenticated Create must reach native port").into());
+    };
+    assert!(
+        handle.shutdown.is_running(),
+        "opening Create is not terminal"
+    );
+
+    command(&mut control, "QUIT-OPENING")?;
+    assert_eq!(read_control(&mut control)?, "QUIT-OPENING SENT");
+    let DirectPrimaryOwnerCommand::PrepareAcceptedShutdown(prepared) =
+        owner_rx.recv_timeout(BOUND)?
+    else {
+        return Err(std::io::Error::other("Quit did not request owner preparation").into());
+    };
+    prepared.send(Ok(()))?;
+    // This owner request occurs after the actual Quit reply and registry
+    // session_end; retain the reply until the late native result is delivered.
+    let DirectPrimaryOwnerCommand::Shutdown(shutdown) = owner_rx.recv_timeout(BOUND)? else {
+        return Err(std::io::Error::other("accepted Quit did not request owner shutdown").into());
+    };
+    assert_eq!(handle.shutdown.cause(), SESSION_LIFECYCLE_QUIT);
+
+    handle.window_native_event(AppWindowEvent::WindowBuilt {
+        build,
+        view: WebviewId(7),
+        snapshot: native_snapshot(),
+    })?;
+    assert_eq!(
+        native_rx.recv_timeout(BOUND)?,
+        AppWindowCommand::DestroyWindow { view: WebviewId(7) },
+        "late native build must be retired without publishing Created"
+    );
+    assert!(
+        native_rx.try_recv().is_err(),
+        "no duplicate teardown before owner reply"
+    );
+    shutdown.send(Ok(()))?;
+    assert!(matches!(
+        native_rx.recv_timeout(BOUND)?,
+        AppWindowCommand::Quit
+    ));
+    assert!(native_rx.try_recv().is_err(), "one terminal UI command");
+
+    command(&mut control, "OPENING-RESULT")?;
+    let report = read_control(&mut control)?;
+    assert!(
+        report.starts_with("OPENING-RESULT error:")
+            && report.contains(" reply ")
+            && report.ends_with(" 0"),
+        "retired Create must not succeed or mint a Created fact: {report}"
+    );
+
+    router.shutdown()?;
+    handle.window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+    handle.finish_window_facts()?;
+    assert!(
+        native_rx.try_recv().is_err(),
+        "late release cannot duplicate cleanup"
+    );
+    assert!(matches!(role.finish()?, SupervisorOutcome::Stopped));
+    drop(control);
+    drop(role);
     Ok(())
 }
 
