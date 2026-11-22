@@ -237,8 +237,19 @@ fn check_primary_leaf_scope_domain(raw: &str, visible: &str) -> Result<(), &'sta
     let marker = "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = ";
     let expected =
         "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";";
+    // Only the sole declaration and its original signer-hash use may name
+    // this active identity domain. A cfg(test) const plus cfg(not(test))
+    // replacement static would otherwise preserve this test's raw slice.
+    count(visible, "WINDOWS_PUBLISHER_SCOPE_DOMAIN", 2, refusal)?;
     count(visible, marker, 1, refusal)?;
     let at = visible.find(marker).ok_or(refusal)?;
+    let previous_item_end = visible
+        .get(..at)
+        .and_then(|prefix| prefix.rfind(';'))
+        .ok_or(refusal)?;
+    if !visible[previous_item_end + 1..at].trim().is_empty() {
+        return Err(refusal);
+    }
     if raw.get(at..at + expected.len()) != Some(expected) {
         return Err(refusal);
     }
@@ -424,6 +435,44 @@ fn publisher_scope_domain_separation_removal_fails_source_contract() {
         1,
     );
     assert_eq!(contract(&harmless, ROLE), Ok(()));
+}
+
+#[test]
+fn cfg_shadowed_publisher_scope_domain_fails_source_contract() {
+    let original =
+        "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";";
+    assert_eq!(GUARD.matches(original).count(), 1, "stale domain owner");
+    let shadow = GUARD.replacen(
+        original,
+        concat!(
+            "#[cfg(test)]\n",
+            "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";\n",
+            "#[cfg(not(test))]\n",
+            "static WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"\";"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&shadow, ROLE),
+        Err("D-45 publisher scope domain separator"),
+        "a cfg-selected production static cannot override the signed leaf identity domain"
+    );
+    let alternate_macro = GUARD.replacen(
+        original,
+        concat!(
+            "macro_rules! forge_publisher_domain {\n",
+            "    () => { static WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"\"; };\n",
+            "}\n",
+            "#[cfg(not(test))] forge_publisher_domain!();\n",
+            "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&alternate_macro, ROLE),
+        Err("D-45 publisher scope domain separator"),
+        "a macro-generated alternate domain cannot disappear from the source census"
+    );
 }
 
 #[test]
