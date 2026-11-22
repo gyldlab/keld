@@ -14,6 +14,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -41,15 +42,58 @@ function sri(data: Uint8Array): string {
   return "sha512-" + createHash("sha512").update(data).digest("base64");
 }
 
+function gitSafeEnvironment() {
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) {
+    if (name.toUpperCase().startsWith("GIT_")) delete env[name];
+  }
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
+  return env;
+}
+
+function gitArgv(args: string[]): string[] {
+  return ["git", "-c", "core.fsmonitor=false", ...args];
+}
+
+function isExpectedGitRoot(
+  expectedRoot: string,
+  env: ReturnType<typeof gitSafeEnvironment>,
+): boolean {
+  const result = Bun.spawnSync(gitArgv(["rev-parse", "--show-toplevel"]), {
+    cwd: expectedRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 10_000,
+    env,
+  });
+  if (result.exitCode !== 0) return false;
+  try {
+    return (
+      realpathSync(new TextDecoder().decode(result.stdout).trim()) ===
+      realpathSync(expectedRoot)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function run(argv: string[], cwd = repo): string {
-  const result = Bun.spawnSync(argv, {
+  const env = gitSafeEnvironment();
+  if (argv[0] === "git" && argv[1] !== "init") {
+    expect(isExpectedGitRoot(cwd, env), `unexpected Git root for ${cwd}`).toBe(
+      true,
+    );
+  }
+  const command = argv[0] === "git" ? gitArgv(argv.slice(1)) : argv;
+  const result = Bun.spawnSync(command, {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
     timeout: 60_000,
     env: {
-      ...process.env,
-      PATH: dirname(process.execPath) + delimiter + (process.env.PATH ?? ""),
+      ...env,
+      PATH: dirname(process.execPath) + delimiter + (env.PATH ?? ""),
     },
   });
   const stderr = new TextDecoder().decode(result.stderr);
@@ -72,12 +116,15 @@ function selectedCommitProblems(
   if (!/^[0-9a-f]{40}$/.test(selectedCommit)) {
     return ["selected-commit-format"];
   }
+  const env = gitSafeEnvironment();
+  if (!isExpectedGitRoot(gitRoot, env)) return ["git-root-mismatch"];
   function gitCheck(args: string[]): { code: number | null; text: string } {
-    const result = Bun.spawnSync(["git", ...args], {
+    const result = Bun.spawnSync(gitArgv(args), {
       cwd: gitRoot,
       stdout: "pipe",
       stderr: "pipe",
       timeout: 10_000,
+      env,
     });
     return {
       code: result.exitCode,
@@ -391,6 +438,125 @@ test("a different committed Git source HEAD cannot reuse the unchanged selected 
     expect(selectedCommitProblems(healthyHead, scratch)).toContain(
       "selected-commit-not-ancestor",
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("foreign Git environment cannot mask a dirty source in the expected checkout", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-row6-git-env-"));
+  const checkout = join(scratch, "checkout");
+  const foreign = join(scratch, "foreign");
+  const sourcePath = "packages/@keld/api/src/app.ts";
+  const cleanSource = readFileSync(join(originalSource, "app.ts"));
+  const oldWorkTree = process.env.GIT_WORK_TREE;
+  const oldGitDir = process.env.GIT_DIR;
+  try {
+    mkdirSync(dirname(join(checkout, sourcePath)), { recursive: true });
+    mkdirSync(dirname(join(foreign, sourcePath)), { recursive: true });
+    writeFileSync(join(checkout, sourcePath), cleanSource);
+    writeFileSync(join(foreign, sourcePath), cleanSource);
+    run(["git", "init", "-q"], checkout);
+    run(["git", "init", "-q"], foreign);
+    run(["git", "add", sourcePath], checkout);
+    run(
+      [
+        "git",
+        "-c",
+        "user.name=Keld Source Test",
+        "-c",
+        "user.email=source-test@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        "clean expected source",
+      ],
+      checkout,
+    );
+
+    process.env.GIT_WORK_TREE = foreign;
+    expect(
+      run(["git", "diff", "--name-only", "HEAD", "--", sourcePath], checkout),
+    ).toBe("");
+    writeFileSync(
+      join(checkout, sourcePath),
+      Buffer.concat([cleanSource, Buffer.from("\n// dirty expected source\n")]),
+    );
+    expect(
+      run(["git", "diff", "--name-only", "HEAD", "--", sourcePath], checkout),
+    ).toBe(sourcePath);
+
+    process.env.GIT_DIR = join(foreign, ".git");
+    expect(selectedCommitProblems(receipt.selectedSourceCommit)).toEqual([]);
+    expect(
+      selectedCommitProblems(receipt.selectedSourceCommit, join(repo, "tools")),
+    ).toEqual([
+      "git-root-mismatch",
+    ]);
+    expect(() =>
+      run(["git", "rev-parse", "--show-toplevel"], join(repo, "tools")),
+    ).toThrow("unexpected Git root");
+  } finally {
+    if (oldWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+    else process.env.GIT_WORK_TREE = oldWorkTree;
+    if (oldGitDir === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = oldGitDir;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("source checks suppress a repository-local fsmonitor command", () => {
+  if (process.platform === "win32") return;
+  const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-row6-fsmonitor-"));
+  const checkout = join(scratch, "checkout");
+  const hook = join(scratch, "fsmonitor-hook.sh");
+  const marker = join(scratch, "fsmonitor-ran");
+  const sourcePath = "packages/@keld/api/src/app.ts";
+  try {
+    mkdirSync(dirname(join(checkout, sourcePath)), { recursive: true });
+    writeFileSync(join(checkout, sourcePath), readFileSync(join(originalSource, "app.ts")));
+    writeFileSync(
+      hook,
+      "#!/bin/sh\nprintf 'called\\n' >> \"$KELD_FSMONITOR_MARKER\"\nprintf 'token\\n'\n",
+    );
+    chmodSync(hook, 0o755);
+    run(["git", "init", "-q"], checkout);
+    run(["git", "add", sourcePath], checkout);
+    run(
+      [
+        "git",
+        "-c",
+        "user.name=Keld Source Test",
+        "-c",
+        "user.email=source-test@example.invalid",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-qm",
+        "clean source",
+      ],
+      checkout,
+    );
+    run(["git", "config", "--local", "core.fsmonitor", hook], checkout);
+
+    const inheritedEnv = {
+      ...gitSafeEnvironment(),
+      KELD_FSMONITOR_MARKER: marker,
+    };
+    const unguarded = Bun.spawnSync(["git", "status", "--short"], {
+      cwd: checkout,
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 10_000,
+      env: inheritedEnv,
+    });
+    expect(unguarded.exitCode).toBe(0);
+    expect(readFileSync(marker, "utf8")).toBe("called\n");
+
+    rmSync(marker);
+    run(["git", "status", "--short"], checkout);
+    expect(() => readFileSync(marker, "utf8")).toThrow();
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

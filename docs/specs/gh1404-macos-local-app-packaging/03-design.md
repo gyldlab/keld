@@ -216,13 +216,15 @@ native app uses supported boot schema; draw.io consumes its separately committed
 qualified graph/facade schema. Unknown schemas stay errors.
 
 Apple's static validation is not a lock against future mutation. Retain opened roots
-and boot/policy objects, read bounded bytes from those same objects, compare the
-qualified graph/runtime identities at their existing handoff points, and recheck each
-new Bun generation. Reject symlink/path substitution and changed identity at those
-boundaries. Same-user mutation after validation is not cryptographically prevented
-by this local artifact; no race-free or hostile same-user guarantee may be claimed
-from an API call alone. Dynamic resource access remains governed by the applicable
-existing graph and permission contracts.
+and boot/policy objects. Read bounded bytes from those same objects. Compare qualified
+graph/runtime identities at their existing handoff points. Recheck every new Bun
+generation. Reject symlink/path substitution and changed identity at those
+boundaries.
+
+This local artifact cannot cryptographically prevent later same-user
+mutation. Do not claim race-free or hostile same-user guarantees from an API call
+alone. Dynamic resource access remains governed by existing graph and permission
+contracts.
 
 The app bundle is immutable during operation. Runtime state uses existing approved
 state locations; no cache, lock, socket, temporary stage or user document is written

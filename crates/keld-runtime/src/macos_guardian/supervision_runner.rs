@@ -441,7 +441,172 @@ where
 fn report_guardian_phase_failure(ledger: &GuardianPhaseLedger, site: GuardianFailureSite) {
     // Purely observational, failure-only, and deliberately independent of
     // Host KELD-CORE-037 attribution or any authenticated Host link state.
-    let _ = writeln!(io::stderr().lock(), "{}", ledger.failure_report(site));
+    // stderr can be an unread, full pipe. A blocking write would prevent the
+    // caller from returning its original Guardian failure. Keep this one
+    // diagnostic shorter than POSIX PIPE_BUF and emit it opportunistically.
+    const MAX_DIAGNOSTIC_BYTES: usize = 512;
+    let mut report = ledger.failure_report(site);
+    report.push('\n');
+    if report.len() > MAX_DIAGNOSTIC_BYTES {
+        return;
+    }
+    let stderr = io::stderr();
+    let fd = stderr.as_fd();
+    let Ok(raw_flags) = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL) else {
+        return;
+    };
+    let original = nix::fcntl::OFlag::from_bits_truncate(raw_flags);
+    let must_restore = !original.contains(nix::fcntl::OFlag::O_NONBLOCK);
+    if must_restore
+        && nix::fcntl::fcntl(
+            fd,
+            nix::fcntl::FcntlArg::F_SETFL(original | nix::fcntl::OFlag::O_NONBLOCK),
+        )
+        .is_err()
+    {
+        return;
+    }
+    let _ = nix::unistd::write(fd, report.as_bytes());
+    if must_restore {
+        let _ = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(original));
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_stderr_tests {
+    use super::{GuardianFailureSite, GuardianPhaseLedger, report_guardian_phase_failure};
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    use nix::unistd::{pipe, write};
+    use std::io::Read as _;
+    use std::os::fd::AsFd as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const CHILD_FLAG: &str = "KELD_W1_GUARDIAN_DIAGNOSTIC_FIXTURE";
+    const CHILD_RETURNED: &str = "KELD_W1_DIAGNOSTIC_RETURNED";
+
+    #[derive(Clone, Copy, Debug)]
+    enum StderrPipe {
+        Full,
+        Drained,
+        ClosedReader,
+    }
+
+    #[test]
+    fn guardian_stderr_diagnostic_fixture() {
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            return;
+        }
+        let stderr = std::io::stderr();
+        let original = fcntl(stderr.as_fd(), FcntlArg::F_GETFL).expect("stderr flags");
+        report_guardian_phase_failure(
+            &GuardianPhaseLedger::new(),
+            GuardianFailureSite::Registration,
+        );
+        let restored = fcntl(stderr.as_fd(), FcntlArg::F_GETFL).expect("restored stderr flags");
+        // Darwin can set an unrelated 0x10000 status bit after any actual
+        // write. Test the mutable blocking contract instead of that side effect.
+        assert_eq!(
+            restored & OFlag::O_NONBLOCK.bits(),
+            original & OFlag::O_NONBLOCK.bits(),
+            "failure report must restore inherited stderr blocking mode"
+        );
+        println!("{CHILD_RETURNED}");
+    }
+
+    fn diagnostic_subprocess(case: StderrPipe) -> String {
+        let (reader, writer) = pipe().expect("real guardian stderr pipe");
+        if matches!(case, StderrPipe::Full) {
+            let raw_flags = fcntl(writer.as_fd(), FcntlArg::F_GETFL).expect("pipe flags");
+            let original = OFlag::from_bits_truncate(raw_flags);
+            fcntl(
+                writer.as_fd(),
+                FcntlArg::F_SETFL(original | OFlag::O_NONBLOCK),
+            )
+            .expect("make test fill nonblocking");
+            let bytes = [b'X'; 4_096];
+            loop {
+                match write(&writer, &bytes) {
+                    Ok(n) => assert!(n > 0, "pipe fill must progress"),
+                    Err(nix::errno::Errno::EAGAIN) => break,
+                    Err(error) => panic!("pipe fill failed: {error}"),
+                }
+            }
+            fcntl(writer.as_fd(), FcntlArg::F_SETFL(original)).expect("give child blocking stderr");
+        }
+        let reader = if matches!(case, StderrPipe::ClosedReader) {
+            drop(reader);
+            None
+        } else {
+            Some(reader)
+        };
+
+        let mut child = Command::new(std::env::current_exe().expect("libtest executable"))
+            .arg("guardian_stderr_diagnostic_fixture")
+            .arg("--nocapture")
+            .env(CHILD_FLAG, "1")
+            .stderr(Stdio::from(writer))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn isolated guardian stderr probe");
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("observe diagnostic subprocess") {
+                break status;
+            }
+            if start.elapsed() > Duration::from_secs(3) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("guardian diagnostic blocked or failed to exit: {case:?}");
+            }
+            std::thread::yield_now();
+        };
+        assert!(
+            status.success(),
+            "diagnostic subprocess failed ({case:?}): {status}"
+        );
+        let mut stdout = String::new();
+        child
+            .stdout
+            .take()
+            .expect("owned stdout")
+            .read_to_string(&mut stdout)
+            .expect("read child completion marker");
+        assert!(
+            stdout.contains(CHILD_RETURNED),
+            "report did not return: {stdout}"
+        );
+        let mut stderr = String::new();
+        if let Some(reader) = reader {
+            std::fs::File::from(reader)
+                .read_to_string(&mut stderr)
+                .expect("read retained stderr pipe after child exit");
+        }
+        stderr
+    }
+
+    #[test]
+    fn full_unread_stderr_pipe_cannot_block_guardian_failure_return() {
+        let stderr = diagnostic_subprocess(StderrPipe::Full);
+        assert!(
+            !stderr.contains("GH1404_GUARDIAN_PHASE"),
+            "full stderr pipe must not block or report partial diagnostics"
+        );
+    }
+
+    #[test]
+    fn drained_stderr_pipe_keeps_guardian_failure_diagnostic() {
+        let stderr = diagnostic_subprocess(StderrPipe::Drained);
+        assert!(
+            stderr.contains("GH1404_GUARDIAN_PHASE failure-only=true scope=guardian_registration"),
+            "drained diagnostic disappeared: {stderr}"
+        );
+    }
+
+    #[test]
+    fn broken_stderr_pipe_does_not_replace_guardian_failure() {
+        diagnostic_subprocess(StderrPipe::ClosedReader);
+    }
 }
 
 /// Authenticated host shutdown attribution observed by the liveness loop.

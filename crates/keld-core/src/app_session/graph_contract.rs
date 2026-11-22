@@ -787,8 +787,7 @@ fn first_party_file_archive(alias: &str, version: &str, archive_stem: &str) -> b
     {
         return false;
     }
-    let selected = raw.strip_prefix("./").unwrap_or(raw);
-    let segments = selected.strip_prefix('/').unwrap_or(selected);
+    let segments = raw.strip_prefix("./").unwrap_or(raw);
     if segments
         .split('/')
         .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
@@ -796,6 +795,50 @@ fn first_party_file_archive(alias: &str, version: &str, archive_stem: &str) -> b
         return false;
     }
     segments.rsplit('/').next() == Some(format!("{archive_stem}-{version}.tgz").as_str())
+}
+
+#[cfg(test)]
+mod local_first_party_archive_tests {
+    use super::first_party_file_archive;
+
+    #[test]
+    fn absolute_file_aliases_never_match_first_party_archive_receipts() {
+        for alias in [
+            "file:/opt/cache/keld-electron-1.2.3.tgz",
+            "file:.//opt/cache/keld-electron-1.2.3.tgz",
+            "file:.///opt/cache/keld-electron-1.2.3.tgz",
+            "file://opt/cache/keld-electron-1.2.3.tgz",
+        ] {
+            assert!(
+                !first_party_file_archive(alias, "1.2.3", "keld-electron"),
+                "absolute source alias admitted: {alias}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_relative_file_aliases_remain_eligible() {
+        for alias in [
+            "file:keld-electron-1.2.3.tgz",
+            "file:vendor/keld-electron-1.2.3.tgz",
+            "file:./vendor/keld-electron-1.2.3.tgz",
+        ] {
+            assert!(
+                first_party_file_archive(alias, "1.2.3", "keld-electron"),
+                "valid local archive rejected: {alias}"
+            );
+        }
+        for alias in [
+            "file:../keld-electron-1.2.3.tgz",
+            "file:./vendor/../keld-electron-1.2.3.tgz",
+            "file:vendor//keld-electron-1.2.3.tgz",
+        ] {
+            assert!(
+                !first_party_file_archive(alias, "1.2.3", "keld-electron"),
+                "noncanonical archive admitted: {alias}"
+            );
+        }
+    }
 }
 
 fn first_party_sha512_integrity(value: &str) -> bool {
