@@ -1,6 +1,6 @@
 //! Shipping public-main FS component. No renderer-action or Echo-forwarding acceptance.
 use super::project::{Exercise, Policy, PublicFsProject};
-use super::run_launch;
+use super::{QuitBodyReceipt, run_launch, run_launch_with_quit_body_receipt};
 
 #[test]
 fn public_app_fs_component_runs_without_synthetic_input_and_relaunches() {
@@ -47,6 +47,15 @@ fn public_app_fs_component_runs_without_synthetic_input_and_relaunches() {
 fn public_app_explicit_empty_policy_denies_without_effect() {
     let fixture = PublicFsProject::new(Policy::Empty);
     run_launch(&fixture, 0, Exercise::PublicAppComponent);
+}
+
+/// An opt-in second selector witnesses actual Bun HTTP body consumption before
+/// Quit under explicit-empty policy. The original default selector stays intact.
+#[test]
+fn public_app_explicit_empty_policy_verifies_actual_quit_body_before_exit() {
+    let fixture = PublicFsProject::new(Policy::Empty);
+    let mut receipt = QuitBodyReceipt::arm();
+    run_launch_with_quit_body_receipt(&fixture, 0, Exercise::PublicAppComponent, &mut receipt);
 }
 
 #[test]
