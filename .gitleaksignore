@@ -10,3 +10,8 @@
 69ce0730c2b23a631dc8324bafb4264f90a4e394:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
 60160f3ebf4681f6a97ef2ab2e465d5bbbdecc49:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
 bd71f5a4ed7c8a8891294650e1a9cd8860a5c238:packages/@keld/electron/src/preload-runtime.test.ts:generic-api-key:21
+# False positive: the historical GH-1404 Row 6 source test uses the public,
+# deterministic npm archive filename "keld-api-0.0.1.tgz" as an archive path,
+# not an API credential. Suppress only this commit/path/rule/line fingerprint;
+# other historical or future key detections remain active.
+47b72746b6ea653bc1cd2b9b5b0508a1924ce0f9:packages/@keld/api/fixtures/gh1404-row6-source-built.test.ts:generic-api-key:30
