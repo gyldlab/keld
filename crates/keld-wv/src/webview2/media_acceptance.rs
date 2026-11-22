@@ -123,11 +123,12 @@ fn gh814_loaded_module_path(name: &str) -> Result<Option<std::path::PathBuf>, Wv
         return Ok(None);
     }
     let mut buffer = [0_u16; 4096];
+    let capacity = u32::try_from(buffer.len())
+        .map_err(|_| failure("current-process module path buffer exceeds Win32 capacity"))?;
     // SAFETY: the handle came from this process's module table; buffer is
     // writable for exactly capacity UTF-16 units. The API copies a path.
     let count =
-        unsafe { gh814_get_module_file_name_w(handle, buffer.as_mut_ptr(), buffer.len() as u32) }
-            as usize;
+        unsafe { gh814_get_module_file_name_w(handle, buffer.as_mut_ptr(), capacity) } as usize;
     if count == 0 || count >= buffer.len() {
         return Err(failure(
             "current-process module path query failed or truncated",
@@ -151,7 +152,7 @@ fn gh814_module_file_digest(path: &Path) -> Result<String, WvError> {
 
     let mut source = std::fs::File::open(path).map_err(failure)?;
     let mut sha = sha2::Sha256::new();
-    let mut block = [0_u8; 64 * 1024];
+    let mut block = [0_u8; 8 * 1024];
     loop {
         let count = source.read(&mut block).map_err(failure)?;
         if count == 0 {
@@ -1912,6 +1913,26 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         Ok(())
     }
 
+    /// Keep the real first-controller result and its original refusal intact
+    /// while emitting the same-process module and apartment observations.
+    fn gh814_fixture_first_controller(
+        engine: &mut WebView2Engine,
+        apartment_state: impl Fn() -> &'static str,
+    ) -> Result<crate::WebviewId, WvError> {
+        gh814_observe_first_controller("pending", apartment_state(), false);
+        match engine.create(&blank_spec()) {
+            Ok(id) => {
+                gh814_observe_first_controller("ready", apartment_state(), true);
+                Ok(id)
+            }
+            Err(error) => {
+                // Observe after refusal, without delaying or replacing WV-009.
+                gh814_observe_first_controller("failed", apartment_state(), true);
+                Err(error)
+            }
+        }
+    }
+
     #[test]
     #[ignore = "real Windows COM environment ownership and native HWND Close"]
     fn windows_com_engine_lifetime_subprocess() -> Result<(), WvError> {
@@ -1994,32 +2015,9 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             // This is a point observation, not proof of later callback delivery.
             observe_com_phase(gh814_successor_apartment_phase(&apartment()));
             observe_com_phase("successor-create-start");
-            gh814_observe_first_controller(
-                "pending",
-                gh814_successor_apartment_phase(&apartment()),
-                false,
-            );
-            let id = match engine.create(&blank_spec()) {
-                Ok(id) => {
-                    gh814_observe_first_controller(
-                        "ready",
-                        gh814_successor_apartment_phase(&apartment()),
-                        true,
-                    );
-                    id
-                }
-                Err(error) => {
-                    // Preserve the product's original error (including WV-009)
-                    // and its 15-second deadline. The native DLL is observed
-                    // only AFTER refusal, not as a blocking launch preflight.
-                    gh814_observe_first_controller(
-                        "failed",
-                        gh814_successor_apartment_phase(&apartment()),
-                        true,
-                    );
-                    return Err(error);
-                }
-            };
+            let id = gh814_fixture_first_controller(&mut engine, || {
+                gh814_successor_apartment_phase(&apartment())
+            })?;
             observe_com_phase("successor-create-ready");
             let window = &engine.view(id)?.window;
             // SAFETY: this fixture owns the live HWND. Posting the actual Close
