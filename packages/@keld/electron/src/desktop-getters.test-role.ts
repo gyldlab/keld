@@ -42,13 +42,17 @@ const worker = {
 transport.WorkerLink.open = async () =>
   worker as unknown as transport.WorkerLink;
 const electron = await import("./index.ts");
+const publicRuntimeNames = Object.keys(electron)
+  .filter((name) => name !== "default")
+  .sort();
+assert.deepEqual(Object.keys(electron.default).sort(), publicRuntimeNames);
 if (mode === "unselected") {
   assert.equal(electron.screen, undefined);
   assert.equal(electron.nativeTheme, undefined);
   assert.equal(electron.default.screen, undefined);
   assert.equal(electron.default.nativeTheme, undefined);
-  assert.equal(Object.hasOwn(electron.default, "screen"), false);
-  assert.equal(Object.hasOwn(electron.default, "nativeTheme"), false);
+  assert.equal(Object.hasOwn(electron.default, "screen"), true);
+  assert.equal(Object.hasOwn(electron.default, "nativeTheme"), true);
   assert.equal(calls, 0);
 } else {
   const { screen, nativeTheme, app } = electron;

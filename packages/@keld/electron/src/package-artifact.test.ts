@@ -20,6 +20,13 @@ let bindingCalls = 0;
 WorkerLink.open = async () => { bindingCalls++; throw new Error('unexpected Host link'); };
 const bindingNamespace = await import(${path});
 const { default: alias, session, Menu, shell, ClipboardItem, clipboard, nativeImage, ipcMain } = bindingNamespace;
+const publicRuntimeNames = Object.keys(bindingNamespace)
+  .filter((name) => name !== 'default')
+  .sort();
+bindingAssert.deepEqual(Object.keys(alias).sort(), publicRuntimeNames);
+bindingAssert.equal(process.versions.electron, '0.0.1');
+bindingAssert.equal(Object.hasOwn(bindingNamespace, 'ELECTRON_VERSION_SHIM'), false);
+bindingAssert.equal(Object.hasOwn(bindingNamespace, 'isCallError'), false);
 for (const [name, member] of Object.entries({ session, Menu, shell, ClipboardItem, clipboard, nativeImage })) {
   bindingAssert.equal(alias[name], member);
   bindingAssert.ok(member, name);
@@ -132,7 +139,6 @@ const require = createRequire(import.meta.url);
         namedDesktopBindings("electron") +
         `
 const main = await import('electron');
-assert.equal(main.isCallError, isCallError);
 for (const name of ['electron','electron/main','electron/renderer','electron/common','electron/utility']) {
  const esm = await import(name); const cjs = require(name);
  assert.equal(esm.app, main.app); assert.equal(cjs.app, main.app);
@@ -142,7 +148,7 @@ for (const name of ['electron','electron/main','electron/renderer','electron/com
  assert.equal(esm.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
  assert.equal(cjs.dialog.showMessageBoxSync, main.dialog.showMessageBoxSync);
  assert.throws(() => esm.dialog.showMessageBoxSync({ message: 'Confirm' }),
-  error => error.code === (process.platform === 'win32' ? 'KELD-CORE-040' : 'KELD-NATIVE-010'));
+  error => isCallError(error) && error.code === (process.platform === 'win32' ? 'KELD-CORE-040' : 'KELD-NATIVE-010'));
  for (const name of ['session','Menu','shell','ClipboardItem','clipboard','nativeImage']) {
   assert.equal(esm[name], main[name]); assert.equal(cjs[name], main[name]);
  }
@@ -223,7 +229,20 @@ test("source-copy staging preserves one resolvable declared graph", () => {
     writeFileSync(
       join(root, "probe.mjs"),
       namedDesktopBindings("@keld/electron") +
-        `const {isCallError: e} = await import('@keld/electron'); const {isCallError: k} = await import('@keld/kipc'); if(e !== k) throw Error('split transport');`,
+        `
+const { isCallError: apiIsCallError } = await import('@keld/api');
+const { isCallError: kipcIsCallError } = await import('@keld/kipc');
+if (apiIsCallError !== kipcIsCallError) throw Error('split transport');
+if (apiIsCallError(new Error('ordinary'))) throw Error('ordinary Error classified');
+const sourceElectron = await import('@keld/electron');
+try {
+  sourceElectron.dialog.showMessageBoxSync({ message: 'Confirm' });
+  throw Error('expected typed refusal');
+} catch (error) {
+  const expected = process.platform === 'win32' ? 'KELD-CORE-040' : 'KELD-NATIVE-010';
+  if (!apiIsCallError(error) || error.code !== expected) throw error;
+}
+`,
     );
     const p = Bun.spawnSync([process.execPath, join(root, "probe.mjs")], {
       cwd: root,

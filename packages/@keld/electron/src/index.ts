@@ -25,11 +25,7 @@ import {
 } from "./unsupported-bindings.ts";
 
 import { runtimeProcessFactsSelected } from "@keld/kipc";
-import {
-  ELECTRON_VERSION_SHIM,
-  installMainProcessFacts,
-} from "./process-facts.ts";
-export { ELECTRON_VERSION_SHIM };
+import { installMainProcessFacts } from "./process-facts.ts";
 
 installMainProcessFacts(process, runtimeProcessFactsSelected);
 
@@ -72,8 +68,6 @@ export type {
   WebContentsEventMap,
   WebPreferences,
 } from "./browser-window";
-export { isCallError, type KeldCallError } from "@keld/kipc";
-
 const electron = {
   app,
   BrowserWindow,
@@ -83,8 +77,9 @@ const electron = {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
+  screen,
   session,
   shell,
-  ...(screen === undefined ? {} : { nativeTheme, screen }),
 };
 export default electron;
