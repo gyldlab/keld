@@ -722,13 +722,16 @@ fn d45_reject_macro_use_attributes(source: &str) -> Result<(), &'static str> {
             at += 1;
             continue;
         }
-        let opening = if bytes.get(at + 1) == Some(&b'!') && bytes.get(at + 2) == Some(&b'[') {
-            Some(at + 2)
-        } else if bytes.get(at + 1) == Some(&b'[') {
-            Some(at + 1)
+        // Rust permits whitespace (including masked comments) between #,
+        // the optional inner-attribute !, and [. Do not let # [macro_use]
+        // silently import a release-only replacement for matches!.
+        let after_hash = d45_skip_space(bytes, at + 1);
+        let opening = if bytes.get(after_hash) == Some(&b'!') {
+            d45_skip_space(bytes, after_hash + 1)
         } else {
-            None
+            after_hash
         };
+        let opening = (bytes.get(opening) == Some(&b'[')).then_some(opening);
         if let Some(opening) = opening {
             let end = d45_macro_tree_end(bytes, opening)?;
             let contents = &source[opening + 1..end - 1];
@@ -769,6 +772,13 @@ fn d45_reject_active_macro_bindings(
         }
         if at > 0 && d45_ident_byte(bytes[at - 1]) {
             at += 1;
+            continue;
+        }
+        if bytes.get(at..at + 2) == Some(b"r#") {
+            // r#use is an ordinary identifier, never an import keyword.
+            // Consume the full raw identifier before scanning its suffix.
+            let (_, end) = d45_ident_at(source, at);
+            at = end.max(at + 2);
             continue;
         }
         if at >= 2 && bytes.get(at - 2..at) == Some(b"r#") {
@@ -868,6 +878,12 @@ fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str
                     start -= 2;
                 }
                 let name = source[start..end].trim_start_matches("r#");
+                if name.is_empty() {
+                    // Module-level const _: bool = !(false) uses unary !,
+                    // not a macro invocation.
+                    at += 1;
+                    continue;
+                }
                 // The single original std thread_local! test probe is inert
                 // in shipping code. All other module item macro expansions
                 // could inject a release-only import, owner or return path.
@@ -1419,6 +1435,21 @@ fn release_only_module_macro_use_shadow_fails_source_contract() {
         Err(D45_VERIFIED_OWNER_REFUSAL),
         "cfg_attr must not create a release-only macro import"
     );
+    let spaced_shadow = injected.replacen("#[macro_use]", "# [macro_use]", 1);
+    assert_eq!(
+        contract(&spaced_shadow, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "Rust-valid whitespace between # and [ must not hide macro_use"
+    );
+    let spaced_cfg_attr = injected.replace(
+        "#[cfg(not(test))]\n#[macro_use]\n",
+        "# [cfg_attr(not(test), macro_use)]\n",
+    );
+    assert_eq!(
+        contract(&spaced_cfg_attr, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "spaced cfg_attr must not hide a release-only macro import"
+    );
 }
 
 #[test]
@@ -1481,6 +1512,17 @@ fn raw_keyword_identifier_and_inert_module_macro_text_remain_green() {
         contract(&benign, ROLE),
         Ok(()),
         "r#use is an identifier, multiplication is not an import glob, and stringify! is inert"
+    );
+}
+
+#[test]
+fn module_level_unary_negation_is_not_an_item_macro() {
+    let benign =
+        format!("{GUARD}\n#[cfg(not(test))]\nconst _D45_AUDIT_NO_MACRO: bool = !(false);\n");
+    assert_eq!(
+        contract(&benign, ROLE),
+        Ok(()),
+        "ordinary unary ! in a module-level const must not appear to be a macro"
     );
 }
 
