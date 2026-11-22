@@ -103,8 +103,26 @@ function Require-File([string]$Path, [string]$What) {
     return $value
 }
 
+# Hash the exact opened file with the .NET SHA256 API. An ambient PowerShell
+# Get-FileHash function, module or PATH script cannot select the digest source.
+function Get-TrustedFileSha256([string]$Path) {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::Open(
+            $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+        )
+        try {
+            return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 function Require-ExactHash([string]$Path, [string]$Expected, [string]$What) {
-    if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -cne $Expected) {
+    if ((Get-TrustedFileSha256 $Path) -cne $Expected) {
         Refuse "$What differs from its independently pinned SHA256"
     }
 }
@@ -130,6 +148,32 @@ function Require-Amd64Pe([string]$Path, [string]$What) {
     }
 }
 
+# Import the OS-installed Security module by its absolute manifest, then invoke
+# its exported binary cmdlet handle. PATH and PSModulePath must not choose the
+# signer verifier in an unsigned release-build process.
+function Get-TrustedAuthenticodeSignature([string]$Path) {
+    $manifest = [IO.Path]::Combine(
+        $PSHOME, 'Modules', 'Microsoft.PowerShell.Security',
+        'Microsoft.PowerShell.Security.psd1'
+    )
+    if (-not [IO.File]::Exists($manifest)) {
+        Refuse 'built-in Windows PowerShell Security module is absent'
+    }
+    $modules = @(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -ErrorAction Stop)
+    if ($modules.Count -ne 1 -or
+        -not [string]::Equals($modules[0].Path, $manifest,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Refuse 'built-in Windows PowerShell Security module was not loaded from its OS path'
+    }
+    $cmdlet = $modules[0].ExportedCommands['Get-AuthenticodeSignature']
+    if ($cmdlet -isnot [System.Management.Automation.CmdletInfo] -or
+        $cmdlet.ImplementingType.FullName -cne
+            'Microsoft.PowerShell.Commands.GetAuthenticodeSignatureCommand') {
+        Refuse 'built-in Authenticode verification cmdlet is unavailable'
+    }
+    return & $cmdlet -LiteralPath $Path
+}
+
 function Require-SignedImage([string]$Path, [string]$Digest, [string]$Signer, [string]$What) {
     Require-ExactHash $Path $Digest $What
     $item = Get-Item -LiteralPath $Path
@@ -137,7 +181,7 @@ function Require-SignedImage([string]$Path, [string]$Digest, [string]$Signer, [s
         Refuse "$What must be a native .exe"
     }
     Require-Amd64Pe $Path $What
-    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    $signature = Get-TrustedAuthenticodeSignature $Path
     if ($signature.Status.ToString() -cne 'Valid' -or
         $signature.SignatureType.ToString() -cne 'Authenticode' -or
         $null -eq $signature.SignerCertificate -or
@@ -309,7 +353,7 @@ try {
     Require-ExactHash $catalogue $catalogueHash 'commissioned catalogue after compile'
     Require-ExactHash $manifestPath $manifestHash 'W38 manifest after compile'
     Require-ExactHash $provider $providerHash 'W38 provider recipe after compile'
-    $candidateHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    $candidateHash = Get-TrustedFileSha256 $installer
     $null = Require-LocalPath $parent 'compiler output parent'
     $null = Require-LocalPath $temporary 'private compiler sibling'
     if (Test-Path -LiteralPath $destination) {

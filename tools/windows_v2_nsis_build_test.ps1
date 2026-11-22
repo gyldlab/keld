@@ -139,6 +139,45 @@ try {
         throw 'KEL270_NSIS_REPARSE_FAULT: output appeared under outside directory'
     }
 
+    # A fresh -NoProfile child must not run caller-owned scripts that shadow
+    # autoloaded digest/signature commands. All three cases still reach the
+    # original Host's uncommissioned refusal after checking real fixture bytes.
+    $shadowHash = Join-Path $fixture 'shadow-hash'
+    [IO.Directory]::CreateDirectory($shadowHash) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $shadowHash 'Get-FileHash.ps1'),
+        "throw 'KEL270_NSIS_SHADOW_HASH_CALLED'")
+    $originalPath = $env:PATH
+    try {
+        $env:PATH = $shadowHash + ';' + $originalPath
+        Assert-Refusal 'path-shadowed-digest' $builder $arguments $missingHostAuthority
+    } finally {
+        $env:PATH = $originalPath
+    }
+
+    $shadowSigner = Join-Path $fixture 'shadow-signer'
+    [IO.Directory]::CreateDirectory($shadowSigner) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $shadowSigner 'Get-AuthenticodeSignature.ps1'),
+        "throw 'KEL270_NSIS_SHADOW_SIGNER_CALLED'")
+    try {
+        $env:PATH = $shadowSigner + ';' + $originalPath
+        Assert-Refusal 'path-shadowed-signer' $builder $arguments $missingHostAuthority
+    } finally {
+        $env:PATH = $originalPath
+    }
+
+    $shadowModuleRoot = Join-Path $fixture 'shadow-modules'
+    $shadowSecurityModule = Join-Path $shadowModuleRoot 'Microsoft.PowerShell.Security'
+    [IO.Directory]::CreateDirectory($shadowSecurityModule) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $shadowSecurityModule 'Microsoft.PowerShell.Security.psm1'),
+        "function Get-AuthenticodeSignature { throw 'KEL270_NSIS_SHADOW_MODULE_CALLED' }; Export-ModuleMember -Function Get-AuthenticodeSignature")
+    $originalModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = $shadowModuleRoot + ';' + $originalModulePath
+        Assert-Refusal 'module-shadowed-signer' $builder $arguments $missingHostAuthority
+    } finally {
+        $env:PSModulePath = $originalModulePath
+    }
+
     $manifest.artifacts[0].expectedSignerThumbprint = '0' * 40
     $arguments.ExpectedStageManifestSha256 = Write-Manifest $manifest
     Assert-Refusal 'signer-thumbprint-mutation' $builder $arguments 'differs from its reviewed embedded Authenticode signer'
@@ -174,7 +213,9 @@ try {
     if ($parseErrors.Count -ne 0) {
         throw 'KEL270_NSIS_TEST_SOURCE: builder must parse before cleanup test'
     }
-    foreach ($name in @('Refuse', 'Require-LocalPath', 'Remove-OwnedPrivateCandidate')) {
+    foreach ($name in @(
+        'Refuse', 'Require-LocalPath', 'Remove-OwnedPrivateCandidate', 'Require-ExactHash'
+    )) {
         $functions = @($builderAst.FindAll({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -185,6 +226,26 @@ try {
         }
         . ([scriptblock]::Create($functions[0].Extent.Text))
     }
+    # Use the exact production hash helpers with a same-scope malicious
+    # Get-FileHash function. The independently recorded manifest digest is
+    # the oracle; success must not depend on command lookup in this scope.
+    $hashHelpers = @($builderAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq 'Get-TrustedFileSha256'
+    }, $true))
+    if ($hashHelpers.Count -gt 1) {
+        throw 'KEL270_NSIS_TEST_SOURCE: duplicate SHA256 helper'
+    }
+    if ($hashHelpers.Count -eq 1) {
+        . ([scriptblock]::Create($hashHelpers[0].Extent.Text))
+    }
+    & {
+        function Get-FileHash { throw 'KEL270_NSIS_SHADOW_HASH_FUNCTION_CALLED' }
+        Require-ExactHash $manifestPath $arguments.ExpectedStageManifestSha256 'W38 manifest shadow control'
+    }
+    Write-Output 'KEL270_NSIS_SHA256_SHADOW_RESISTANCE_PASS real_file_bytes_verified=true'
+
     $compilerParent = Join-Path $fixture 'compiler-parent'
     [IO.Directory]::CreateDirectory($compilerParent) | Out-Null
     $private = Join-Path $compilerParent ('.keld-v2-nsis-' + [guid]::NewGuid().ToString('N'))
@@ -231,7 +292,7 @@ try {
         throw 'KEL270_NSIS_BUILD_SOURCE_FORBIDDEN: uncommissioned parallel native authority'
     }
     Write-Output 'KEL270_NSIS_SOURCE_PASS original_host=true user_level=true persistent_target_not_selected=true'
-    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=6 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
+    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=9 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
 } finally {
     $expectedFixture = '^keld270-nsis-negative-[a-f0-9]{32}$'
     if ([IO.Path]::GetDirectoryName($fixture) -cne $env:TEMP -or
@@ -244,7 +305,10 @@ try {
         'stage/bin/keld-host.exe', 'stage/bin/keld.exe',
         'stage/bin/keld-role-launcher.exe', 'stage/bin/keld-updater-helper.exe',
         'stage/recovery/keld-host.exe', 'stage/bindings/keld-mcp-stdio.json',
-        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin', 'mutant-builder.ps1'
+        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin', 'mutant-builder.ps1',
+        'shadow-hash/Get-FileHash.ps1',
+        'shadow-signer/Get-AuthenticodeSignature.ps1',
+        'shadow-modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psm1'
     )) {
         $itemPath = Join-Path $fixture $relative
         $item = Get-Item -LiteralPath $itemPath -Force -ErrorAction SilentlyContinue
@@ -264,7 +328,11 @@ try {
         }
         [IO.Directory]::Delete($link, $false)
     }
-    foreach ($relative in @('stage/bin', 'stage/recovery', 'stage/bindings', 'stage', 'compiler-parent', 'outside', '')) {
+    foreach ($relative in @(
+        'stage/bin', 'stage/recovery', 'stage/bindings', 'stage',
+        'compiler-parent', 'outside', 'shadow-hash', 'shadow-signer',
+        'shadow-modules/Microsoft.PowerShell.Security', 'shadow-modules', ''
+    )) {
         $directory = if ($relative -eq '') { $fixture } else { Join-Path $fixture $relative }
         $item = Get-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue
         if ($null -ne $item) {
