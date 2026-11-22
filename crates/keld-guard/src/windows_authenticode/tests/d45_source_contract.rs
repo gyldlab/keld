@@ -192,21 +192,68 @@ fn check_wintrust_verify_close(guard: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-// The primary WinTrust signer leaf is provider-owned. Reading any tail field
-// before checking CRYPT_PROVIDER_CERT::cbStruct is an unsupported ABI access.
+// The live provider-leaf ABI check must be one uninterrupted top-level sequence:
+// retain the original leaf, reject null, read only cbStruct, reject an undersized
+// provider record, then access its remaining fields. An ordered-subsequence check
+// alone falsely accepts an unreachable `if false { ... }` around the size check.
 // This is a source-shape deletion oracle, not a native trust-chain substitute.
+const D45_PRIMARY_LEAF_CALLSITE: &str = concat!(
+    "letcertificate=unsafe{WTHelperGetProvCertFromChain(signer,0)};",
+    "ifcertificate.is_null(){returnErr(windows_identity_error(,,));}",
+    "letcertificate_size=unsafe{(*certificate).cbStruct};",
+    "ifcertificate_size<windows_checked_abi_size::<",
+    "windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>",
+    "(,)?{returnErr(windows_identity_error(,,));}",
+    "letcertificate_ref=unsafe{&*certificate};",
+);
+
 fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
     let leaf = method(guard, "windows_publisher_scope_from_signer")?;
-    in_order(
-        &leaf,
-        &[
-            "letcertificate_size=unsafe{(*certificate).cbStruct};",
-            "ifcertificate_size<windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(",
-            ",)?{returnErr(windows_identity_error(",
-            "letcertificate_ref=unsafe{&*certificate};",
-        ],
-        "D-45 primary leaf provider ABI guard before field access",
-    )
+    let refusal = "D-45 primary leaf provider ABI guard before field access";
+    count(&leaf, D45_PRIMARY_LEAF_CALLSITE, 1, refusal)?;
+    let (prefix, _) = leaf.split_once(D45_PRIMARY_LEAF_CALLSITE).ok_or(refusal)?;
+    // The lexical mask already removes strings, comments and inert macro trees.
+    // The method extractor excludes the outer function braces. Any live block
+    // around this intact sequence could conditionally bypass the guard.
+    let mut depth = 0_usize;
+    for byte in prefix.bytes() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.checked_sub(1).ok_or(refusal)?,
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(refusal);
+    }
+    Ok(())
+}
+
+#[test]
+fn unreachable_primary_leaf_abi_guard_fails_source_contract() {
+    let before =
+        "let certificate_size = unsafe { (*certificate).cbStruct };\n    if certificate_size";
+    let after =
+        "    }\n    // SAFETY: size and provider-owned lifetime are checked before other fields.";
+    assert!(
+        GUARD.contains(before) && GUARD.contains(after),
+        "stale primary leaf mutation anchors"
+    );
+    let wrapped = GUARD.replacen(
+        before,
+        "let certificate_size = unsafe { (*certificate).cbStruct };\n    if false {\n        if certificate_size",
+        1,
+    );
+    let wrapped = wrapped.replacen(
+        after,
+        "    }\n    }\n    // SAFETY: size and provider-owned lifetime are checked before other fields.",
+        1,
+    );
+    assert_eq!(
+        contract(&wrapped, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "a live, balanced but unreachable certificate-size check cannot satisfy the ABI source oracle"
+    );
 }
 
 fn check_native_issuer_policy(guard: &str, role: &str) -> Result<(), &'static str> {
