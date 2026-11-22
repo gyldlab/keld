@@ -457,7 +457,9 @@ test("foreign Git environment cannot mask a dirty source in the expected checkou
     writeFileSync(join(checkout, sourcePath), cleanSource);
     writeFileSync(join(foreign, sourcePath), cleanSource);
     run(["git", "init", "-q"], checkout);
+    run(["git", "config", "maintenance.auto", "false"], checkout);
     run(["git", "init", "-q"], foreign);
+    run(["git", "config", "maintenance.auto", "false"], foreign);
     run(["git", "add", sourcePath], checkout);
     run(
       [
@@ -523,6 +525,7 @@ test("source checks suppress a repository-local fsmonitor command", () => {
     );
     chmodSync(hook, 0o755);
     run(["git", "init", "-q"], checkout);
+    run(["git", "config", "maintenance.auto", "false"], checkout);
     run(["git", "add", sourcePath], checkout);
     run(
       [

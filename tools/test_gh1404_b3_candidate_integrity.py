@@ -1282,6 +1282,7 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
                 return done.stdout.strip()
 
             run_git("init", "-q", str(source))
+            run_git("-C", str(source), "config", "maintenance.auto", "false")
             run_git("-C", str(source), "add", "packages/@keld/api/package.json")
             run_git("-C", str(source), "-c", "user.name=B3 fixture",
                     "-c", "user.email=b3@example.invalid",
@@ -1334,6 +1335,7 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
                 return done.stdout.strip()
 
             run_git("init", "-q", str(source))
+            run_git("-C", str(source), "config", "maintenance.auto", "false")
             path = source / "packages/@keld/check.txt"
             path.parent.mkdir(parents=True)
             path.write_text("selected original\n")
@@ -1383,6 +1385,7 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
                 return done.stdout.strip()
 
             run_git("init", "-q", str(source))
+            run_git("-C", str(source), "config", "maintenance.auto", "false")
             run_git("-C", str(source), "add", "packages/@keld/api/package.json")
             run_git("-C", str(source), "-c", "user.name=B3 fixture",
                     "-c", "user.email=b3@example.invalid",
@@ -1426,6 +1429,7 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
                 return completed.stdout.strip()
 
             run_git("init", "-q", str(source))
+            run_git("-C", str(source), "config", "maintenance.auto", "false")
             (source / "payload.txt").write_text("selected original\n")
             run_git("-C", str(source), "add", "payload.txt")
             run_git("-C", str(source), "-c", "user.name=B3 fixture",
@@ -1457,6 +1461,10 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
             init = subprocess.run(["git", "init", "-q", str(source)],
                                   capture_output=True, text=True, check=False)
             self.assertEqual(init.returncode, 0, init.stderr)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "maintenance.auto", "false"],
+                capture_output=True, text=True, check=True,
+            )
             config = subprocess.run(
                 ["git", "-C", str(source), "config", "core.fsmonitor", str(helper)],
                 capture_output=True, text=True, check=False,
