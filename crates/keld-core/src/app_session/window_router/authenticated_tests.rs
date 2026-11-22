@@ -243,7 +243,7 @@ fn opening_quit_result_rejects_wrong_error_or_link_end() {
 /// Core enqueues native construction. Lifecycle Quit on that SAME authenticated
 /// link owns the terminal transition; a later native build must be cleaned up
 /// without publishing a Created fact or reply for the retired caller.
-/// The controlled native port is not signed AppKit acceptance.
+/// The controlled native port is not signed `AppKit` acceptance.
 #[test]
 fn authenticated_opening_create_then_lifecycle_quit_cleans_late_native_build() -> TestResult {
     let mut role = RoleProcess::start()?;
