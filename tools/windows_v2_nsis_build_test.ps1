@@ -21,7 +21,7 @@ function Run-Builder([string]$Entrypoint, [hashtable]$Values) {
     foreach ($name in @(
         'StageDirectory', 'ExpectedStageManifestSha256', 'ExpectedSourceCommit',
         'CommissionedCatalogue', 'ExpectedCatalogueSha256',
-        'NativeCommissioningGateExe', 'MakensisExe', 'OutputDirectory'
+        'MakensisExe', 'OutputDirectory'
     )) {
         if ($Values.ContainsKey($name)) {
             $arguments += ('-' + $name)
@@ -114,11 +114,11 @@ try {
         ExpectedSourceCommit = $manifest.sourceCommit
         CommissionedCatalogue = $catalogue
         ExpectedCatalogueSha256 = (Get-FileHash -LiteralPath $catalogue -Algorithm SHA256).Hash
-        NativeCommissioningGateExe = Join-Path $fixture 'gate-not-commissioned.exe'
         MakensisExe = Join-Path $fixture 'makensis-not-approved.exe'
         OutputDirectory = $output
     }
-    Assert-Refusal 'missing-native-commissioning' $builder $arguments 'native T81/T20/D90/D46 commissioning gate is unavailable'
+    $missingHostAuthority = 'KEL270-NSIS-OWNER-UNCOMMISSIONED'
+    Assert-Refusal 'missing-original-host-commissioning' $builder $arguments $missingHostAuthority
     $wrongHash = $arguments.Clone()
     $wrongHash.ExpectedStageManifestSha256 = '0' * 64
     Assert-Refusal 'stage-manifest-hash-mismatch' $builder $wrongHash 'differs from its independently pinned SHA256'
@@ -126,13 +126,26 @@ try {
     $wrongCatalogue.ExpectedCatalogueSha256 = '0' * 64
     Assert-Refusal 'catalogue-hash-mismatch' $builder $wrongCatalogue 'differs from its independently pinned SHA256'
 
+    # The final output does not exist yet. Its reparse ancestor must still be
+    # checked before the compiler has any chance to create a private sibling.
+    $outside = Join-Path $fixture 'outside'
+    $alias = Join-Path $fixture 'alias'
+    [IO.Directory]::CreateDirectory($outside) | Out-Null
+    $null = New-Item -ItemType Junction -Path $alias -Target $outside
+    $reparseArgs = $arguments.Clone()
+    $reparseArgs.OutputDirectory = Join-Path $alias 'compiled-must-not-exist'
+    Assert-Refusal 'absent-output-reparse-ancestor' $builder $reparseArgs 'reparse-point ancestor'
+    if (Test-Path -LiteralPath $reparseArgs.OutputDirectory) {
+        throw 'KEL270_NSIS_REPARSE_FAULT: output appeared under outside directory'
+    }
+
     $manifest.artifacts[0].expectedSignerThumbprint = '0' * 40
     $arguments.ExpectedStageManifestSha256 = Write-Manifest $manifest
     Assert-Refusal 'signer-thumbprint-mutation' $builder $arguments 'differs from its reviewed embedded Authenticode signer'
 
     # RED control: only in this disposable test source, remove the exact signer
     # thumbprint comparison. The independent signer-refusal oracle must turn RED.
-    # This mutant still cannot compile: its native commissioning gate is missing.
+    # This mutant still cannot compile: the original Host contract is missing.
     $original = [IO.File]::ReadAllText($builder)
     $needle = '$signature.SignerCertificate.Thumbprint.ToUpperInvariant() -cne $Signer'
     if (-not $original.Contains($needle)) {
@@ -143,11 +156,51 @@ try {
     $mutantResult = Run-Builder $mutant $arguments
     if ($mutantResult.ExitCode -eq 0 -or
         $mutantResult.Output -match 'differs from its reviewed embedded Authenticode signer' -or
-        $mutantResult.Output -notmatch 'native T81/T20/D90/D46 commissioning gate is unavailable' -or
+        $mutantResult.Output -notmatch [regex]::Escape($missingHostAuthority) -or
         (Test-Path -LiteralPath $output)) {
         throw "KEL270_NSIS_SIGNER_MUTANT_UNEXPECTED exit=$($mutantResult.ExitCode) output=$($mutantResult.Output)"
     }
-    Write-Output 'KEL270_NSIS_SIGNER_MUTATION_RED expected_signer_refusal_removed=true native_gate_still_closed=true'
+    Write-Output 'KEL270_NSIS_SIGNER_MUTATION_RED expected_signer_refusal_removed=true original_host_gate_still_closed=true'
+
+    # Actual Windows filesystem cleanup oracle for an injected compiler fault.
+    # Load ONLY the three private production functions from their AST. Running
+    # the builder as a whole would bypass the uncommissioned Host authority;
+    # this controlled fault does not run makensis or claim compiler acceptance.
+    $parseTokens = $null
+    $parseErrors = $null
+    $builderAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $builder, [ref]$parseTokens, [ref]$parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw 'KEL270_NSIS_TEST_SOURCE: builder must parse before cleanup test'
+    }
+    foreach ($name in @('Refuse', 'Require-LocalPath', 'Remove-OwnedPrivateCandidate')) {
+        $functions = @($builderAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq $name
+        }, $true))
+        if ($functions.Count -ne 1) {
+            throw "KEL270_NSIS_TEST_SOURCE: missing unique original $name function"
+        }
+        . ([scriptblock]::Create($functions[0].Extent.Text))
+    }
+    $compilerParent = Join-Path $fixture 'compiler-parent'
+    [IO.Directory]::CreateDirectory($compilerParent) | Out-Null
+    $private = Join-Path $compilerParent ('.keld-v2-nsis-' + [guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($private) | Out-Null
+    $partial = Join-Path $private 'keld-v2-peruserdirect-UNSIGNED.exe'
+    [IO.File]::WriteAllBytes($partial, [byte[]](0x4d, 0x5a, 0x00))
+    $fakePublished = Join-Path $compilerParent 'refused-final-output'
+    try {
+        throw 'INJECTED_NSIS_COMPILER_NONZERO_AFTER_PARTIAL_OUTPUT'
+    } catch {
+        Remove-OwnedPrivateCandidate $private $compilerParent
+    }
+    if ((Test-Path -LiteralPath $private) -or (Test-Path -LiteralPath $fakePublished)) {
+        throw 'KEL270_NSIS_COMPILER_FAULT: partial unsigned output survived refusal'
+    }
+    Write-Output 'KEL270_NSIS_COMPILER_PARTIAL_CLEANUP_PASS native_file_removed=true final_output_absent=true'
 
     # Static source checks: no caller-chosen installation root, persistence
     # side effect, elevation or NSIS shell execution; only original Host role.
@@ -162,8 +215,23 @@ try {
     if ($sourceText -match '(?i)\$INSTDIR|WriteReg|WriteUninstaller|ExecShell|RequestExecutionLevel\s+admin|File\s+/r|!system|\$PROGRAMFILES') {
         throw 'KEL270_NSIS_SOURCE_FORBIDDEN: native installer source contains an unapproved install or authority action'
     }
+    $builderText = [IO.File]::ReadAllText($builder)
+    foreach ($contract in @(
+        'Remove-OwnedPrivateCandidate',
+        'Remove-OwnedPrivateCandidate $temporary $parent',
+        '[IO.Directory]::Move($temporary, $destination)',
+        'KEL270_NSIS_UNSIGNED_CANDIDATE_COMPILED'
+    )) {
+        if (-not $builderText.Contains($contract)) {
+            throw "KEL270_NSIS_BUILD_SOURCE_MISSING: $contract"
+        }
+    }
+    if ($builderText.Contains('NativeCommissioningGateExe') -or
+        $builderText.Contains('--verify-windows-v2-nsis-inputs-v1')) {
+        throw 'KEL270_NSIS_BUILD_SOURCE_FORBIDDEN: uncommissioned parallel native authority'
+    }
     Write-Output 'KEL270_NSIS_SOURCE_PASS original_host=true user_level=true persistent_target_not_selected=true'
-    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=5 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
+    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=6 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
 } finally {
     $expectedFixture = '^keld270-nsis-negative-[a-f0-9]{32}$'
     if ([IO.Path]::GetDirectoryName($fixture) -cne $env:TEMP -or
@@ -188,7 +256,15 @@ try {
             [IO.File]::Delete($itemPath)
         }
     }
-    foreach ($relative in @('stage/bin', 'stage/recovery', 'stage/bindings', 'stage', '')) {
+    $link = Join-Path $fixture 'alias'
+    $linkItem = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+    if ($null -ne $linkItem) {
+        if (($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            throw 'KEL270_NSIS_TEST_CLEANUP: alias is no longer a reparse point'
+        }
+        [IO.Directory]::Delete($link, $false)
+    }
+    foreach ($relative in @('stage/bin', 'stage/recovery', 'stage/bindings', 'stage', 'compiler-parent', 'outside', '')) {
         $directory = if ($relative -eq '') { $fixture } else { Join-Path $fixture $relative }
         $item = Get-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue
         if ($null -ne $item) {

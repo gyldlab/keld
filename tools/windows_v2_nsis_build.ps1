@@ -1,15 +1,13 @@
 # KEL-270 Windows v2 PerUserDirect NSIS builder (offline, unsigned candidate).
 # Takes the W38 five-image stage; never embeds identity into a signed executable.
 # The fixed NSIS source invokes the original signed Host's private install role.
-# No invocation can compile until the native T81/T20/D90/D46 owner publishes and
-# independently reviews a real verifier and the NSIS compiler binary pins below.
+# No invocation can compile until the ORIGINAL Host's T81/T20/D90/D46 owners
+# commission its existing initial-install contract and the NSIS compiler pin.
 # This script never signs, installs, elevates or publishes a release.
 #
-# Once native ownership is commissioned, the native verifier must independently
-# prove the exact signed App/Recovery roles and catalogue and the presence of
-# reviewed T20/D90/D46 native admission implementations in those original
-# binaries. A live D90 census and D46 one-use permit MUST be produced later by
-# the admitted original Host for the actual target user, not at build time.
+# Commissioning must be proven by the original Host/Guard/KEL-53 owners, not a
+# new parallel verifier. A live D90 census and D46 one-use permit MUST be
+# produced later by the admitted Host for the actual target user.
 [CmdletBinding()]
 param(
     [string]$StageDirectory,
@@ -17,7 +15,6 @@ param(
     [string]$ExpectedSourceCommit,
     [string]$CommissionedCatalogue,
     [string]$ExpectedCatalogueSha256,
-    [string]$NativeCommissioningGateExe,
     [string]$MakensisExe,
     [string]$OutputDirectory
 )
@@ -27,12 +24,8 @@ $ErrorActionPreference = 'Stop'
 
 # The original KEL-270 Host always returns KELD-HOST-INITIAL-002 until its
 # catalogue and native issuer are commissioned. No source-approved gate or
-# compiler digests exist on PR1593 a609eb0b. These are deliberately EMPTY.
-# Only the actual owners may approve exact original binary hashes on a later
-# independently reviewed source change; caller-provided booleans/digests cannot
-# fill or override these pins.
-$reviewedNativeGateSha256 = ''
-$reviewedNativeGateSignerThumbprint = ''
+# compiler digests exist on PR1593 26fbefd. The compiler pin is deliberately
+# EMPTY; its independent review is separate from source checks and Host trust.
 $reviewedMakensisSha256 = ''
 
 function Refuse([string]$Reason) {
@@ -154,6 +147,28 @@ function Require-SignedImage([string]$Path, [string]$Digest, [string]$Signer, [s
     Require-ExactHash $Path $Digest $What
 }
 
+# A failed compiler may leave only this script's private unsigned candidate.
+# Never descend into or remove an unexpected entry; retain it for diagnosis.
+function Remove-OwnedPrivateCandidate([string]$Temporary, [string]$ExpectedParent) {
+    if (-not [IO.Directory]::Exists($Temporary)) { return }
+    if ([IO.Path]::GetDirectoryName($Temporary) -cne $ExpectedParent -or
+        [IO.Path]::GetFileName($Temporary) -cnotmatch '^\.keld-v2-nsis-[0-9a-f]{32}$') {
+        Refuse 'compiler cleanup lost its exact private sibling'
+    }
+    $null = Require-LocalPath $Temporary 'compiler temporary sibling'
+    $items = @(Get-ChildItem -LiteralPath $Temporary -Force)
+    $candidate = Join-Path $Temporary 'keld-v2-peruserdirect-UNSIGNED.exe'
+    foreach ($item in $items) {
+        if ($item -isnot [IO.FileInfo] -or
+            $item.FullName -cne $candidate -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            Refuse 'compiler cleanup found a foreign or reparse-point object'
+        }
+        [IO.File]::Delete($candidate)
+    }
+    [IO.Directory]::Delete($Temporary, $false)
+}
+
 foreach ($field in @(
     'StageDirectory', 'ExpectedStageManifestSha256', 'ExpectedSourceCommit',
     'CommissionedCatalogue', 'ExpectedCatalogueSha256', 'OutputDirectory'
@@ -239,60 +254,78 @@ Require-ExactHash $provider $providerHash 'W38 provider recipe'
 $catalogue = Require-File $CommissionedCatalogue 'commissioned catalogue candidate'
 Require-ExactHash $catalogue $catalogueHash 'commissioned catalogue candidate'
 
-# This is the mandatory native commissioning boundary. A signed stage manifest,
-# user-supplied catalogue/hash, or environment toggle cannot construct it.
-# The actual owner must provide an independently reviewed versioned verifier
-# with real T81 signer/profile, T20 catalogue, D90 census and D46 issuer proof.
-# Until that owner pins its genuine verifier in SOURCE, refuse before writing.
-if ($reviewedNativeGateSha256 -cnotmatch '^[0-9A-F]{64}$' -or
-    $reviewedNativeGateSignerThumbprint -cnotmatch '^[0-9A-F]{40}$') {
-    Refuse 'native T81/T20/D90/D46 commissioning gate is unavailable on this source head'
-}
-$gate = Require-File $NativeCommissioningGateExe 'reviewed native commissioning gate'
-Require-SignedImage $gate $reviewedNativeGateSha256 $reviewedNativeGateSignerThumbprint 'native commissioning gate'
-# The owner of this gate must review and implement this PRIVATE verify-only call
-# before its pins can be approved. The result binds immutable manifest/catalogue
-# hashes and the shipped original Host's native enforcement; it does not mint
-# an installation-specific D46 permit or attest a future user's D90 census.
-$gateOutput = @(& $gate '--verify-windows-v2-nsis-inputs-v1' $manifestPath $catalogue)
-$gateExit = $LASTEXITCODE
-$gateSuccess = "KEL270_NSIS_INPUTS_ADMITTED stage_sha256=$manifestHash catalogue_sha256=$catalogueHash"
-if ($gateExit -ne 0 -or $gateOutput.Count -ne 1 -or $gateOutput[0] -cne $gateSuccess) {
-    Refuse 'native commissioning gate did not issue the exact build-admission receipt'
-}
+# This is the currently missing ORIGINAL-HOST native commissioning boundary.
+# A signed W38 stage or caller-supplied catalogue/hash cannot authorize it.
+# The published original Host returns KELD-HOST-INITIAL-002 on this role. No
+# safe read-only predicate exists to establish its commissioned T81/T20/D90/D46
+# implementations for this build. Never add a second authority executable or
+# treat a receipt/boolean from arguments as a permit. The original owners must
+# first land a reviewed, non-effectful predicate on their existing boundary.
+Refuse 'KEL270-NSIS-OWNER-UNCOMMISSIONED original Host T81/T20/D90/D46 catalogue and first-effect authority are not commissioned'
+
+# Only a future reviewed original-Host integration may reach this toolchain
+# branch. The source-controlled compiler pin must also name real reviewed
+# makensis bytes; a user-supplied compiler digest is never enough.
 if ($reviewedMakensisSha256 -cnotmatch '^[0-9A-F]{64}$') {
     Refuse 'reviewed NSIS compiler binary is not pinned on this source head'
 }
 $compiler = Require-File $MakensisExe 'reviewed makensis.exe'
 Require-ExactHash $compiler $reviewedMakensisSha256 'reviewed makensis.exe'
 $source = Require-File (Join-Path $PSScriptRoot 'windows_v2_nsis_installer.nsi') 'fixed NSIS builder source'
-$installer = Join-Path $destination 'keld-v2-peruserdirect-UNSIGNED.exe'
-
-# Only now, after the same native owner's signed admission, may the offline
-# packager produce an unsigned candidate. File paths are constrained above;
-# executable and catalogue contents are copied unchanged by NSIS File.
-$null = New-Item -ItemType Directory -Path $destination -ErrorAction Stop
-$defines = @(
-    '/NOCONFIG', '/WX', '/INPUTCHARSET', 'UTF8',
-    "/DKELD_UNSIGNED_OUTPUT=$installer",
-    "/DKELD_APP_HOST=$($images[0].source)",
-    "/DKELD_RECOVERY_HOST=$($images[1].source)",
-    "/DKELD_CLI=$($images[2].source)",
-    "/DKELD_ROLE_LAUNCHER=$($images[3].source)",
-    "/DKELD_UPDATER_HELPER=$($images[4].source)",
-    "/DKELD_PROVIDER_RECIPE=$provider",
-    "/DKELD_CATALOGUE=$catalogue",
-    $source
-)
-$null = & $compiler @defines
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-    Refuse 'pinned NSIS compilation failed; no installer acceptance can be claimed'
+$parent = Split-Path -Parent $destination
+$null = Require-LocalPath $parent 'compiler output parent'
+$temporary = Join-Path $parent ('.keld-v2-nsis-' + [guid]::NewGuid().ToString('N'))
+$installer = Join-Path $temporary 'keld-v2-peruserdirect-UNSIGNED.exe'
+$temporaryCreated = $false
+try {
+    if (Test-Path -LiteralPath $temporary) {
+        Refuse 'private compiler sibling already exists'
+    }
+    [IO.Directory]::CreateDirectory($temporary) | Out-Null
+    $temporaryCreated = $true
+    $null = Require-LocalPath $temporary 'private compiler sibling'
+    if (@(Get-ChildItem -LiteralPath $temporary -Force).Count -ne 0) {
+        Refuse 'private compiler sibling is not empty'
+    }
+    $defines = @(
+        '/NOCONFIG', '/WX', '/INPUTCHARSET', 'UTF8',
+        "/DKELD_UNSIGNED_OUTPUT=$installer",
+        "/DKELD_APP_HOST=$($images[0].source)",
+        "/DKELD_RECOVERY_HOST=$($images[1].source)",
+        "/DKELD_CLI=$($images[2].source)",
+        "/DKELD_ROLE_LAUNCHER=$($images[3].source)",
+        "/DKELD_UPDATER_HELPER=$($images[4].source)",
+        "/DKELD_PROVIDER_RECIPE=$provider",
+        "/DKELD_CATALOGUE=$catalogue",
+        $source
+    )
+    $null = & $compiler @defines
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        Refuse 'pinned NSIS compilation failed; no installer acceptance can be claimed'
+    }
+    foreach ($image in $images) {
+        Require-ExactHash $image.source $image.digest "$($image.role) after compile"
+    }
+    Require-ExactHash $catalogue $catalogueHash 'commissioned catalogue after compile'
+    Require-ExactHash $manifestPath $manifestHash 'W38 manifest after compile'
+    Require-ExactHash $provider $providerHash 'W38 provider recipe after compile'
+    $candidateHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    $null = Require-LocalPath $parent 'compiler output parent'
+    $null = Require-LocalPath $temporary 'private compiler sibling'
+    if (Test-Path -LiteralPath $destination) {
+        Refuse 'compiler output destination appeared before publication'
+    }
+    [IO.Directory]::Move($temporary, $destination)
+    $temporaryCreated = $false
+} catch {
+    $failure = $_
+    if ($temporaryCreated) {
+        try {
+            Remove-OwnedPrivateCandidate $temporary $parent
+        } catch {
+            throw "KEL270-NSIS-BUILD: compiler cleanup refused; original failure: $failure; cleanup failure: $_"
+        }
+    }
+    throw $failure
 }
-foreach ($image in $images) {
-    Require-ExactHash $image.source $image.digest "$($image.role) after compile"
-}
-Require-ExactHash $catalogue $catalogueHash 'commissioned catalogue after compile'
-Require-ExactHash $manifestPath $manifestHash 'W38 manifest after compile'
-Require-ExactHash $provider $providerHash 'W38 provider recipe after compile'
-$candidateHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
 Write-Output "KEL270_NSIS_UNSIGNED_CANDIDATE_COMPILED sha256=$candidateHash signing=NOT_RUN installed=NOT_RUN public_trust_release=NOT_VERIFIED"
