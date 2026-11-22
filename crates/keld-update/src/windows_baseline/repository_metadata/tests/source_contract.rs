@@ -140,8 +140,8 @@ fn d90_callsite_contract(metadata: &str, journal: &str) -> Result<(), &'static s
     ] {
         let publisher = body(&visible, method)?;
         exactly(&publisher, "self.require_no_pending()?;", 1)?;
-        let brace = publisher.find('{').ok_or("D90 publisher body missing")?;
-        if !publisher[brace + 1..]
+        // method_span already starts after the function's opening brace.
+        if !publisher
             .trim_start()
             .starts_with("self.require_no_pending()?;")
         {
