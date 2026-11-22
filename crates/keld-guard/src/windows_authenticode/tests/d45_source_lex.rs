@@ -55,10 +55,32 @@ fn mask_source(source: &str, hide_macros: bool) -> Result<String, &'static str> 
             }
         }
     }
+    // Rust's lexer recognizes Pattern_White_Space as interchangeable token
+    // separators. Preserve byte offsets while making its non-ASCII members
+    // visible to the ASCII token scanners below. Comments and literals have
+    // already been masked, so their contents cannot become active code.
+    normalize_rust_whitespace(&mut visible);
     if hide_macros {
         hide_macro_trees(&mut visible)?;
     }
     String::from_utf8(visible).map_err(|_| "invalid D-45 source encoding")
+}
+
+fn normalize_rust_whitespace(visible: &mut [u8]) {
+    let mut at = 0;
+    while at < visible.len() {
+        let width = match visible.get(at..) {
+            Some([0xc2, 0x85, ..]) => 2, // U+0085
+            Some([0xe2, 0x80, 0x8e | 0x8f | 0xa8 | 0xa9, ..]) => 3,
+            // U+200E, U+200F, U+2028 and U+2029.
+            _ => {
+                at += 1;
+                continue;
+            }
+        };
+        visible[at..at + width].fill(b' ');
+        at += width;
+    }
 }
 
 fn scan_literal(source: &str, at: &mut usize) -> Result<Option<usize>, &'static str> {

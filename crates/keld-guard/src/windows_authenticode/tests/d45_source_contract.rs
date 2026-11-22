@@ -815,6 +815,24 @@ fn d45_reject_active_macro_bindings(
     Ok(())
 }
 
+// The only allowed item macro expansion is the original test probe.
+// Compare its immediately preceding cfg attribute as Rust tokens, not an
+// exact string spelling: # [ cfg ( test ) ] is the same as #[cfg(test)].
+fn d45_has_test_probe_cfg(source: &str, before: usize) -> bool {
+    let prefix = source[..before].trim_end();
+    if !prefix.ends_with(']') {
+        return false;
+    }
+    let Some(opening) = prefix.rfind('[') else {
+        return false;
+    };
+    if compact(&prefix[opening + 1..prefix.len() - 1]) != "cfg(test)" {
+        return false;
+    }
+    let marker = prefix[..opening].trim_end();
+    marker.ends_with('#') && !marker.ends_with("##")
+}
+
 fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str> {
     let bytes = source.as_bytes();
     let mut depth = 0_usize;
@@ -891,7 +909,7 @@ fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str
                 if name != "thread_local"
                     || source[start..end].starts_with("r#")
                     || test_probe_macros != 0
-                    || !source[..start].trim_end().ends_with("#[cfg(test)]")
+                    || !d45_has_test_probe_cfg(source, start)
                 {
                     return Err(D45_VERIFIED_OWNER_REFUSAL);
                 }
@@ -1590,6 +1608,69 @@ fn imported_raw_macro_rules_forgery_fails_verified_caller_contract() {
         contract(&injected, ROLE),
         Err(D45_VERIFIED_OWNER_REFUSAL),
         "an imported r#macro_rules! invocation must not forge Ok before WinTrust"
+    );
+}
+
+#[test]
+fn rust_unicode_whitespace_cannot_hide_release_macro_shadow() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale WinTrust policy");
+    for separator in ['\u{0085}', '\u{200e}', '\u{200f}', '\u{2028}', '\u{2029}'] {
+        let mut declaration = String::from("    macro_rules!");
+        declaration.push(separator);
+        declaration.push_str(concat!(
+            "matches { ($($tokens:tt)*) => {{\n",
+            "    if !cfg!(test) {\n",
+            "        return Ok(WindowsTrustObservation {\n",
+            "            identity: WindowsAuthenticodeIdentity {\n",
+            "                publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "            }, d45_chain_facts: None,\n",
+            "        });\n",
+            "    }\n",
+            "    ::std::matches!($($tokens)*)\n",
+            "}}; }\n"
+        ));
+        let injected = GUARD.replacen(offline, &format!("{declaration}{offline}"), 1);
+        assert_eq!(
+            contract(&injected, ROLE),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "Unicode token whitespace must not hide local macro_rules! matches for U+{:04X}",
+            separator as u32
+        );
+        let inert = GUARD.replacen(
+            offline,
+            &format!("    let _audit = stringify!(unknown!{separator}());\n{offline}"),
+            1,
+        );
+        assert_eq!(
+            contract(&inert, ROLE),
+            Ok(()),
+            "inert stringify! with Unicode token whitespace stays inert for U+{:04X}",
+            separator as u32
+        );
+    }
+}
+
+#[test]
+fn spaced_test_probe_cfg_is_not_a_release_macro_expansion() {
+    let original = "#[cfg(test)]\nthread_local! {";
+    assert_eq!(GUARD.matches(original).count(), 1, "stale test probe");
+    for replacement in [
+        "# [cfg(test)]\nthread_local! {",
+        "# /*inert*/ [ cfg ( test ) ]\nthread_local! {",
+    ] {
+        let benign = GUARD.replacen(original, replacement, 1);
+        assert_eq!(
+            contract(&benign, ROLE),
+            Ok(()),
+            "equivalent test-only cfg spelling cannot cause a false refusal"
+        );
+    }
+    let release_probe = GUARD.replacen(original, "# [cfg(not(test))]\nthread_local! {", 1);
+    assert_eq!(
+        contract(&release_probe, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a release-only thread_local item macro is not the approved test probe"
     );
 }
 
