@@ -5,6 +5,17 @@
 //! accepting an inert string, character, comment or macro as live Rust code.
 
 pub(super) fn hide_inert_text(source: &str) -> Result<String, &'static str> {
+    mask_source(source, true)
+}
+
+// The publisher-scope function must not invoke active macros at all. Keep
+// macros visible while masking comments and literals so a macro expansion that
+// returns a fabricated identity cannot disappear from its source contract.
+pub(super) fn hide_comments_and_literals(source: &str) -> Result<String, &'static str> {
+    mask_source(source, false)
+}
+
+fn mask_source(source: &str, hide_macros: bool) -> Result<String, &'static str> {
     let bytes = source.as_bytes();
     let mut visible = bytes.to_vec();
     let mut at = 0;
@@ -44,7 +55,9 @@ pub(super) fn hide_inert_text(source: &str) -> Result<String, &'static str> {
             }
         }
     }
-    hide_macro_trees(&mut visible)?;
+    if hide_macros {
+        hide_macro_trees(&mut visible)?;
+    }
     String::from_utf8(visible).map_err(|_| "invalid D-45 source encoding")
 }
 

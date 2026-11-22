@@ -5,7 +5,7 @@
 //! production callsites against deletion or an inert-text replacement. They
 //! cannot replace a real Windows signed-Host, revocation or CLOSE test.
 
-use super::d45_source_lex::{compact, function_body, hide_inert_text};
+use super::d45_source_lex::{compact, function_body, hide_comments_and_literals, hide_inert_text};
 use super::d45_source_mutations::MUTANTS;
 
 const GUARD: &str = include_str!("../../windows_authenticode.rs");
@@ -46,11 +46,14 @@ fn method(source: &str, name: &str) -> Result<String, &'static str> {
 }
 
 fn contract(guard: &str, role: &str) -> Result<(), &'static str> {
+    let raw_guard = guard;
+    let macro_visible_guard = hide_comments_and_literals(guard)?;
     let guard = hide_inert_text(guard)?;
     let role = hide_inert_text(role)?;
     check_retained_ownership(&guard)?;
     check_wintrust_verify_close(&guard)?;
-    check_primary_leaf_certificate_abi(&guard)?;
+    check_primary_leaf_scope_domain(raw_guard, &guard)?;
+    check_primary_leaf_certificate_abi(&guard, &macro_visible_guard)?;
     check_native_issuer_policy(&guard, &role)
 }
 
@@ -229,20 +232,54 @@ const D45_PRIMARY_LEAF_IDENTITY_TAIL: &str = concat!(
     "Ok(publisher_scope)",
 );
 
-fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
+fn check_primary_leaf_scope_domain(raw: &str, visible: &str) -> Result<(), &'static str> {
+    let refusal = "D-45 publisher scope domain separator";
+    let marker = "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = ";
+    let expected =
+        "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";";
+    count(visible, marker, 1, refusal)?;
+    let at = visible.find(marker).ok_or(refusal)?;
+    if raw.get(at..at + expected.len()) != Some(expected) {
+        return Err(refusal);
+    }
+    Ok(())
+}
+
+fn check_primary_leaf_certificate_abi(
+    guard: &str,
+    macro_visible_guard: &str,
+) -> Result<(), &'static str> {
     let leaf = method(guard, "windows_publisher_scope_from_signer")?;
     let refusal = "D-45 primary leaf provider ABI guard before field access";
     // One actual function owner, not a test-only fake followed by a cfg-hidden
     // production alternative (including the Rust raw-identifier spelling).
     let live_source = compact(guard);
-    count(
-        &live_source,
-        "fnwindows_publisher_scope_from_signer(",
-        1,
-        refusal,
-    )?;
+    let declaration = "fnwindows_publisher_scope_from_signer(";
+    count(&live_source, declaration, 1, refusal)?;
     if live_source.contains("fnr#windows_publisher_scope_from_signer(") {
         return Err(refusal);
+    }
+    // An approved original method must be unconditionally compiled; a
+    // cfg(test) shadow of a macro-generated production issuer is not valid.
+    let (preceding, _) = live_source.split_once(declaration).ok_or(refusal)?;
+    let (_, attributes) = preceding.rsplit_once('}').ok_or(refusal)?;
+    if attributes != "#[allow(unsafe_code)]" {
+        return Err(refusal);
+    }
+    // Unlike the ordinary source-contract mask, do NOT hide live macro
+    // invocations here: a macro can expand to an early Ok(forged scope).
+    // Both masks keep byte offsets unchanged, so this selects the same method.
+    let method_at = guard
+        .find("fn windows_publisher_scope_from_signer(")
+        .ok_or(refusal)?;
+    let macro_visible_method = function_body(
+        macro_visible_guard.get(method_at..).ok_or(refusal)?,
+        "windows_publisher_scope_from_signer",
+    )?;
+    for (index, &byte) in macro_visible_method.as_bytes().iter().enumerate() {
+        if byte == b'!' && macro_visible_method.as_bytes().get(index + 1) != Some(&b'=') {
+            return Err(refusal);
+        }
     }
     count(&leaf, D45_PRIMARY_LEAF_CALLSITE, 1, refusal)?;
     let (prefix, _) = leaf.split_once(D45_PRIMARY_LEAF_CALLSITE).ok_or(refusal)?;
@@ -367,6 +404,29 @@ fn primary_leaf_publisher_scope_digest_substitution_fails_source_contract() {
 }
 
 #[test]
+fn publisher_scope_domain_separation_removal_fails_source_contract() {
+    let original =
+        "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";";
+    assert_eq!(GUARD.matches(original).count(), 1, "stale identity domain");
+    let changed = GUARD.replacen(
+        original,
+        "const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"\";",
+        1,
+    );
+    assert_eq!(
+        contract(&changed, ROLE),
+        Err("D-45 publisher scope domain separator"),
+        "the signed leaf SPKI digest must retain KEL-135 publisher domain separation"
+    );
+    let harmless = GUARD.replacen(
+        original,
+        "/* inert source note */\nconst WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b\"keld.publisher.windows/v1\\0\";",
+        1,
+    );
+    assert_eq!(contract(&harmless, ROLE), Ok(()));
+}
+
+#[test]
 fn cfg_shadowed_primary_leaf_publisher_owner_fails_source_contract() {
     let owner = "fn windows_publisher_scope_from_signer(";
     assert_eq!(GUARD.matches(owner).count(), 1, "stale primary owner");
@@ -397,6 +457,81 @@ fn cfg_shadowed_primary_leaf_publisher_owner_fails_source_contract() {
             "a cfg-hidden forged release owner cannot hide behind the genuine test-only function"
         );
     }
+}
+
+#[test]
+fn active_macro_in_primary_leaf_publisher_owner_fails_source_contract() {
+    let anchor = "let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };";
+    assert_eq!(
+        GUARD.matches(anchor).count(),
+        1,
+        "stale signer owner anchor"
+    );
+    let injected = GUARD.replacen(
+        anchor,
+        "forge_publisher_scope!();\n    let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };",
+        1,
+    );
+    let forged = format!(
+        "{}{}",
+        "macro_rules! forge_publisher_scope { () => { return Ok([0_u8; 32]); } }\n", injected
+    );
+    assert_eq!(
+        contract(&forged, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "an active macro invocation cannot disappear from the verified publisher-scope body"
+    );
+}
+
+#[test]
+fn cfg_generated_alternate_primary_leaf_publisher_owner_fails_source_contract() {
+    let owner = "fn windows_publisher_scope_from_signer(";
+    assert_eq!(GUARD.matches(owner).count(), 1, "stale original owner");
+    let good_only_in_tests = GUARD.replacen(
+        owner,
+        "#[cfg(test)]\nfn windows_publisher_scope_from_signer(",
+        1,
+    );
+    let forged_release = concat!(
+        "\n#[cfg(not(test))]\n",
+        "macro_rules! forged_release_publisher {\n",
+        "    () => {\n",
+        "        fn windows_publisher_scope_from_signer(",
+        "_signer: *mut CRYPT_PROVIDER_SGNR)",
+        " -> Result<[u8; 32], WindowsAuthenticodeError> {\n",
+        "            Ok([0_u8; 32])\n",
+        "        }\n",
+        "    };\n",
+        "}\n",
+        "#[cfg(not(test))]\n",
+        "forged_release_publisher!();\n",
+    );
+    let alternate = format!("{good_only_in_tests}{forged_release}");
+    assert_eq!(
+        contract(&alternate, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "test-only original owner cannot conceal a macro-generated forged release signer"
+    );
+}
+
+#[test]
+fn cfg_before_unsafe_attribute_cannot_hide_original_leaf_owner() {
+    let original = "#[allow(unsafe_code)] // bounded read and DER encoding of the live WinTrust leaf certificate";
+    assert_eq!(
+        GUARD.matches(original).count(),
+        1,
+        "stale native owner attributes"
+    );
+    let hidden = GUARD.replacen(
+        original,
+        "#[cfg(test)]\n#[allow(unsafe_code)] // bounded read and DER encoding of the live WinTrust leaf certificate",
+        1,
+    );
+    assert_eq!(
+        contract(&hidden, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "an earlier cfg(test) attribute must not hide the real release signer even if the last attribute is unchanged"
+    );
 }
 
 fn check_native_issuer_policy(guard: &str, role: &str) -> Result<(), &'static str> {
