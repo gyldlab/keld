@@ -209,7 +209,13 @@ fn hide_macro_trees(visible: &mut [u8]) -> Result<(), &'static str> {
 
 pub(super) fn method_span(source: &str, name: &str) -> Result<Range<usize>, &'static str> {
     let signature = format!("pub(super) fn {name}(");
-    let start = source.find(&signature).ok_or("D23 writer method missing")?;
+    // This test-only reader also checks private D-23 helpers such as
+    // `require_no_pending` and `read_current`. Both signatures are searched
+    // only after comments, literals and macro token trees were masked.
+    let start = source
+        .find(&signature)
+        .or_else(|| source.find(&format!("fn {name}(")))
+        .ok_or("D23 writer method missing")?;
     let open = source[start..]
         .find('{')
         .map(|at| start + at)

@@ -1,4 +1,4 @@
-//! TEST ONLY: D-23 native writer guard callsites, not just helper behavior.
+//! TEST ONLY: D-23/D-90 native writer guard callsites, not just helper behavior.
 //!
 //! The real D-90 repository owner has no qualified witness constructor.
 //! These source-shape checks cannot exercise the full protected writer, prove
@@ -10,11 +10,16 @@
 mod lex;
 
 const SOURCE: &str = include_str!("../../repository_metadata.rs");
+const JOURNAL_SOURCE: &str = include_str!("../../initial_admission_journal.rs");
 const EMPTY: &str = "require_empty_generation_namespace(self.generations)?;";
 const GENESIS: &str = "require_only_genesis_generation(self.generations)?;";
 const PENDING: &str = "require_pending_generation_namespace(self.generations, current.is_some())?;";
 const GENESIS_MATCH: &str = "require_only_genesis_generation(self.generations)?,";
 const SUCCESSOR: &str = "require_only_genesis_and_successor(self.generations)?;";
+const ROOT_GUARD: &str = "require_no_repository_pending_siblings(self.repository)?;";
+const PENDING_READ: &str =
+    "read_optional_record(self.repository, PENDING_OPERATION, self.profile)?";
+const CURRENT_READ: &str = "read_optional_record(self.repository, CURRENT, self.profile)?";
 
 fn body(visible: &str, name: &str) -> Result<String, &'static str> {
     let range = lex::method_span(visible, name)?;
@@ -120,11 +125,66 @@ fn check_contract(source: &str) -> Result<(), &'static str> {
     initial_current_contract(&visible)
 }
 
+/// Bind the same retained-root negative guard to both production D-90 entry
+/// points. Inert comments, literals and macro trees cannot supply an anchor.
+/// This source shape is not an OS writer lease or a D-90 census witness.
+fn d90_callsite_contract(metadata: &str, journal: &str) -> Result<(), &'static str> {
+    let visible = lex::hide_inert_text(metadata)?;
+    let restart = body(&visible, "inspect_restart")?;
+    ordered(
+        &restart,
+        &["journal.inspect_pointed_attempt()?", "self.inspect()"],
+    )?;
+    let inspect = body(&visible, "inspect")?;
+    ordered(
+        &inspect,
+        &[
+            "self.require_no_pending()?;",
+            "let anchor = self.read_anchor()?;",
+            "let current = self.read_current()?;",
+        ],
+    )?;
+    let current = body(&visible, "read_current")?;
+    exactly(&current, CURRENT_READ, 1)?;
+
+    let no_pending = body(&visible, "require_no_pending")?;
+    d90_exact_root_guard(&no_pending)?;
+    ordered(
+        &no_pending,
+        &[
+            ROOT_GUARD,
+            PENDING_READ,
+            "require_only_pointed_repository_member(",
+        ],
+    )?;
+
+    let visible = lex::hide_inert_text(journal)?;
+    let pointed = body(&visible, "inspect_pointed_attempt")?;
+    exactly(&pointed, "self.read_pending()?", 1)?;
+    let pending = body(&visible, "read_pending")?;
+    d90_exact_root_guard(&pending)?;
+    ordered(
+        &pending,
+        &[
+            ROOT_GUARD,
+            PENDING_READ,
+            "decode_pending_repository_operation(&bytes)?",
+        ],
+    )
+}
+
+fn d90_exact_root_guard(body: &str) -> Result<(), &'static str> {
+    if body.matches(ROOT_GUARD).count() != 1 {
+        return Err("D90 source lost or duplicated the retained root guard");
+    }
+    Ok(())
+}
+
 // Mutation replacement is made ONLY inside the actual selected method body
 // after comments, literals and inert macro trees have been excluded. This
 // simulates one omitted production guard without editing production source.
-fn replace_one_call(method: &str, call: &str, replacement: &str) -> String {
-    let visible = lex::hide_inert_text(SOURCE).expect("source masking");
+fn replace_one_call_in(source: &str, method: &str, call: &str, replacement: &str) -> String {
+    let visible = lex::hide_inert_text(source).expect("source masking");
     let span = lex::method_span(&visible, method).expect("method body");
     let offsets = visible[span.clone()]
         .match_indices(call)
@@ -133,15 +193,55 @@ fn replace_one_call(method: &str, call: &str, replacement: &str) -> String {
     assert_eq!(offsets.len(), 1, "{method}: one exact active guard anchor");
     let start = span.start + offsets[0];
     let end = start + call.len();
-    assert_eq!(SOURCE.get(start..end), Some(call));
-    let mut mutant = SOURCE.to_owned();
+    assert_eq!(source.get(start..end), Some(call));
+    let mut mutant = source.to_owned();
     mutant.replace_range(start..end, replacement);
     mutant
+}
+
+fn replace_one_call(method: &str, call: &str, replacement: &str) -> String {
+    replace_one_call_in(SOURCE, method, call, replacement)
 }
 
 #[test]
 fn retained_d23_writer_callsite_contract_matches_actual_source() {
     check_contract(SOURCE).expect("every native D23 callsite and cut order");
+}
+
+#[test]
+fn d90_production_current_and_pending_reader_callsites_are_guarded() {
+    d90_callsite_contract(SOURCE, JOURNAL_SOURCE)
+        .expect("native D23 current and D68 pending reads require retained-root inspection");
+}
+
+#[test]
+fn removing_only_repository_metadata_root_guard_goes_red() {
+    d90_callsite_contract(SOURCE, JOURNAL_SOURCE).expect("unmodified source is green");
+    let mutant = replace_one_call_in(
+        SOURCE,
+        "require_no_pending",
+        ROOT_GUARD,
+        "let _ = self.repository;",
+    );
+    assert_eq!(
+        d90_callsite_contract(&mutant, JOURNAL_SOURCE),
+        Err("D90 source lost or duplicated the retained root guard")
+    );
+}
+
+#[test]
+fn removing_only_initial_admission_pending_root_guard_goes_red() {
+    d90_callsite_contract(SOURCE, JOURNAL_SOURCE).expect("unmodified source is green");
+    let mutant = replace_one_call_in(
+        JOURNAL_SOURCE,
+        "read_pending",
+        ROOT_GUARD,
+        "let _ = self.repository;",
+    );
+    assert_eq!(
+        d90_callsite_contract(SOURCE, &mutant),
+        Err("D90 source lost or duplicated the retained root guard")
+    );
 }
 
 #[test]
