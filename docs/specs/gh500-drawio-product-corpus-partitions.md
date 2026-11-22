@@ -442,7 +442,7 @@ do not invent a product PASS or silently waive the criterion.
 - **Status:** open
 - **Owner:** GH-499 application preparation, GH-589 product scoring and KEL-141 distribution
 - **Impact:** The install partition and completion percentage must stay unknown without a real distribution and installed application result.
-- **Check:** Before GH-589 public scored product registration or percentages, verify the real OS-installed image and complete attempt set. GH-500 T-2 may still register UNKNOWN-only physical corpus manifests and tests.
+- **Check:** Verify an OS-installed image before an install PASS or whole-product completion claim. GH-589 may independently score qualified activation or workflow partitions while install stays UNKNOWN. Each scored partition requires its complete attempt set. GH-500 T-2 may register UNKNOWN-only manifests and tests.
 
 ### Q-1: Decide citations for app-only workflow behavior
 
