@@ -11,25 +11,25 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Fail promptly when the *test-owned* Host child exceeds a bound. Never call
-/// blocking wait after an unsuccessful termination attempt, and never claim
-/// that a failure to kill the child is successful cleanup.
-fn stop_owned_host_child(child: &mut Child, reason: &str) -> ! {
+/// Report an error after bounded cleanup of the *test-owned* Host child.
+/// Never block after a failed kill or claim unsuccessful cleanup succeeded.
+fn stop_owned_host_child(child: &mut Child, reason: &str) -> String {
     if let Err(error) = child.kill()
         && child.try_wait().ok().flatten().is_none()
     {
-        panic!("{reason}: could not terminate test-owned Host child: {error}");
+        return format!("{reason}: could not terminate test-owned Host child: {error}");
     }
     let until = Instant::now() + Duration::from_secs(2);
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => return reason.to_owned(),
             Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(10)),
-            Ok(None) => panic!("{reason}: test-owned Host child did not terminate after kill"),
-            Err(error) => panic!("{reason}: cannot verify Host child cleanup: {error}"),
+            Ok(None) => {
+                return format!("{reason}: test-owned Host child did not terminate after kill");
+            }
+            Err(error) => return format!("{reason}: cannot verify Host child cleanup: {error}"),
         }
     }
-    panic!("{reason}");
 }
 
 /// Read stderr concurrently into an in-memory 8192-byte buffer. Drain even
@@ -37,7 +37,7 @@ fn stop_owned_host_child(child: &mut Child, reason: &str) -> ! {
 /// waiting test kills only its own child. An inherited pipe that stays open
 /// after child exit also has a bounded EOF wait and makes the test fail.
 /// This is a test process bound, not a production startup deadline.
-fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
+fn bounded_host_refusal_checked(command: &mut Command) -> Result<(ExitStatus, String), String> {
     const DEADLINE: Duration = Duration::from_secs(10);
     const STDERR_LIMIT: usize = 8_192;
     let mut child = command
@@ -66,7 +66,7 @@ fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
                     }
                     captured.extend_from_slice(&chunk[..n.min(remaining)]);
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => break Err(error),
             }
         };
@@ -75,21 +75,26 @@ fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
     let until = Instant::now() + DEADLINE;
     let status = loop {
         if overflow.load(Ordering::Acquire) {
-            stop_owned_host_child(&mut child, "Host refusal exceeded 8192 stderr bytes");
+            return Err(stop_owned_host_child(
+                &mut child,
+                "Host refusal exceeded 8192 stderr bytes",
+            ));
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(error) => stop_owned_host_child(
-                &mut child,
-                &format!("cannot query test-owned Host child: {error}"),
-            ),
+            Err(error) => {
+                return Err(stop_owned_host_child(
+                    &mut child,
+                    &format!("cannot query test-owned Host child: {error}"),
+                ));
+            }
         }
         if Instant::now() >= until {
-            stop_owned_host_child(
+            return Err(stop_owned_host_child(
                 &mut child,
                 "Host refusal exceeded its ten-second kill switch",
-            );
+            ));
         }
         thread::sleep(Duration::from_millis(10));
     };
@@ -101,10 +106,16 @@ fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
         !overflow.load(Ordering::Acquire),
         "Host refusal emitted more than 8192 bytes"
     );
-    (
+    Ok((
         status,
         String::from_utf8(captured).expect("Host refusal uses UTF-8"),
-    )
+    ))
+}
+
+/// Convert a bounded child-process refusal into an integration-test assertion.
+fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
+    bounded_host_refusal_checked(command)
+        .expect("the test-owned Host must refuse without timing out or overflowing stderr")
 }
 
 /// This is the original, byte-for-byte uncommissioned Host-owner module from
@@ -114,6 +125,7 @@ fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
 #[test]
 fn original_host_refusal_owner_is_pinned_against_hidden_file_reads() {
     use sha2::{Digest as _, Sha256};
+    const REFUSAL: &str = "    Err(InitialInstallRefusal::CatalogAuthorityUndefined)";
     const PINNED_SHA256: &str = "f216c294ba21bcf1606b7189296a65610c2a869da1b38636555dfbeeca394235";
     let original = include_bytes!("../src/windows_initial_install.rs");
     let is_pinned = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes)) == PINNED_SHA256;
@@ -124,7 +136,6 @@ fn original_host_refusal_owner_is_pinned_against_hidden_file_reads() {
     // Fail-first single-fault falsifier: an ignored request read leaves both
     // the 001/002 process output and the empty directory unchanged.
     let original_text = std::str::from_utf8(original).expect("pinned source is UTF-8");
-    const REFUSAL: &str = "    Err(InitialInstallRefusal::CatalogAuthorityUndefined)";
     let production = original_text
         .split_once("#[cfg(test)]")
         .expect("the original module has an isolated test-only suffix")
