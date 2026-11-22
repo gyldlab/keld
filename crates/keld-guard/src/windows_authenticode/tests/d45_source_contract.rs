@@ -192,11 +192,17 @@ fn check_wintrust_verify_close(guard: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-// The live provider-leaf ABI check must be one uninterrupted top-level sequence:
-// retain the original leaf, reject null, read only cbStruct, reject an undersized
-// provider record, then access its remaining fields. An ordered-subsequence check
-// alone falsely accepts an unreachable `if false { ... }` around the size check.
+// The live provider-leaf ABI check must be one uninterrupted function-entry
+// sequence: reject signer error/empty chain, retain the original leaf, reject
+// null, read only cbStruct, reject undersize, then access the remaining fields.
+// An ordered-subsequence check can falsely accept an unreachable `if false`
+// guard or an early successful return which fabricates a publisher scope.
 // This is a source-shape deletion oracle, not a native trust-chain substitute.
+const D45_PRIMARY_LEAF_ENTRY_PREFIX: &str = concat!(
+    "letsigner_ref=unsafe{&*signer};",
+    "ifsigner_ref.dwError!=0||signer_ref.csCertChain==0",
+    "{returnErr(windows_identity_error(,,));}",
+);
 const D45_PRIMARY_LEAF_CALLSITE: &str = concat!(
     "letcertificate=unsafe{WTHelperGetProvCertFromChain(signer,0)};",
     "ifcertificate.is_null(){returnErr(windows_identity_error(,,));}",
@@ -213,17 +219,10 @@ fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
     count(&leaf, D45_PRIMARY_LEAF_CALLSITE, 1, refusal)?;
     let (prefix, _) = leaf.split_once(D45_PRIMARY_LEAF_CALLSITE).ok_or(refusal)?;
     // The lexical mask already removes strings, comments and inert macro trees.
-    // The method extractor excludes the outer function braces. Any live block
-    // around this intact sequence could conditionally bypass the guard.
-    let mut depth = 0_usize;
-    for byte in prefix.bytes() {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => depth = depth.checked_sub(1).ok_or(refusal)?,
-            _ => {}
-        }
-    }
-    if depth != 0 {
+    // Freeze the executable prefix, not only brace depth. A conditionally
+    // reachable early Ok() can otherwise bypass an intact ABI guard and forge
+    // the returned publisher scope while passing an ordered-token test.
+    if prefix != D45_PRIMARY_LEAF_ENTRY_PREFIX {
         return Err(refusal);
     }
     Ok(())
@@ -253,6 +252,32 @@ fn unreachable_primary_leaf_abi_guard_fails_source_contract() {
         contract(&wrapped, ROLE),
         Err("D-45 primary leaf provider ABI guard before field access"),
         "a live, balanced but unreachable certificate-size check cannot satisfy the ABI source oracle"
+    );
+}
+
+#[test]
+fn conditional_early_success_before_primary_leaf_abi_guard_fails_source_contract() {
+    let anchor = "let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };";
+    assert_eq!(
+        GUARD.matches(anchor).count(),
+        1,
+        "stale primary leaf anchor"
+    );
+    let bypass = GUARD.replacen(
+        anchor,
+        "if signer_ref.csCertChain > 0 { return Ok([0_u8; 32]); }\n    let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };",
+        1,
+    );
+    assert_eq!(
+        contract(&bypass, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "an early successful return can forge publisher scope without verifying the leaf ABI"
+    );
+    let harmless = GUARD.replacen(anchor, "/* audit comment */\n    let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };", 1);
+    assert_eq!(
+        contract(&harmless, ROLE),
+        Ok(()),
+        "inert comments cannot create a false-red ABI source contract"
     );
 }
 
