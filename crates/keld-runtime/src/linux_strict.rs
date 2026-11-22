@@ -675,15 +675,15 @@ fn wait_for_launcher_ready_until(
                             }
                         },
                     };
-                    if let Some(status) = status {
-                        if !status.success() {
-                            return Err(failed_readiness(
-                                child,
-                                format!(
-                                    "Bubblewrap exited with {status} after post-Landlock readiness before startup admission"
-                                ),
-                            ));
-                        }
+                    if let Some(status) = status
+                        && !status.success()
+                    {
+                        return Err(failed_readiness(
+                            child,
+                            format!(
+                                "Bubblewrap exited with {status} after post-Landlock readiness before startup admission"
+                            ),
+                        ));
                     }
                     return Ok(landlock);
                 }
@@ -697,7 +697,7 @@ fn wait_for_launcher_ready_until(
                     }
                 }
                 Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(source) if source.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(source) if source.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(source) => {
                     return Err(failed_readiness(child, source.to_string()));
                 }
