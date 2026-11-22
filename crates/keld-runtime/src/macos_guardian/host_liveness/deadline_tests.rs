@@ -2,10 +2,11 @@
 //! after its bounded post-acknowledgment deadline. Both witnesses are actual
 //! kernel pipe/socket I/O, not fabricated `HostLiveness` enum outcomes.
 use super::{acknowledge_pre_generation_orderly_shutdown_with_hook, set_liveness_nonblocking};
+use crate::RuntimeError;
 use crate::macos_guardian::SUPERVISED_ORDERLY_ACK;
 use nix::unistd::pipe;
 use std::fs::File;
-use std::io::Read as _;
+use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 use std::thread;
@@ -60,12 +61,14 @@ fn native_host_eof_observed_before_cutoff_cannot_acknowledge_after_original_dead
         "real liveness pipe EOF must be read before the original deadline"
     );
     assert!(
-        result.is_err_and(|error| {
-            error
-                .to_string()
-                .contains("pre-generation host EOF deadline")
-        }),
-        "late completion after genuine native EOF must not authorize a clean KSA transition"
+        matches!(
+            result,
+            Err(RuntimeError::Lifecycle {
+                phase: "macOS guardian pre-generation host EOF deadline",
+                source,
+            }) if source.kind() == io::ErrorKind::TimedOut
+        ),
+        "late native EOF must preserve the exact typed lifecycle timeout, not another error or a clean KSA transition"
     );
 }
 
