@@ -16,14 +16,14 @@ external contributors do not acquire that authority.
 
 ## Session continuity and closeout
 
-This owns non-trivial completion, including research-only audits, reviews, cleanup
+Owns non-trivial completion, including research-only audits, reviews, cleanup
 and resumed sessions. Before work, save objectives, findings and owned resources
-at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Native hooks supply current paths; see
+at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Native hooks supply paths; see
 [setup](../onboarding/05-development-guide.md#agent-session-hooks). Receipts bind
 `session_id` and `turn_id`. Retain original task inventory
-across turns; steering MUST NOT silently erase/recreate it. At scope changes, milestones
+across turns; steering MUST NOT silently erase/recreate it. At scope change, milestones
 and resume, reconcile conversation, current Linear and resources; steering adds work
-unless the user cancels/replaces it. A merged follow-up MUST NOT erase its originating audit objective.
+unless user cancels/replaces it. A merged follow-up MUST NOT erase its originating audit objective.
 
 Before completion or handoff:
 
@@ -37,18 +37,18 @@ Before completion or handoff:
   never fabricate a receipt.
 - Reconcile original objectives, gates, review/merge/publication and parent/subtask
   status. Coordination owns resource disposition and actual cleanup.
-  Unresolved work requires a bounded handoff; MUST NOT label the whole session complete.
+  Unresolved work requires a bounded handoff; MUST NOT label session complete.
 - Run `just session-closeout <receipt>` after the final state change.
   Publish receipt, baseline and hashed evidence to an authorized remote record;
   verify tip. Keep referenced files hash-valid in place until approved
-  reference migration. `tools/session_closeout.py` owns format.
-  Compare baseline to conversation/tool history; validator cannot find
-  gaps or authenticate remote receipts. Independently re-read remote
-  updates and local resource state before acceptance.
+  reference migration. `tools/session_closeout.py` owns receipt format.
+  Reconcile baseline with conversation/tool history; the validator cannot
+  discover omitted work or authenticate an agent-written remote receipt.
+  Independently re-read remote updates and local resource state before acceptance.
 
-Interruptions preserve inventory/next action; refresh on resume.
-Prior receipts do not prove new-turn completion; checked handoff is not implementation.
-CI checks validator/policy, not live Linear or local cleanup. Activate only for
+Interruptions retain inventory/next action; refresh on resume.
+Prior receipts do not prove new-turn completion; handoff is not implementation.
+CI checks validator/policy, not live Linear or cleanup. Activate only for
 non-trivial work, never standalone factual questions. Hook enforcement requires client
 support, UI-trusted registration and exercised activation; without it claim no
 enforcement and report unsupported/untrusted clients.
