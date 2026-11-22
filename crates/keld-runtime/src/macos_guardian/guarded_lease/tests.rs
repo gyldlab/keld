@@ -432,7 +432,7 @@ fn malformed_nonempty_prepared_reply_does_not_advance_decoded_diagnostic_stage()
         let host_thread = thread::spawn(move || {
             let prepare = read_generation_control(&mut host).expect("actual PREPARE request");
             assert_eq!((prepare.kind, prepare.attempt), (CONTROL_PREPARE, 1));
-            assert!(prepare.payload.is_empty());
+            assert_eq!(prepare.payload, [] as [u8; 0]);
             write_generation_control(
                 &mut host,
                 &GenerationControlRecord::new(CONTROL_PREPARED, 1).with_payload(payload),
