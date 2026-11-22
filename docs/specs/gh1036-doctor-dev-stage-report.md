@@ -80,7 +80,7 @@ policy, installed-app diagnosis, or changing the Host/Guardian/sentinel cleanup 
 
 - **Given:** A Unix `.keld` or `dev` parent has the wrong owner or a non-private mode, or a nonce entry has unsafe metadata.
 - **When:** Doctor inspects the parent and entry through the shared non-mutating staging predicates.
-- **Then:** Wrong parent ownership or mode yields a failed finding with the staging diagnostic and fix. The entry stays visible with its actual metadata. Doctor never changes owner, mode or permissions.
+- **Then:** Wrong parent ownership or mode yields a failed finding with the staging diagnostic and fix. A non-private nonce entry is explicitly reported as unsafe, not merely listed with its metadata. Doctor never changes owner, mode or permissions.
 - **Negative control:**
   - **Single fault:** Call the existing preparation helper that changes permissions before reporting.
   - **At-risk precondition:** The fixture starts with an unsafe parent and records mode and ownership before and after.
@@ -120,21 +120,21 @@ policy, installed-app diagnosis, or changing the Host/Guardian/sentinel cleanup 
 
 - **Given:** The selected project contains a nonce child with separate observable contents, under an attributed operation audit.
 - **When:** Doctor scans the stage parent and reports direct-entry metadata.
-- **Then:** Doctor makes no explicit create, content write, chmod, chown, rename or remove operation. It never opens nonce contents or walks child directories. Read access-time changes and concurrent actor changes are not attributed to doctor.
+- **Then:** Doctor makes no explicit create, content write, chmod, chown, rename or remove operation. It never opens nonce contents or walks child directories. Membership, contents, ownership, mode and modification time stay unchanged by doctor. Read access-time changes and concurrent actor changes are not attributed to doctor.
 - **Negative control:**
-  - **Single fault:** Open each nonce child file or run a chmod preparation step during diagnosis.
-  - **At-risk precondition:** The audit observes the doctor process and records before/after names, contents, ownership and modes.
+  - **Single fault:** Call a chmod preparation helper during diagnosis.
+  - **At-risk precondition:** The audit observes the doctor process and records before/after names, contents, ownership, modes and modification times. A separate content-access control refuses opening a child file.
   - **Expected RED:** The operation trace or controlled manifest reports content access or an explicit doctor mutation.
 
 ### AC-10: Preserve live sessions and release every scan handle
 
-- **Given:** A real `keld dev` stage is active, or an earlier scan has failed during enumeration.
+- **Given:** A real `keld dev` stage is active, or an earlier scan failed or observed concurrent directory changes.
 - **When:** Doctor runs, then a later healthy doctor scan runs in the same environment.
-- **Then:** The report states activity is unknown and does not stop the active session. All scan handles are released, and the healthy subsequent scan succeeds.
+- **Then:** The report states activity is unknown and does not stop the active session. All scan handles are released, and a healthy subsequent scan succeeds after either failure or concurrent changes.
 - **Negative control:**
   - **Single fault:** Leave a directory handle retained on the failing scan path.
-  - **At-risk precondition:** A controlled failure and a live stage are both available without terminating the session.
-  - **Expected RED:** The later scan fails from leaked ownership or the live session is interrupted.
+  - **At-risk precondition:** A controlled failure, a concurrent-change scenario and a live stage are available. Track each retained scan handle directly.
+  - **Expected RED:** A direct handle census observes a leaked handle even if the next scan succeeds, or the live session is interrupted.
 
 ### AC-11: Require honest manual cleanup guidance
 
