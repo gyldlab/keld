@@ -78,12 +78,12 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
 
 ### AC-6: Exercise Zettlr's actual branch
 
-- **Given:** Updates are enabled. The original updater has a prior-state sentinel and a captured request boundary.
+- **Given:** The original updater has `checkForUpdates=true`, `applicationUpdateAvailable()=false`, and `__UPDATES_DISABLED__` not equal to `1`. Keep a prior-state sentinel and a captured request boundary.
 - **When:** Call check under offline and online snapshots.
 - **Then:** Offline returns before work and preserves the sentinel. Online reaches the instrumented continuation.
 - **Negative control:**
   - **Single fault:** Remove the offline part of the condition.
-  - **At-risk precondition:** Keep the build-time disable flag off.
+  - **At-risk precondition:** Keep the build-time disable flag off, `checkForUpdates=true`, and `applicationUpdateAvailable()=false`. No other early-return guard may mask the offline condition.
   - **Expected RED:** The offline invocation reaches the continuation.
 
 ### AC-7: Contain the signal to the named role
@@ -162,7 +162,7 @@ Export the property and method from the canonical module. Connect them to the ad
 | 2–3 | Independent status fixture drives every table row. Count host registrations and calls. | Return true always, return false always, or dispatch a call from each getter. |
 | 4 | Native observer receipt and acknowledged apply barrier for each transition | Freeze the spawn seed or deliver a previous revision after the new one. |
 | 5 | Pause an old delivery, reattach the replacement, then release it with distinct old and new values | Drop the epoch check while keeping sequence and authentication valid. Separately replace the monitor while keeping the same role to challenge its token check. |
-| 6 | Actual updater function, updates enabled, previous state sentinel and isolated request observer | Ignore the offline gate. Ensure the online control reaches the instrumented branch. |
+| 6 | Actual updater with the build-time and both soft guards unblocked, previous-state sentinel and isolated request observer | Ignore only the offline gate. Ensure the online control reaches the instrumented branch. |
 | 7 | Host-side recipient/registration census and absent Strict route | Subscribe a Strict role or accept an app-supplied sample as a Host fact. |
 
 Native receipts record macOS/SDK, executable and revision, declared profile, role generation, zero-window state and monotonic observation order. Use owner-controlled callbacks or explicit barriers. Sleeping, a live internet site or toggling Wi-Fi without excluding other routes cannot provide the oracle.
