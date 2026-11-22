@@ -11,7 +11,7 @@ use cap_std::fs::Dir;
 use super::{require_no_repository_pending_siblings, require_only_pointed_repository_member};
 use crate::UpdateError;
 #[cfg(windows)]
-use crate::records::encode_pending_repository_operation;
+use crate::records::{CurrentRecord, encode_metadata_current, encode_pending_repository_operation};
 use crate::records::{PendingOperationKind, PendingRepositoryOperation, RepositoryAnchor};
 
 fn owner() -> RepositoryAnchor {
@@ -361,19 +361,23 @@ fn wrong_case_pending_pointer_alias_cannot_bypass_native_sibling_guard() {
 }
 
 #[cfg(windows)]
-fn assert_noncanonical_root_pending_name_refuses_preserving_bytes(leaf: &str, bytes: &[u8]) {
+fn assert_noncanonical_root_record_name_refuses_preserving_bytes(
+    leaf: &str,
+    bytes: &[u8],
+    expected_step: &str,
+) {
     let (root, ..) = fixture();
     let repository = retained(root.path());
     let original = root.path().join(leaf);
     fs::write(&original, bytes).expect("create the exact noncanonical native root member");
 
     let refusal = require_no_repository_pending_siblings(&repository)
-        .expect_err("root member with a noncanonical pending name must refuse");
+        .expect_err("noncanonical protected repository root record must refuse");
     match refusal {
         UpdateError::Baseline { step, .. } => {
-            assert_eq!(step, "repository pending publication residue");
+            assert_eq!(step, expected_step);
         }
-        other => panic!("unexpected native pending-name refusal: {other}"),
+        other => panic!("unexpected native root-record refusal: {other}"),
     }
     assert_eq!(
         fs::read(&original).expect("read preserved noncanonical root member"),
@@ -396,9 +400,10 @@ fn assert_noncanonical_root_pending_name_refuses_preserving_bytes(leaf: &str, by
 #[test]
 fn uppercase_pending_generated_sibling_refuses_and_preserves_native_bytes() {
     let leaf = format!("PENDING-{}", "6d".repeat(32));
-    assert_noncanonical_root_pending_name_refuses_preserving_bytes(
+    assert_noncanonical_root_record_name_refuses_preserving_bytes(
         &leaf,
         b"unaccounted-uppercase-generated-sibling",
+        "repository pending publication residue",
     );
 }
 
@@ -408,8 +413,46 @@ fn mixed_case_pending_pointer_suffix_refuses_even_with_canonical_pointer_bytes()
     let pointer = pointer(&owner(), PendingOperationKind::InitialAdmission);
     let bytes = encode_pending_repository_operation(&pointer)
         .expect("encode a canonical D-68 pointer to isolate the filename fault");
-    assert_noncanonical_root_pending_name_refuses_preserving_bytes(
+    assert_noncanonical_root_record_name_refuses_preserving_bytes(
         "pending-operation.JSON",
         &bytes,
+        "repository pending publication residue",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn noncanonical_current_pointer_case_refuses_even_with_valid_d23_bytes() {
+    let bytes = encode_metadata_current(&CurrentRecord {
+        repository_id: owner().repository_id,
+        sequence: 1,
+        generation_sha256: [0x61; 32],
+    })
+    .expect("canonical D-23 current bytes");
+    assert_noncanonical_root_record_name_refuses_preserving_bytes(
+        "CURRENT.JSON",
+        &bytes,
+        "repository current namespace",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn exact_current_pointer_name_does_not_trigger_the_negative_namespace_guard() {
+    let (root, ..) = fixture();
+    let repository = retained(root.path());
+    let bytes = encode_metadata_current(&CurrentRecord {
+        repository_id: owner().repository_id,
+        sequence: 1,
+        generation_sha256: [0x61; 32],
+    })
+    .expect("canonical D-23 current bytes");
+    let current = root.path().join("current.json");
+    fs::write(&current, &bytes).expect("create exact protected record leaf");
+    require_no_repository_pending_siblings(&repository)
+        .expect("the canonical name remains permitted for independent D-23 byte validation");
+    assert_eq!(
+        fs::read(current).expect("preserve canonical current"),
+        bytes
     );
 }
