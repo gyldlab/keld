@@ -978,7 +978,15 @@ fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), 
             at += 1;
             continue;
         }
-        if start > 0 && bytes[start - 1] == b':' {
+        // Rust permits whitespace and comments between :: and the final
+        // macro path segment. The comment/literal mask preserves that gap.
+        let mut path_end = start;
+        while path_end > 0 && bytes[path_end - 1].is_ascii_whitespace() {
+            path_end -= 1;
+        }
+        if (start > 0 && bytes[start - 1] == b':')
+            || (path_end >= 2 && bytes.get(path_end - 2..path_end) == Some(b"::"))
+        {
             return Err(D45_VERIFIED_OWNER_REFUSAL);
         }
         if !allowed.contains(&name) {
@@ -1597,6 +1605,67 @@ fn release_only_module_macro_expansion_import_fails_source_contract() {
         contract(&include_expansion, ROLE),
         Err(D45_VERIFIED_OWNER_REFUSAL),
         "unknown item macro expansion must not silently extend the verified owner"
+    );
+}
+
+#[test]
+fn spaced_qualified_macro_cannot_forge_verified_caller() {
+    let owner = "fn verified_windows_identity_from_image(";
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(owner).count(), 1, "stale WinTrust owner");
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale policy call");
+    let forged = GUARD.replacen(
+        owner,
+        concat!(
+            "#[macro_export]\n",
+            "macro_rules! d45_forge { () => {{\n",
+            "    if !cfg!(test) {\n",
+            "        return Ok(WindowsTrustObservation {\n",
+            "            identity: WindowsAuthenticodeIdentity {\n",
+            "                publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "            }, d45_chain_facts: None,\n",
+            "        });\n",
+            "    }\n",
+            "}}; }\n",
+            "mod d45_shadow { pub(crate) use crate::d45_forge as matches; }\n",
+            "fn verified_windows_identity_from_image("
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&forged, ROLE),
+        Ok(()),
+        "an unused nested macro alias must not alter the original verifier"
+    );
+    for invocation in [
+        "d45_shadow::matches!();",
+        "d45_shadow:: matches!();",
+        "d45_shadow:: /* harmless separator */ matches!();",
+    ] {
+        let visible = hide_comments_and_literals(invocation).expect("qualified macro source mask");
+        assert_eq!(
+            require_expected_identity_macros(&visible, &["matches", "format", "stringify"]),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "the direct macro scanner must refuse the qualified path: {invocation}"
+        );
+        let injected = forged.replacen(offline, &format!("    {invocation}\n{offline}"), 1);
+        assert_eq!(
+            contract(&injected, ROLE),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "a qualified matches! must not forge identity before WinTrust: {invocation}"
+        );
+    }
+    let harmless = GUARD.replacen(
+        offline,
+        &format!(
+            "    let _approved = matches!(policy, WindowsTrustPolicy::Full);\n    let _inert = stringify!(d45_shadow:: matches!());\n{offline}"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&harmless, ROLE),
+        Ok(()),
+        "unqualified matches! and inert stringify! remain permitted"
     );
 }
 
