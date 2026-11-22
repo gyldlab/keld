@@ -21,6 +21,8 @@ use super::{
 
 pub(super) struct CutFixture {
     pub(super) supervisor: Option<Supervisor>,
+    /// Observations from the real initial KGC1 exchange and pre-exec reporter.
+    pub(super) phase_ledger: Arc<super::super::super::GuardianPhaseLedger>,
     pub(super) plane: ControlPlane,
     pub(super) phase_entered: Receiver<()>,
     pub(super) phase_release: Sender<()>,
@@ -84,6 +86,7 @@ impl CutFixture {
             Ok(command)
         };
         let cancelled = Arc::new(AtomicBool::new(false));
+        let phase_ledger = Arc::new(super::super::super::GuardianPhaseLedger::new());
         let supervisor = Supervisor::start_prepared(
             RestartPolicy::default(),
             ReturnedLeasePreparer {
@@ -94,6 +97,7 @@ impl CutFixture {
                         reader: GenerationControlReader::new(),
                     })),
                     host_unavailable: Arc::new(AtomicBool::new(false)),
+                    phase_ledger: Arc::clone(&phase_ledger),
                     preparation_cancelled: Arc::clone(&cancelled),
                     initial_prepared: Arc::new(AtomicBool::new(false)),
                     refused_registration_retired: Arc::new(AtomicBool::new(false)),
@@ -108,6 +112,7 @@ impl CutFixture {
         std::fs::write(initial_release, b"release-g1").expect("release actual registered G1");
         Self {
             supervisor: Some(supervisor),
+            phase_ledger,
             plane,
             phase_entered,
             phase_release,
@@ -276,4 +281,30 @@ impl Drop for CutFixture {
         let _ = self.plane.commands.send(RelayCommand::AwaitClosure);
         drop(self.supervisor.take());
     }
+}
+
+#[test]
+fn native_initial_guardian_phase_reaches_real_kgc1_registered_but_not_host_hello() {
+    let fixture = CutFixture::start(DeliveryCut::Zero);
+    let deadline = Instant::now() + COLLECTION;
+    loop {
+        if fixture.phase_ledger.first_unproven(false, false)
+            == super::super::super::startup_phase::NextAuthBoundary::HostHelloAuthenticated
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "genuine native initial SPAWNED/REGISTERED phase was not observed"
+        );
+        std::thread::yield_now();
+    }
+    let receipt = fixture.phase_ledger.failure_report();
+    assert!(receipt.contains("kgc1_prepared_ms="));
+    assert!(receipt.contains("bun_factory_ms="));
+    assert!(receipt.contains("bun_spawn_reported_ms="));
+    assert!(receipt.contains("kgc1_registered_ms="));
+    assert!(receipt.contains("hello=host-unobserved"));
+    assert!(receipt.contains("init_ack=host-unobserved"));
+    assert!(receipt.contains("bound=host-unobserved"));
 }

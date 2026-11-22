@@ -5,9 +5,9 @@ use super::host_liveness::{
 };
 use super::{
     AsFd, CapturedOutput, Command, CrashLedger, Duration, GENERATION_CONTROL_POLL,
-    GenerationControlPeer, GenerationControlReader, GuardedPrimaryPreparer, REGISTRATION_ENV,
-    REGISTRATION_LEN, REGISTRATION_MAGIC, Read, RestartPolicy, RuntimeError,
-    SupervisedGuardianPreparer, Supervisor, SupervisorOutcome, Write,
+    GenerationControlPeer, GenerationControlReader, GuardedPrimaryPreparer, GuardianPhase,
+    GuardianPhaseLedger, REGISTRATION_ENV, REGISTRATION_LEN, REGISTRATION_MAGIC, Read,
+    RestartPolicy, RuntimeError, SupervisedGuardianPreparer, Supervisor, SupervisorOutcome, Write,
     await_guarded_primary_liveness, collapse_failures, handshake_client, io, lifecycle_error,
     observe_supervised_liveness, parse_app_link, set_liveness_nonblocking,
     validate_liveness_bootstrap,
@@ -320,7 +320,12 @@ where
     // ordering treated a legitimate early Q/S as malformed bootstrap data
     // and could turn concurrent startup/shutdown into a spurious failure.
     validate_liveness_bootstrap(&mut liveness)?;
-    let control = connect_guardian_registration()?;
+    let phase_ledger = Arc::new(GuardianPhaseLedger::new());
+    let control = connect_guardian_registration().inspect_err(|_| {
+        // Diagnostic only on failure, with no private role data or tokens.
+        eprintln!("{}", phase_ledger.failure_report());
+    })?;
+    phase_ledger.record(GuardianPhase::Kgr1Authenticated);
     #[cfg(test)]
     super::tests::bootstrap_shutdown_race::hold_guardian_after_authenticated_control()?;
     control
@@ -349,6 +354,7 @@ where
                 stream: control,
                 reader: GenerationControlReader::new(),
             })),
+            phase_ledger: Arc::clone(&phase_ledger),
             host_unavailable: Arc::clone(&host_unavailable),
             preparation_cancelled: Arc::clone(&preparation_cancelled),
             initial_prepared: Arc::clone(&initial_prepared),
@@ -380,10 +386,12 @@ where
                         // or an unclosed writer is an independent fault.
                         // Preserve the original authenticated KGC1 failure;
                         // never overwrite its security/protocol provenance.
+                        eprintln!("{}", phase_ledger.failure_report());
                         return Err(collapse_failures(vec![startup_error, control_error]));
                     }
                 }
             }
+            eprintln!("{}", phase_ledger.failure_report());
             return Err(startup_error);
         }
     };
@@ -423,6 +431,7 @@ where
     if failures.is_empty() {
         Ok(output)
     } else {
+        eprintln!("{}", phase_ledger.failure_report());
         Err(collapse_failures(failures))
     }
 }
