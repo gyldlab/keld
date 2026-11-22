@@ -952,6 +952,11 @@ fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), 
             start -= 2;
         }
         let name = body[start..end].trim_start_matches("r#");
+        if start > 0 && bytes[start - 1] == b'\'' {
+            // A lifetime label before unary negation is not a macro name.
+            at += 1;
+            continue;
+        }
         if name == "macro_rules" && !body[start..end].starts_with("r#") {
             // Only the literal macro_rules! keyword introduces an inert
             // definition. r#macro_rules! is an active macro identifier and
@@ -1013,6 +1018,12 @@ fn d45_reject_owner_body_attributes(
                 start -= 2;
             }
             let name = body[start..end].trim_start_matches("r#");
+            if start > 0 && bytes[start - 1] == b'\'' {
+                // A labelled break can use the name stringify or
+                // macro_rules without invoking a macro.
+                at += 1;
+                continue;
+            }
             if name == "macro_rules" && !body[start..end].starts_with("r#") {
                 // An unused macro declarator is inert, not its invocations.
                 // require_expected_identity_macros rejects a forged approved
@@ -1899,6 +1910,61 @@ fn executable_format_arguments_cannot_hide_release_only_cfg_before_wintrust() {
         Ok(()),
         "stringify! arguments remain inert even inside the verified caller"
     );
+}
+
+#[test]
+fn labelled_break_unary_not_is_not_a_stringify_macro() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale WinTrust policy");
+    let forged = GUARD.replacen(
+        offline,
+        concat!(
+            "    let _audit = 'stringify: loop {\n",
+            "        break 'stringify !{\n",
+            "            #[cfg(not(test))]\n",
+            "            let _release_return = {\n",
+            "                if let WindowsTrustPolicy::Full = policy {\n",
+            "                    return Ok(WindowsTrustObservation {\n",
+            "                        identity: WindowsAuthenticodeIdentity {\n",
+            "                            publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "                        }, d45_chain_facts: None,\n",
+            "                    });\n",
+            "                }\n",
+            "            };\n",
+            "            false\n",
+            "        };\n",
+            "    };\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&forged, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a labelled break named stringify must not conceal active cfg code"
+    );
+    for label in ["stringify", "macro_rules"] {
+        let original = format!(
+            "let _audit = '{label}: loop {{ break '{label} !{{ #[cfg(not(test))] false }}; }};"
+        );
+        let visible = hide_inert_text(&original).expect("visible lifetime label");
+        assert!(
+            visible.contains("#[cfg(not(test))]"),
+            "labelled unary negation must remain active for {label}"
+        );
+        let benign = GUARD.replacen(
+            offline,
+            &format!(
+                "    let _audit = '{label}: loop {{ break '{label} !{{ false }}; }};\n{offline}"
+            ),
+            1,
+        );
+        assert_eq!(
+            contract(&benign, ROLE),
+            Ok(()),
+            "a harmless labelled break with unary negation is not a macro"
+        );
+    }
 }
 
 #[test]

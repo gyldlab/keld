@@ -189,6 +189,11 @@ fn macro_name_before_bang(visible: &[u8], bang: usize) -> bool {
     if start == end {
         return false;
     }
+    // break 'stringify !{ ... } is a labelled break with a unary-not
+    // operand, NOT a stringify! invocation. Lifetimes use the leading '.
+    if start > 0 && visible[start - 1] == b'\'' {
+        return false;
+    }
     let name = &visible[start..end];
     // Keywords can precede a unary ! but cannot name macro invocations.
     !(name == b"if"
