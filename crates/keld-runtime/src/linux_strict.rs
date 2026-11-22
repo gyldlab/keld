@@ -1294,7 +1294,7 @@ fn seccomp_programs() -> Result<[BpfProgram; 2], LinuxStrictError> {
 #[cfg(test)]
 mod readiness_tests {
     use std::fs::File;
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
