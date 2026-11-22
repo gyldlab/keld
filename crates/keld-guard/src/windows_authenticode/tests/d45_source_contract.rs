@@ -712,6 +712,43 @@ fn d45_import_binds_identity_macro(import: &str, allowed: &[&str]) -> bool {
     false
 }
 
+// Check attributes in the macro-hidden mask: an inert stringify! or an unused
+// macro_rules! body cannot grant #[macro_use], but a release-only cfg_attr can.
+fn d45_reject_macro_use_attributes(source: &str) -> Result<(), &'static str> {
+    let bytes = source.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'#' {
+            at += 1;
+            continue;
+        }
+        let opening = if bytes.get(at + 1) == Some(&b'!') && bytes.get(at + 2) == Some(&b'[') {
+            Some(at + 2)
+        } else if bytes.get(at + 1) == Some(&b'[') {
+            Some(at + 1)
+        } else {
+            None
+        };
+        if let Some(opening) = opening {
+            let end = d45_macro_tree_end(bytes, opening)?;
+            let contents = &source[opening + 1..end - 1];
+            let attribute = contents.as_bytes();
+            if contents.match_indices("macro_use").any(|(pos, _)| {
+                (pos == 0 || !d45_ident_byte(attribute[pos - 1]))
+                    && attribute
+                        .get(pos + "macro_use".len())
+                        .is_none_or(|&byte| !d45_ident_byte(byte))
+            }) {
+                return Err(D45_VERIFIED_OWNER_REFUSAL);
+            }
+            at = end;
+        } else {
+            at += 1;
+        }
+    }
+    Ok(())
+}
+
 fn d45_reject_active_macro_bindings(
     source: &str,
     allowed: &[&str],
@@ -731,6 +768,11 @@ fn d45_reject_active_macro_bindings(
             continue;
         }
         if at > 0 && d45_ident_byte(bytes[at - 1]) {
+            at += 1;
+            continue;
+        }
+        if at >= 2 && bytes.get(at - 2..at) == Some(b"r#") {
+            // A raw identifier r#use is not the Rust use keyword.
             at += 1;
             continue;
         }
@@ -768,6 +810,7 @@ fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str
     let mut depth = 0_usize;
     let mut parentheses = 0_usize;
     let mut brackets = 0_usize;
+    let mut test_probe_macros = 0_usize;
     let mut at = 0;
     while at < bytes.len() {
         if bytes[at] == b'{' {
@@ -796,13 +839,51 @@ fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str
                 if bytes.get(bang) == Some(&b'!') {
                     let name_at = d45_skip_space(bytes, bang + 1);
                     let (name, name_end) = d45_ident_at(source, name_at);
-                    if ["matches", "format", "stringify"].contains(&name) {
+                    if ["matches", "format", "stringify", "thread_local"].contains(&name) {
                         return Err(D45_VERIFIED_OWNER_REFUSAL);
                     }
                     let opening = d45_skip_space(bytes, name_end);
                     at = d45_macro_tree_end(bytes, opening)?;
                     continue;
                 }
+            }
+        }
+        if depth == 0 && parentheses == 0 && brackets == 0 && bytes[at] == b'!' {
+            // A crate inner attribute #![...] is not a macro call.
+            if at > 0 && bytes[at - 1] == b'#' {
+                at += 1;
+                continue;
+            }
+            let opening = d45_skip_space(bytes, at + 1);
+            if matches!(bytes.get(opening), Some(b'(' | b'[' | b'{')) {
+                let mut end = at;
+                while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                let mut start = end;
+                while start > 0 && d45_ident_byte(bytes[start - 1]) {
+                    start -= 1;
+                }
+                if start >= 2 && bytes.get(start - 2..start) == Some(b"r#") {
+                    start -= 2;
+                }
+                let name = source[start..end].trim_start_matches("r#");
+                // The single original std thread_local! test probe is inert
+                // in shipping code. All other module item macro expansions
+                // could inject a release-only import, owner or return path.
+                if name != "thread_local"
+                    || test_probe_macros != 0
+                    || !source[..start].trim_end().ends_with("#[cfg(test)]")
+                {
+                    return Err(D45_VERIFIED_OWNER_REFUSAL);
+                }
+                let macro_end = d45_macro_tree_end(bytes, opening)?;
+                if !source[opening..macro_end].contains("WINDOWS_D45_TEST_PROBE") {
+                    return Err(D45_VERIFIED_OWNER_REFUSAL);
+                }
+                test_probe_macros += 1;
+                at = macro_end;
+                continue;
             }
         }
         at += 1;
@@ -924,6 +1005,7 @@ fn check_verified_state_owner_and_caller(
     require_expected_identity_macros(&caller_visible, &["matches", "format", "stringify"])?;
     require_expected_identity_macros(&extractor_visible, &["format", "stringify"])?;
     let identity_macros = ["matches", "format", "stringify"];
+    d45_reject_macro_use_attributes(guard)?;
     d45_reject_active_macro_bindings(guard, &identity_macros, true)?;
     d45_reject_active_macro_bindings(
         function_body(guard, "windows_identity_from_image_with_policy")?,
@@ -1297,6 +1379,108 @@ fn inactive_macro_import_text_and_different_binding_remain_green() {
         contract(&renamed, ROLE),
         Ok(()),
         "importing an unrelated name cannot shadow the approved matches! macro"
+    );
+}
+
+#[test]
+fn release_only_module_macro_use_shadow_fails_source_contract() {
+    let owner = "fn verified_windows_identity_from_image(";
+    assert_eq!(GUARD.matches(owner).count(), 1, "stale WinTrust owner");
+    let injected = GUARD.replacen(
+        owner,
+        concat!(
+            "#[cfg(not(test))]\n",
+            "#[macro_use]\n",
+            "mod d45_shadow {\n",
+            "    macro_rules! matches { ($($input:tt)*) => {\n",
+            "        return Ok(WindowsTrustObservation {\n",
+            "            identity: WindowsAuthenticodeIdentity {\n",
+            "                publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "            },\n",
+            "            d45_chain_facts: None,\n",
+            "        })\n",
+            "    }; }\n",
+            "}\n",
+            "fn verified_windows_identity_from_image("
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&injected, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "release-only #[macro_use] must not bind a forged matches! before WinTrust"
+    );
+    let attr_shadow = injected.replace(
+        "#[cfg(not(test))]\n#[macro_use]\n",
+        "#[cfg_attr(not(test), macro_use)]\n",
+    );
+    assert_eq!(
+        contract(&attr_shadow, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "cfg_attr must not create a release-only macro import"
+    );
+}
+
+#[test]
+fn release_only_module_macro_expansion_import_fails_source_contract() {
+    let owner = "fn verified_windows_identity_from_image(";
+    assert_eq!(GUARD.matches(owner).count(), 1, "stale WinTrust owner");
+    let injected = GUARD.replacen(
+        owner,
+        concat!(
+            "#[cfg(not(test))]\n",
+            "#[macro_export]\n",
+            "macro_rules! d45_forge { ($($input:tt)*) => {\n",
+            "    return Err(windows_identity_error(\"forged\", \"forged\"));\n",
+            "}; }\n",
+            "#[cfg(not(test))]\n",
+            "macro_rules! d45_import { () => {\n",
+            "    use crate::d45_forge as matches;\n",
+            "}; }\n",
+            "#[cfg(not(test))]\n",
+            "d45_import!();\n",
+            "fn verified_windows_identity_from_image("
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&injected, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a release-only item macro must not expand to a hidden macro import"
+    );
+    let include_expansion = GUARD.replacen(
+        owner,
+        "#[cfg(not(test))]\ninclude!(\"unreviewed-release-owner.rs\");\nfn verified_windows_identity_from_image(",
+        1,
+    );
+    assert_eq!(
+        contract(&include_expansion, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "unknown item macro expansion must not silently extend the verified owner"
+    );
+}
+
+#[test]
+fn raw_keyword_identifier_and_inert_module_macro_text_remain_green() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(
+        GUARD.matches(offline).count(),
+        1,
+        "stale WinTrust policy call"
+    );
+    let benign = GUARD.replacen(
+        offline,
+        concat!(
+            "    let r#use = 2 * 3; let _audit_number = r#use;\n",
+            "    let _inert_attr = stringify!(#[macro_use] mod bogus {});\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&benign, ROLE),
+        Ok(()),
+        "r#use is an identifier, multiplication is not an import glob, and stringify! is inert"
     );
 }
 
