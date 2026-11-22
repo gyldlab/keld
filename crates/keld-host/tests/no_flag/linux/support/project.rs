@@ -39,7 +39,7 @@ impl StageFixture {
 
 pub(crate) const PRODUCT_TITLE: &str = "KEL96 T4 Linux Fixture";
 
-fn bundle_t1b_entry(repo: &std::path::Path, project: &std::path::Path) -> String {
+fn bundle_t1b_entry(repo: &std::path::Path, project: &std::path::Path, harness: &str) -> String {
     let source = project.join("src/t1b-entry.ts");
     let bundled = project.join("src/t1b-entry.bundle.js");
     let api_link = serde_json::to_string(
@@ -58,14 +58,7 @@ fn bundle_t1b_entry(repo: &std::path::Path, project: &std::path::Path) -> String
         "import {{ DrainSignal, FrameKind, FrameReader, LIFECYCLE_CHANNEL, WriteQueue, errorFromErrFrame, isWin32PipeEndpoint, parseAppLink, withIoDeadline }} from {api_link};\n\
          import {{ parseWin32DiagnosticPort }} from {kipc};\n"
     );
-    fs::write(
-        &source,
-        format!(
-            "{prelude}{}",
-            include_str!("../../../fixtures/t1b_harness.ts")
-        ),
-    )
-    .expect("write Linux T1b bundle entry");
+    fs::write(&source, format!("{prelude}{harness}")).expect("write Linux T1b bundle entry");
     let output = Command::new("bun")
         .arg("build")
         .arg(&source)
@@ -90,6 +83,12 @@ pub(crate) struct ProductFixture {
 
 impl ProductFixture {
     pub(crate) fn new() -> Self {
+        Self::with_harness(include_str!("../../../fixtures/t1b_harness.ts"))
+    }
+
+    /// GH-1081 round 2 (research only): the same stock fixture with a
+    /// test-edited copy of the T1b harness source.
+    pub(crate) fn with_harness(harness: &str) -> Self {
         let root = tempfile::tempdir().expect("product fixture root");
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
             .expect("owner-private product fixture root");
@@ -106,7 +105,7 @@ impl ProductFixture {
             .parent()
             .and_then(std::path::Path::parent)
             .expect("workspace root");
-        let entry = bundle_t1b_entry(repo, &project);
+        let entry = bundle_t1b_entry(repo, &project, harness);
         fs::write(project.join("src/main.ts"), entry).expect("product entry");
         let sidecar = project.join("src/kipc-transport.ts");
         if sidecar.exists() {
