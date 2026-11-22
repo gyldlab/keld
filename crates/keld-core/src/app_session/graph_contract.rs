@@ -1165,6 +1165,28 @@ fn validate_updater_package(
     Ok(())
 }
 
+// Lock-root strings must match the exact first-party selectors in the root
+// package before copied graph admission. These are consistency checks only;
+// authority for the selected Git source and compiled archive is external.
+fn validate_first_party_root_lock(
+    root_dependencies: &serde_json::Map<String, serde_json::Value>,
+    locked_root: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), HostAppError> {
+    for name in ["@keld/api", "@keld/kipc"] {
+        let selected = root_dependencies
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| graph_error("first-party root lock", format!("missing {name}")))?;
+        if locked_root.get(name).and_then(serde_json::Value::as_str) != Some(selected) {
+            return Err(graph_error(
+                "first-party root lock",
+                format!("{name} root dependency differs from installed lock"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_package_data(dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostAppError> {
     let package = read_json(dir, "package.json")?;
     let lock = read_json(dir, "package-lock.json")?;
@@ -1238,22 +1260,7 @@ fn validate_package_data(dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostA
     {
         return Err(graph_error("lock", "root electron alias differs from lock"));
     }
-    // The exact two first-party provider selectors must agree with the npm
-    // lock root as well. Matching installed file hashes alone would otherwise
-    // admit a changed root dependency paired with an unchanged old lock and
-    // provider tree. This verifies only consistency, not source provenance.
-    for name in ["@keld/api", "@keld/kipc"] {
-        let selected = root_dependencies
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| graph_error("first-party root lock", format!("missing {name}")))?;
-        if locked_root.get(name).and_then(serde_json::Value::as_str) != Some(selected) {
-            return Err(graph_error(
-                "first-party root lock",
-                format!("{name} root dependency differs from installed lock"),
-            ));
-        }
-    }
+    validate_first_party_root_lock(root_dependencies, locked_root)?;
     for (root, expected_name) in PACKAGES {
         let manifest = read_json(dir, &format!("{root}/package.json"))?;
         if manifest.get("name").and_then(serde_json::Value::as_str) != Some(expected_name) {
