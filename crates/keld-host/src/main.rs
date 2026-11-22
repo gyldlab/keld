@@ -43,6 +43,67 @@ fn qualified_windows_role(args: &[std::ffi::OsString], dev_lease: bool) -> bool 
                 && args[1] == std::ffi::OsStr::new(WINDOWS_INITIAL_INSTALL_ARG)))
 }
 
+/// Retain the original Host owner's pure routing control independently of
+/// process-level refusal tests. A constant-false classifier would make all
+/// negative process cases green while silently disabling the no-flag Host.
+#[cfg(all(test, windows, feature = "windows-qualified-launch"))]
+mod qualified_windows_role_tests {
+    use super::{WINDOWS_INITIAL_INSTALL_ARG, qualified_windows_role};
+    use std::ffi::OsString;
+
+    #[test]
+    fn only_no_flag_and_exact_install_role_can_enter_qualified_host() {
+        let executable = OsString::from("keld-host.exe");
+        let base = vec![executable.clone()];
+        assert!(
+            qualified_windows_role(&base, false),
+            "qualified ordinary no-flag application launch must remain eligible"
+        );
+        assert!(
+            !qualified_windows_role(&base, true),
+            "developer lease must not enter installed mode"
+        );
+        let installation = vec![
+            executable.clone(),
+            OsString::from(WINDOWS_INITIAL_INSTALL_ARG),
+            OsString::from(r"C:\operator\initial-request.json"),
+        ];
+        assert_eq!(
+            qualified_windows_role(&installation, false),
+            cfg!(feature = "windows-initial-install"),
+            "only the opt-in original installer grammar may pass the raw argv gate"
+        );
+        assert!(!qualified_windows_role(&installation, true));
+        for args in [
+            vec![executable.clone(), OsString::from("--hello")],
+            vec![
+                executable.clone(),
+                OsString::from("--keld-windows-dev-stage-cleanup-v1"),
+            ],
+            vec![
+                executable.clone(),
+                OsString::from("--keld-profile-test-root-probe-v1"),
+            ],
+            vec![executable.clone(), OsString::from("--allow-unsigned")],
+            vec![
+                executable.clone(),
+                OsString::from(WINDOWS_INITIAL_INSTALL_ARG),
+            ],
+            vec![
+                executable.clone(),
+                OsString::from(WINDOWS_INITIAL_INSTALL_ARG),
+                OsString::from(r"C:\operator\initial-request.json"),
+                OsString::from("extra"),
+            ],
+        ] {
+            assert!(
+                !qualified_windows_role(&args, false),
+                "diagnostic, missing, extra or test arguments must not enter qualified Host"
+            );
+        }
+    }
+}
+
 #[cfg(all(windows, feature = "windows-qualified-launch"))]
 fn enforce_qualified_windows_args_or_exit(args: &[std::ffi::OsString]) {
     if !qualified_windows_role(args, env::var_os("KELD_DEV_LEASE").is_some()) {
