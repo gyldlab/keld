@@ -54,3 +54,94 @@ fn unknown_argument_is_cli_044_before_boot_selection() {
     assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
     assert!(!stderr.contains("keld.boot.json"), "{stderr}");
 }
+
+/// The original KEL-270 initial-install argument is reserved even when the
+/// feature has not been compiled. It must not fall through into the ordinary
+/// application boot, developer-role routing or WebView initialization.
+#[cfg(all(windows, not(feature = "windows-initial-install")))]
+#[test]
+fn original_initial_install_flag_without_feature_refuses_before_boot() {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg("--keld-install-initial-v3")
+        .arg(r"C:\untrusted\nonexistent-request.json")
+        .output()
+        .expect("run original reserved Windows initial-install argument");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("fixed refusal is UTF-8");
+    assert!(stderr.contains("KELD-HOST-INITIAL-001"), "{stderr}");
+    assert!(!stderr.contains("KELD-CLI-044"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+}
+
+/// The original Host role is deliberately NOT enabled as an installer. An
+/// exact syntactically valid role still refuses before reading its locator or
+/// creating anything, even when the private role feature is compiled.
+#[cfg(all(windows, feature = "windows-initial-install"))]
+#[test]
+fn original_exact_initial_install_role_refuses_uncommissioned_authority() {
+    let fixture = tempfile::tempdir().expect("private Windows refusal directory");
+    let request = fixture.path().join("missing-untrusted-request.json");
+    assert!(!request.exists());
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg("--keld-install-initial-v3")
+        .arg(&request)
+        .output()
+        .expect("run original private role without approved catalogue");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("fixed refusal is UTF-8");
+    assert!(stderr.contains("KELD-HOST-INITIAL-002"), "{stderr}");
+    assert!(!stderr.contains("KELD-HOST-INITIAL-001"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+    assert!(
+        !request.exists(),
+        "refusal must not create or open a missing untrusted request"
+    );
+    assert_eq!(
+        std::fs::read_dir(fixture.path())
+            .expect("inspect test-owned refusal directory")
+            .count(),
+        0,
+        "original role refusal must not publish any artifact"
+    );
+}
+
+#[cfg(all(windows, feature = "windows-initial-install"))]
+#[test]
+fn malformed_original_initial_install_locator_is_never_authority() {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg("--keld-install-initial-v3")
+        .arg("relative-untrusted-request.json")
+        .output()
+        .expect("run original role with a relative caller-controlled locator");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("fixed refusal is UTF-8");
+    assert!(stderr.contains("KELD-HOST-INITIAL-001"), "{stderr}");
+    assert!(!stderr.contains("KELD-HOST-INITIAL-002"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+}
+
+#[cfg(all(windows, feature = "windows-qualified-launch"))]
+#[test]
+fn qualified_windows_role_rejects_diagnostic_arguments_without_boot() {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg("--hello")
+        .output()
+        .expect("run qualified Windows Host with an unrecognized diagnostic role");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("fixed refusal is UTF-8");
+    assert!(stderr.contains("KELD-HOST-INITIAL-001"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+}
+
+#[cfg(all(windows, feature = "windows-qualified-launch"))]
+#[test]
+fn qualified_windows_role_refuses_developer_lease_before_boot() {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .env("KELD_DEV_LEASE", "1")
+        .output()
+        .expect("run qualified Windows Host with an unauthorized development lease");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("fixed refusal is UTF-8");
+    assert!(stderr.contains("KELD-HOST-INITIAL-001"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+}

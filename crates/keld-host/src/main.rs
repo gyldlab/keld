@@ -26,9 +26,37 @@ use std::process::{Command, Stdio};
 
 #[cfg(windows)]
 const WINDOWS_DEV_STAGE_CLEANUP_ARG: &str = "--keld-windows-dev-stage-cleanup-v1";
+#[cfg(windows)]
+const WINDOWS_INITIAL_INSTALL_ARG: &str = "--keld-install-initial-v3";
+#[cfg(all(windows, feature = "windows-initial-install"))]
+mod windows_initial_install;
+
+/// Original KEL-270 distribution argv owner. This classifier permits a
+/// syntactically exact private role, but its only compiled implementation
+/// continues to refuse production catalog authority without side effects.
+#[cfg(all(windows, feature = "windows-qualified-launch"))]
+fn qualified_windows_role(args: &[std::ffi::OsString], dev_lease: bool) -> bool {
+    !dev_lease
+        && (args.len() == 1
+            || (cfg!(feature = "windows-initial-install")
+                && args.len() == 3
+                && args[1] == std::ffi::OsStr::new(WINDOWS_INITIAL_INSTALL_ARG)))
+}
+
+#[cfg(all(windows, feature = "windows-qualified-launch"))]
+fn enforce_qualified_windows_args_or_exit(args: &[std::ffi::OsString]) {
+    if !qualified_windows_role(args, env::var_os("KELD_DEV_LEASE").is_some()) {
+        eprintln!(
+            "KELD-HOST-INITIAL-001: qualified Windows Host refuses developer leases, diagnostic roles and unrecognized arguments."
+        );
+        process::exit(2);
+    }
+}
 
 fn main() {
     let native_args: Vec<std::ffi::OsString> = env::args_os().collect();
+    #[cfg(all(windows, feature = "windows-qualified-launch"))]
+    enforce_qualified_windows_args_or_exit(&native_args);
     // Private Windows roles consume the untouched native argv first.
     #[cfg(windows)]
     if handle_windows_private_role(&native_args) {
@@ -172,6 +200,27 @@ fn pre_init_terminal(error: &keld_core::app_session::HostAppError) -> ! {
 
 #[cfg(windows)]
 fn handle_windows_private_role(args: &[std::ffi::OsString]) -> bool {
+    if args.get(1).map(std::ffi::OsString::as_os_str)
+        == Some(std::ffi::OsStr::new(WINDOWS_INITIAL_INSTALL_ARG))
+    {
+        #[cfg(feature = "windows-initial-install")]
+        {
+            match windows_initial_install::run(args) {
+                Ok(()) => return true,
+                Err(error) => {
+                    eprintln!("{error}");
+                    process::exit(1);
+                }
+            }
+        }
+        #[cfg(not(feature = "windows-initial-install"))]
+        {
+            eprintln!(
+                "KELD-HOST-INITIAL-001: initial installation is not compiled into this Host."
+            );
+            process::exit(2);
+        }
+    }
     if handle_profile_test_root_probe(args) {
         return true;
     }

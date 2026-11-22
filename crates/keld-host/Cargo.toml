@@ -13,6 +13,10 @@ authors.workspace = true
 profile-test-hooks = ["keld-core/profile-test-hooks"]
 # A debug-only signed fixture probe; release use fails in the forwarded KEL-135 feature.
 kel135-profile-test-root = ["keld-core/kel135-profile-test-root"]
+# Original KEL-270 Host-owner gates, reconciled from the independently pinned
+# 7ff41173 product implementation. Neither grants installer authorization.
+windows-qualified-launch = []
+windows-initial-install = ["windows-qualified-launch"]
 
 [[bin]]
 name = "keld-host"
