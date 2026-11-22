@@ -74,7 +74,7 @@ fn terminal_custody_is_not_consumed_before_writer_lock_acquisition() {
     dialog.reserve(owner, options(), WebviewId(3)).unwrap();
     dialog.take_work().unwrap();
     dialog
-        .record_native_outcome(owner, MacDialogUiOutcome::Dismissed)
+        .record_native_outcome(owner, MacDialogUiOutcome::Dismissed, None)
         .unwrap();
     // Deterministically deny writer acquisition. Restoring complete-before-lock
     // consumes the terminal and fails the custody assertions below. This is a

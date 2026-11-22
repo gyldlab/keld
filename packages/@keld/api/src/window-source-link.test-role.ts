@@ -5,9 +5,9 @@ import {
   isCallError,
   withIoDeadline,
   nativeFacadeBootSelected,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import { Worker, MessagePort } from "node:worker_threads";
-import { WorkerLink, FrameKind } from "../../kipc/src/transport.ts";
+import { WorkerLink, FrameKind } from "@keld/kipc";
 import type { WindowEvent } from "./window-codec.ts";
 
 const mode = process.argv[2];

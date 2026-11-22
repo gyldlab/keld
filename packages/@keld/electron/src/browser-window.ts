@@ -13,13 +13,13 @@ import {
   invokeWindow,
   invokeWindowBlocking,
   onWindowFactApplied,
-} from "../../api/src/app.ts";
+} from "@keld/api/internal/app";
 import type {
   Rect,
   WindowEvent,
   WindowRef,
   WindowRequest,
-} from "../../api/src/window-codec.ts";
+} from "@keld/api/internal/window-codec";
 import {
   stateDefineProperty,
   stateFreeze,
@@ -31,7 +31,7 @@ import {
   stateWeakMap,
   stateWeakMapGet,
   stateWeakMapSet,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import { emitNativeAppEvent } from "./app.ts";
 
 /** Known draw.io preferences; other fields are reported, never made authoritative. */

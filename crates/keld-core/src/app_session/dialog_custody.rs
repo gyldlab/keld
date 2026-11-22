@@ -3,7 +3,7 @@
 use super::{CorrelationId, PrimaryLinkIdentity};
 use keld_ipc::window::WindowRef;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct DialogOwner {
     pub(super) identity: PrimaryLinkIdentity,
     pub(super) attempt: u32,

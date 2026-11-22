@@ -7,8 +7,8 @@ import {
   type WindowRef,
   type WindowRequest,
   type WindowResponse,
-} from "./window-codec.ts";
-import { WindowSource } from "./window-source.ts";
+} from "../../api/src/window-codec.ts";
+import { WindowSource } from "../../api/src/window-source.ts";
 
 let dispatch: ((fact: WindowEvent) => void) | undefined;
 let onReady: (() => void) | undefined;
@@ -18,7 +18,7 @@ let nextReply: WindowResponse = { variant: "ReplyApplied" };
 const calls: WindowRequest[] = [];
 const source = new WindowSource((fact) => dispatch?.(fact));
 
-mock.module("./link.ts", () => ({
+mock.module("../../api/src/link.ts", () => ({
   LifecycleLink: {
     connect: async (
       _address: string,
@@ -60,7 +60,7 @@ const {
   getDispatchedPendingWindowCloses,
   invokeWindow,
   invokeWindowBlocking,
-} = await import("./app.ts");
+} = await import("../../api/src/app.ts");
 await app.whenReady();
 assert.equal(app.isReady(), true);
 assert.ok(onReady && dispatch);
@@ -263,7 +263,7 @@ assert.equal(source.get(ref)?.pending_close, null);
 // Veto. No obsolete receipt can manufacture a second CloseReply merely
 // because the module's static event subscription did not exist earlier.
 const originalCallCount = calls.length;
-const { BrowserWindow } = await import("../../electron/src/browser-window.ts");
+const { BrowserWindow } = await import("./browser-window.ts");
 const window = BrowserWindow.getAllWindows()[0];
 assert.equal(window.id, ref.id);
 await new Promise<void>((resolve) => setImmediate(resolve));

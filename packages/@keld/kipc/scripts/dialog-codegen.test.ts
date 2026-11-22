@@ -16,8 +16,24 @@ test("dialog codec is generated from the exact native schema", () => {
   expect(result).toContain('variant: "Cancel"');
   expect(result).toContain("encodeDialogRequest");
   expect(result).toContain("decodeDialogReply");
+  expect(result).toContain('variant: "Open"');
+  expect(result).toContain('variant: "Save"');
   expect(() =>
     render(source.replace("        nonce: u64,", "        nonce: u32,")),
+  ).toThrow();
+  const wrongOpenNonce = source.replace(
+    /(\bOpen\s*\{[\s\S]*?nonce:\s*)u64/,
+    "$1u32",
+  );
+  expect(wrongOpenNonce).not.toBe(source);
+  expect(() => render(wrongOpenNonce)).toThrow();
+  expect(() =>
+    render(
+      source.replace(
+        "pub enum OpenProperty {",
+        "pub enum OpenPropertyRenamed {",
+      ),
+    ),
   ).toThrow();
   expect(() =>
     render(

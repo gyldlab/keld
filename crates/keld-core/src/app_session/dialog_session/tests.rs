@@ -4,7 +4,11 @@ use super::{
 };
 use keld_ipc::window::{WindowGeneration, WindowId, WindowRef};
 use sha2::{Digest as _, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+
+#[path = "publication_tests.rs"]
+mod publication;
 
 fn with_manifest(
     source: &str,
@@ -33,6 +37,23 @@ fn original(correlation: u32, nonce: u64) -> DialogOwner {
         attempt: 1,
         correlation: CorrelationId(correlation),
         nonce,
+        parent: Some(WindowRef {
+            id: WindowId(1),
+            incarnation: WindowGeneration(1),
+        }),
+    }
+}
+
+/// Fixture identity for tests that do not exercise protocol nonce matching.
+/// Allocate the nonce at runtime so static analysis does not mistake a test
+/// literal for cryptographic nonce material.
+fn fixture_original(correlation: u32) -> DialogOwner {
+    static NEXT_NONCE: AtomicU64 = AtomicU64::new(1);
+    DialogOwner {
+        identity: PrimaryLinkIdentity::Fixture,
+        attempt: 1,
+        correlation: CorrelationId(correlation),
+        nonce: NEXT_NONCE.fetch_add(1, Ordering::Relaxed),
         parent: Some(WindowRef {
             id: WindowId(1),
             incarnation: WindowGeneration(1),
@@ -108,12 +129,12 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     assert!(session.take_work().expect("bounded pending work").is_some());
     assert!(!session.may_present(first).expect("tombstone"));
     session
-        .record_native_outcome(first, MacDialogUiOutcome::Dismissed)
+        .record_native_outcome(first, MacDialogUiOutcome::Dismissed, None)
         .expect("OS callback observed after cancellation");
     let terminal = session
         .complete(1, 9, MacDialogUiOutcome::Dismissed)
         .expect("OS callback modeled as already physically drained");
-    assert!(terminal == Some((first, Err(DialogFault::Cancelled))));
+    assert_eq!(terminal, Some((first, Err(DialogFault::Cancelled))));
     assert!(session.fully_drained());
     assert!(session.has_capacity());
     assert!(
@@ -146,6 +167,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
                 response: 2,
                 checkbox_checked: true,
             },
+            None,
         )
         .expect("real native click committed before event dispatch");
     let reply = session
@@ -158,15 +180,15 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
             },
         )
         .expect("observed physical native completion");
-    assert!(
-        reply
-            == Some((
-                first,
-                Ok(DialogReplyV1::Message {
-                    response: 2,
-                    checkbox_checked: true,
-                })
-            ))
+    assert_eq!(
+        reply,
+        Some((
+            first,
+            Ok(DialogReplyV1::Message {
+                response: 2,
+                checkbox_checked: true,
+            })
+        ))
     );
     assert_eq!(
         session.cancel(first.identity, 1, 17, CorrelationId(99)),
@@ -199,6 +221,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
                 response: 2,
                 checkbox_checked: false,
             },
+            None,
         )
         .expect("UI callback wins at physical observation");
     assert_eq!(
@@ -245,7 +268,7 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
         (None, true),
     ] {
         let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-        let owner = original(1, 1);
+        let owner = fixture_original(1);
         session.reserve(owner, options(), WebviewId(3)).unwrap();
         assert_eq!(
             session
@@ -265,7 +288,7 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
             response: 0,
             checkbox_checked: false,
         };
-        session.record_native_outcome(owner, outcome).unwrap();
+        session.record_native_outcome(owner, outcome, None).unwrap();
         let terminal = session
             .complete(owner.attempt, owner.nonce, outcome)
             .unwrap()
@@ -286,11 +309,93 @@ fn delayed_poll_preserves_only_pre_cutoff_native_completion() {
 }
 
 #[test]
+fn timely_open_result_survives_delayed_service_and_allows_next_save() {
+    use super::DialogWorkOptions;
+    use keld_native::dialog::{OpenDialogOptions, OpenProperty, SaveDialogOptions};
+    use std::time::Duration;
+
+    let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
+    let open = fixture_original(1);
+    session
+        .reserve_file(
+            open,
+            DialogWorkOptions::Open(OpenDialogOptions {
+                default_path: None,
+                filters: vec![],
+                properties: vec![OpenProperty::OpenFile],
+            }),
+            WebviewId(3),
+        )
+        .unwrap();
+    let work = session.take_work().unwrap().unwrap();
+    assert!(work.owner == open, "open reservation must keep its owner");
+    let tick = Duration::from_millis(1);
+    let callback_at = work
+        .deadline
+        .checked_sub(tick)
+        .expect("fixture callback instant before cutoff");
+    let serviced_at = work.deadline + tick;
+    assert!(
+        !session
+            .expire_if_due(open, work.deadline, Some(callback_at), serviced_at)
+            .unwrap()
+    );
+    assert!(!session.has_capacity());
+    let opened = DialogReplyV1::Open {
+        canceled: false,
+        file_paths: vec!["/tmp/keld-picker-selected.txt".to_owned()],
+    };
+    // A fixture observation of callback plus drain, not a real OS panel.
+    let observed = session
+        .poll_before_cleanup_deadline(open, || serviced_at, || Ok(Some(opened.clone())))
+        .unwrap();
+    session
+        .record_native_outcome(open, MacDialogUiOutcome::FileResult, observed)
+        .unwrap();
+    let (terminal_owner, terminal_result) = session
+        .complete(open.attempt, open.nonce, MacDialogUiOutcome::FileResult)
+        .unwrap()
+        .expect("open must publish one terminal result");
+    assert!(terminal_owner == open, "open terminal must keep its owner");
+    assert_eq!(terminal_result, Ok(opened));
+    assert!(session.fully_drained());
+
+    let save = fixture_original(2);
+    session
+        .reserve_file(
+            save,
+            DialogWorkOptions::Save(SaveDialogOptions {
+                default_path: None,
+                filters: vec![],
+                security_scoped_bookmarks: false,
+            }),
+            WebviewId(3),
+        )
+        .unwrap();
+    let work = session.take_work().unwrap().unwrap();
+    assert!(work.owner == save, "save reservation must keep its owner");
+    let saved = DialogReplyV1::Save {
+        canceled: false,
+        file_path: "/tmp/keld-picker-destination.txt".to_owned(),
+    };
+    session
+        .record_native_outcome(save, MacDialogUiOutcome::FileResult, Some(saved.clone()))
+        .unwrap();
+    let (terminal_owner, terminal_result) = session
+        .complete(save.attempt, save.nonce, MacDialogUiOutcome::FileResult)
+        .unwrap()
+        .expect("save must publish one terminal result");
+    assert!(terminal_owner == save, "save terminal must keep its owner");
+    assert_eq!(terminal_result, Ok(saved));
+    assert!(session.fully_drained());
+}
+
+#[test]
 fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
     use std::time::Instant;
     for retired in [false, true] {
         let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-        let owner = original(1, 1);
+        let owner = fixture_original(1);
         session.reserve(owner, options(), WebviewId(3)).unwrap();
         assert!(session.take_work().unwrap().is_some());
         let cutoff = Instant::now();
@@ -310,14 +415,14 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
             response: 0,
             checkbox_checked: false,
         };
-        session.record_native_outcome(owner, outcome).unwrap();
+        session.record_native_outcome(owner, outcome, None).unwrap();
         let result = session
             .complete(owner.attempt, owner.nonce, outcome)
             .unwrap();
         if retired {
             assert!(result.is_none());
         } else {
-            assert!(result == Some((owner, Err(DialogFault::Cancelled))));
+            assert_eq!(result, Some((owner, Err(DialogFault::Cancelled))));
         }
         assert!(session.fully_drained());
     }
@@ -327,7 +432,7 @@ fn deadline_arbitration_preserves_prior_cancel_and_retirement() {
 fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     assert!(session.take_work().unwrap().is_some());
     let started = Instant::now();
@@ -358,7 +463,7 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
         .complete(owner.attempt, owner.nonce, MacDialogUiOutcome::Dismissed)
         .unwrap();
     assert!(session.fully_drained());
-    let next = original(2, 2);
+    let next = fixture_original(2);
     session.reserve(next, options(), WebviewId(3)).unwrap();
     assert!(
         session
@@ -372,7 +477,7 @@ fn cleanup_deadline_fails_without_releasing_custody_and_never_restarts() {
 fn cancel_and_retirement_start_their_owned_cleanup_clocks() {
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     let before = Instant::now();
     session
@@ -406,7 +511,7 @@ fn late_cleanup_poll_does_not_consume_newly_available_drain() {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     let cutoff = Instant::now() + Duration::from_secs(10);
     session.begin_cleanup(owner, cutoff).unwrap();
@@ -453,7 +558,7 @@ fn poll_crossing_cleanup_cutoff_cannot_release_owner() {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
     let (session, _wake, _temp) = with_manifest(r#"{"app":{"system":["dialog"]}}"#);
-    let owner = original(1, 1);
+    let owner = fixture_original(1);
     session.reserve(owner, options(), WebviewId(3)).unwrap();
     let cutoff = Instant::now() + Duration::from_secs(10);
     session.begin_cleanup(owner, cutoff).unwrap();

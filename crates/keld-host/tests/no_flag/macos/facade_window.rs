@@ -927,12 +927,12 @@ if (process.env.KELD_F2_RECOVER !== "1" || successor) {
     if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== undefined) throw new Error("actual env was not deleted");
   }
 }
-const first = await import("./packages/@keld/kipc/src/transport.ts");
+const first = await import("./packages/node_modules/@keld/kipc/src/transport.ts");
 if (process.env.KELD_F2_HAS_SIDECAR === "1") {
   const preloaded = await import("./kipc-transport.ts");
   if (first === preloaded || first.WorkerLink === preloaded.WorkerLink) throw new Error("distinct package copy collapsed into preload");
 }
-const { app, BrowserWindow } = await import("./packages/@keld/electron/src/index.ts");
+const { app, BrowserWindow } = await import("./packages/node_modules/@keld/electron/src/index.ts");
 if (app.isReady()) throw new Error("pre-Ready boundary missed");
 let code = "accepted";
 try { await app.quit(); } catch (error) {
@@ -1113,8 +1113,8 @@ import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 Reflect.set(process.env, "KELD_NATIVE_WINDOW_FACADE", "1");
 if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== "1") throw new Error("actual env was not set");
-const transport = await import("./packages/@keld/kipc/src/transport.ts");
-const { app } = await import("./packages/@keld/electron/src/index.ts");
+const transport = await import("./packages/node_modules/@keld/kipc/src/transport.ts");
+const { app } = await import("./packages/node_modules/@keld/electron/src/index.ts");
 await app.whenReady();
 const control = createConnection({ path: process.env.KELD_T1B_CONTROL! });
 await new Promise<void>((resolve, reject) => { control.once("connect", resolve); control.once("error", reject); });

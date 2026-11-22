@@ -5,6 +5,193 @@ use keld_native::dialog::{
     CancelDisposition, DialogReplyV1, DialogRequestV1, decode_dialog_request,
 };
 
+fn file_filter() -> keld_native::dialog::FileDialogFilter {
+    keld_native::dialog::FileDialogFilter {
+        name: "draw.io".into(),
+        extensions: vec!["drawio".into(), "xml".into()],
+    }
+}
+
+#[test]
+fn open_and_save_append_after_original_message_and_cancel_bytes() {
+    use keld_native::dialog::{OpenDialogOptions, OpenProperty, SaveDialogOptions};
+    let open = DialogRequestV1::Open {
+        nonce: 1,
+        parent: None,
+        options: OpenDialogOptions {
+            default_path: None,
+            filters: vec![],
+            properties: vec![OpenProperty::OpenFile, OpenProperty::OpenDirectory],
+        },
+    };
+    let save = DialogRequestV1::Save {
+        nonce: 1,
+        parent: None,
+        options: SaveDialogOptions {
+            default_path: None,
+            filters: vec![],
+            security_scoped_bookmarks: false,
+        },
+    };
+    let open_bytes = encode(&open).expect("Open postcard");
+    let save_bytes = encode(&save).expect("Save postcard");
+    assert_eq!(open_bytes, [2, 1, 0, 0, 0, 2, 0, 1]);
+    assert_eq!(save_bytes, [3, 1, 0, 0, 0, 0]);
+    assert_eq!(
+        decode_dialog_request(&open_bytes).expect("decode Open"),
+        open
+    );
+    assert_eq!(
+        decode_dialog_request(&save_bytes).expect("decode Save"),
+        save
+    );
+    assert_eq!(
+        encode(&DialogReplyV1::Open {
+            canceled: true,
+            file_paths: vec![],
+        })
+        .expect("empty Open cancellation"),
+        [2, 1, 0]
+    );
+    assert_eq!(
+        encode(&DialogReplyV1::Save {
+            canceled: true,
+            file_path: String::new(),
+        })
+        .expect("empty Save cancellation"),
+        [3, 1, 0]
+    );
+    assert_eq!(
+        encode(&DialogReplyV1::Message {
+            response: 2,
+            checkbox_checked: false,
+        })
+        .unwrap(),
+        [0, 2, 0]
+    );
+    assert_eq!(
+        encode(&DialogReplyV1::Cancel {
+            disposition: CancelDisposition::Requested,
+        })
+        .unwrap(),
+        [1, 0]
+    );
+}
+
+#[test]
+fn file_dialog_options_reject_unsafe_filter_grammar_and_bookmark_authority() {
+    use keld_native::dialog::{OpenDialogOptions, OpenProperty, SaveDialogOptions};
+    let minimal_open = OpenDialogOptions {
+        default_path: Some("filename.drawio".into()),
+        filters: vec![file_filter()],
+        properties: vec![OpenProperty::OpenFile, OpenProperty::OpenDirectory],
+    };
+    let request = |options| DialogRequestV1::Open {
+        nonce: 1,
+        parent: None,
+        options,
+    };
+    assert!(decode_dialog_request(&encode(&request(minimal_open.clone())).unwrap()).is_ok());
+    for extensions in [
+        vec!["*.drawio".into()],
+        vec![".xml".into()],
+        vec!["x/y".into()],
+        vec!["drawio".into(), "drawio".into()],
+        vec![],
+        vec!["x".repeat(129)],
+        vec!["*".into(), "drawio".into()],
+        vec!["a\u{007f}".into()],
+    ] {
+        let mut invalid = minimal_open.clone();
+        invalid.filters[0].extensions = extensions;
+        assert!(decode_dialog_request(&encode(&request(invalid)).unwrap()).is_err());
+    }
+    let mut too_many = minimal_open.clone();
+    too_many.filters = vec![file_filter(); 33];
+    assert!(decode_dialog_request(&encode(&request(too_many)).unwrap()).is_err());
+    let mut duplicate_property = minimal_open.clone();
+    duplicate_property.properties.push(OpenProperty::OpenFile);
+    assert!(decode_dialog_request(&encode(&request(duplicate_property)).unwrap()).is_err());
+    let mut overlong = minimal_open;
+    overlong.default_path = Some("x".repeat(4097));
+    assert!(decode_dialog_request(&encode(&request(overlong)).unwrap()).is_err());
+
+    let save = SaveDialogOptions {
+        default_path: None,
+        filters: vec![file_filter()],
+        security_scoped_bookmarks: true,
+    };
+    assert!(
+        decode_dialog_request(
+            &encode(&DialogRequestV1::Save {
+                nonce: 1,
+                parent: None,
+                options: save,
+            })
+            .unwrap()
+        )
+        .is_err(),
+        "bookmark must not mint a scope/blank file"
+    );
+}
+
+#[test]
+fn file_result_paths_reject_nonabsolute_or_unsafe_native_values_and_cancel_with_files() {
+    use keld_native::dialog::validate_dialog_reply;
+    let positive = DialogReplyV1::Open {
+        canceled: false,
+        file_paths: vec!["/tmp/one.drawio".into(), "/tmp/two.xml".into()],
+    };
+    validate_dialog_reply(&positive).expect("two real absolute POSIX paths");
+    for path in [
+        "",
+        "./relative.drawio",
+        "C:\\Windows",
+        "../escape",
+        "/tmp/x\0y",
+        "/tmp/dir\\file",
+    ] {
+        assert!(
+            validate_dialog_reply(&DialogReplyV1::Open {
+                canceled: false,
+                file_paths: vec![path.into()],
+            })
+            .is_err(),
+            "bad path {path:?}"
+        );
+        assert!(
+            validate_dialog_reply(&DialogReplyV1::Save {
+                canceled: false,
+                file_path: path.into(),
+            })
+            .is_err()
+        );
+    }
+    assert!(
+        validate_dialog_reply(&DialogReplyV1::Open {
+            canceled: true,
+            file_paths: vec!["/tmp/last-choice".into()],
+        })
+        .is_err(),
+        "Cancel must never replay the last selected path"
+    );
+    assert!(
+        validate_dialog_reply(&DialogReplyV1::Save {
+            canceled: true,
+            file_path: "/tmp/last-choice".into(),
+        })
+        .is_err()
+    );
+    assert!(
+        validate_dialog_reply(&DialogReplyV1::Open {
+            canceled: false,
+            file_paths: vec!["/tmp/valid".into(); 33],
+        })
+        .is_err(),
+        "returned paths bounded at 32 before the wire"
+    );
+}
+
 #[test]
 fn cancel_uses_a_distinct_wire_variant_and_a_nonzero_nonce() {
     let bytes = [1, 1];

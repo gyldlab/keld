@@ -65,114 +65,139 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
     let stage = fixture.stage();
 
     if phase == "prepare" {
-        fs::create_dir(&support_root).expect("create persistent profile metadata root");
-        fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
-            .expect("protect persistent profile metadata root");
-        let app_root = canonical_root.join("signed-apps");
-        fs::create_dir(&app_root).expect("create durable signed fixture parent");
-        fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
-            .expect("protect durable signed fixture parent");
-        let signer = valid_macos_codesign_hashes()
-            .into_iter()
-            .next()
-            .expect("an Apple Development signing identity is required");
-        let bundle_id = format!("dev.keld.fixture.profile.reboot.{}", std::process::id());
-        let app = build_signed_profile_app(
-            stage.root(),
-            &app_root,
-            "ProfileAppRebootRecovery",
-            &bundle_id,
-            &signer,
-        );
-        let identity = run_signed_identity_report(&app);
-        let os_boot_before = system_boot_uuid_hex();
-        let mut origin = ProfileOrigin::new();
-        let nonce = String::from("keld-kel135-reboot-preserved-state");
-        let mut owner = spawn_profile_host(
-            signed_host_executable(&app),
-            &support_root,
-            &origin.address,
-            "seed",
-            "reboot-crash-owner",
-        );
-        let seeded = origin
-            .wait_for_report("seed", Some(&nonce))
-            .expect("signed profile owner rendered its seed page");
-        for key in ["local", "cookie", "idb", "cache"] {
-            assert_eq!(seeded.get(key).map(String::as_str), Some(nonce.as_str()));
-        }
-        assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
-        let owner_log = fs::read_to_string(support_root.join("reboot-crash-owner.log"))
-            .expect("read active owner store evidence");
-        assert_store_report_matches(&owner_log, &identity["store_uuid"]);
-        let prior_boot = boot_uuid_from_log(&owner_log);
-        assert!(
-            prior_boot == os_boot_before,
-            "Keld boot readback must equal the independent sysctl oracle"
-        );
-        let crashed = kill_profile_host(&mut owner);
-        assert_eq!(crashed.signal(), Some(9), "owner must terminate by SIGKILL");
-
-        let same_boot = Command::new(signed_host_executable(&app))
-            .arg("--keld-profile-webview-fixture-v1")
-            .env("KELD_PROFILE_TEST_ROOT", &support_root)
-            .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
-            .env_remove("KELD_PROFILE_TEST_BOOT_UUID")
-            .env(
-                "KELD_PROFILE_FIXTURE_URL",
-                format!("http://{}/unused", origin.address),
-            )
-            .stdin(Stdio::null())
-            .output()
-            .expect("launch same-boot quarantine negative control");
-        assert!(!same_boot.status.success());
-        let same_boot_text = String::from_utf8_lossy(&same_boot.stderr);
-        assert!(
-            same_boot_text.contains("recovery state cannot be proven"),
-            "same-boot quarantine must report unproven recovery"
-        );
-        assert!(
-            same_boot_text.contains("startup-resource-attempts listener=0 child=0 window=0"),
-            "same-boot quarantine must fail before app resources"
-        );
-
-        let manifest = std::collections::BTreeMap::from([
-            (String::from("app"), app.display().to_string()),
-            (
-                String::from("support_root"),
-                support_root.display().to_string(),
-            ),
-            (String::from("origin"), origin.address.clone()),
-            (String::from("team_id"), identity["team_id"].clone()),
-            (
-                String::from("signing_identifier"),
-                identity["signing_identifier"].clone(),
-            ),
-            (
-                String::from("profile_identity"),
-                identity["profile_identity"].clone(),
-            ),
-            (String::from("store_uuid"), identity["store_uuid"].clone()),
-            (String::from("nonce"), nonce),
-            (String::from("boot_uuid_hex"), prior_boot.clone()),
-        ]);
-        let encoded = serde_json::to_vec(&manifest).expect("encode durable reboot manifest");
-        fs::write(&manifest_path, encoded).expect("persist reboot resume manifest");
-        fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o600))
-            .expect("protect reboot resume manifest");
-        eprintln!(
-            "KELD_KEL135_MACOS_REBOOT_PREPARED os={} team={} identifier={} uuid={} boot_identity_recorded=true same_boot=quarantined owner_exit=SIGKILL root={} next=physically-restart-macOS",
-            sw_vers_value("-productVersion"),
-            identity["team_id"],
-            identity["signing_identifier"],
-            identity["store_uuid"],
-            canonical_root.display(),
-        );
+        prepare_reboot_phase(stage.root(), &canonical_root, &support_root, &manifest_path);
         return;
     }
+    verify_reboot_resume(stage.root(), &manifest_path);
+    fs::remove_dir_all(&canonical_root).expect("remove completed isolated reboot fixture root");
+}
 
+// The durable prepare phase retains its exact owner SIGKILL and same-boot
+// negative controls before the manifest can be persisted.
+fn prepare_reboot_phase(
+    stage_root: &std::path::Path,
+    canonical_root: &std::path::Path,
+    support_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+) {
+    fs::create_dir(support_root).expect("create persistent profile metadata root");
+    fs::set_permissions(support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect persistent profile metadata root");
+    let app_root = canonical_root.join("signed-apps");
+    fs::create_dir(&app_root).expect("create durable signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect durable signed fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("an Apple Development signing identity is required");
+    let bundle_id = format!("dev.keld.fixture.profile.reboot.{}", std::process::id());
+    let app = build_signed_profile_app(
+        stage_root,
+        &app_root,
+        "ProfileAppRebootRecovery",
+        &bundle_id,
+        &signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let os_boot_before = system_boot_uuid_hex();
+    let mut origin = ProfileOrigin::new();
+    let nonce = String::from("keld-kel135-reboot-preserved-state");
+    let mut owner = spawn_profile_host(
+        signed_host_executable(&app),
+        support_root,
+        &origin.address,
+        "seed",
+        "reboot-crash-owner",
+    );
+    let seeded = origin
+        .wait_for_report("seed", Some(&nonce))
+        .expect("signed profile owner rendered its seed page");
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(seeded.get(key).map(String::as_str), Some(nonce.as_str()));
+    }
+    assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+    let owner_log = fs::read_to_string(support_root.join("reboot-crash-owner.log"))
+        .expect("read active owner store evidence");
+    assert_store_report_matches(&owner_log, &identity["store_uuid"]);
+    let prior_boot = boot_uuid_from_log(&owner_log);
+    assert!(
+        prior_boot == os_boot_before,
+        "Keld boot readback must equal the independent sysctl oracle"
+    );
+    let crashed = kill_profile_host(&mut owner);
+    assert_eq!(crashed.signal(), Some(9), "owner must terminate by SIGKILL");
+
+    assert_same_boot_quarantine(&app, support_root, &origin.address);
+
+    let manifest = std::collections::BTreeMap::from([
+        (String::from("app"), app.display().to_string()),
+        (
+            String::from("support_root"),
+            support_root.display().to_string(),
+        ),
+        (String::from("origin"), origin.address.clone()),
+        (String::from("team_id"), identity["team_id"].clone()),
+        (
+            String::from("signing_identifier"),
+            identity["signing_identifier"].clone(),
+        ),
+        (
+            String::from("profile_identity"),
+            identity["profile_identity"].clone(),
+        ),
+        (String::from("store_uuid"), identity["store_uuid"].clone()),
+        (String::from("nonce"), nonce),
+        (String::from("boot_uuid_hex"), prior_boot.clone()),
+    ]);
+    let encoded = serde_json::to_vec(&manifest).expect("encode durable reboot manifest");
+    fs::write(manifest_path, encoded).expect("persist reboot resume manifest");
+    fs::set_permissions(manifest_path, fs::Permissions::from_mode(0o600))
+        .expect("protect reboot resume manifest");
+    eprintln!(
+        "KELD_KEL135_MACOS_REBOOT_PREPARED os={} team={} identifier={} uuid={} boot_identity_recorded=true same_boot=quarantined owner_exit=SIGKILL root={} next=physically-restart-macOS",
+        sw_vers_value("-productVersion"),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        canonical_root.display(),
+    );
+}
+
+fn assert_same_boot_quarantine(
+    app: &std::path::Path,
+    support_root: &std::path::Path,
+    origin_address: &str,
+) {
+    let same_boot = Command::new(signed_host_executable(app))
+        .arg("--keld-profile-webview-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", support_root)
+        .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
+        .env_remove("KELD_PROFILE_TEST_BOOT_UUID")
+        .env(
+            "KELD_PROFILE_FIXTURE_URL",
+            format!("http://{origin_address}/unused"),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch same-boot quarantine negative control");
+    assert!(!same_boot.status.success());
+    let same_boot_text = String::from_utf8_lossy(&same_boot.stderr);
+    assert!(
+        same_boot_text.contains("recovery state cannot be proven"),
+        "same-boot quarantine must report unproven recovery"
+    );
+    assert!(
+        same_boot_text.contains("startup-resource-attempts listener=0 child=0 window=0"),
+        "same-boot quarantine must fail before app resources"
+    );
+}
+
+// Resume can run only after the main test authenticated the original
+// persisted root and chose the actual post-reboot phase. Cleanup stays there.
+fn verify_reboot_resume(stage_root: &std::path::Path, manifest_path: &std::path::Path) {
     let manifest: std::collections::BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&manifest_path).expect("read prepare manifest"))
+        serde_json::from_slice(&fs::read(manifest_path).expect("read prepare manifest"))
             .expect("decode prepare manifest");
     let app = PathBuf::from(&manifest["app"]);
     let support_root = PathBuf::from(&manifest["support_root"]);
@@ -180,7 +205,7 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
         .into_iter()
         .next()
         .expect("an Apple Development signing identity is required");
-    refresh_signed_profile_app(stage.root(), &app, &signer);
+    refresh_signed_profile_app(stage_root, &app, &signer);
     let identity = run_signed_identity_report(&app);
     let os_boot_after = system_boot_uuid_hex();
     let os_boot_time = system_boot_time_seconds();
@@ -196,14 +221,15 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
         );
     }
     let mut origin = ProfileOrigin::bind(&manifest["origin"]);
-    let state = origin.run_profile(&app, &support_root, "read", "reboot-recovered-read", None);
+    let restored_report =
+        origin.run_profile(&app, &support_root, "read", "reboot-recovered-read", None);
     for key in ["local", "cookie", "idb", "cache"] {
         assert_eq!(
-            state.get(key).map(String::as_str),
+            restored_report.get(key).map(String::as_str),
             Some(manifest["nonce"].as_str())
         );
     }
-    assert_eq!(state.get("sw").map(String::as_str), Some("true"));
+    assert_eq!(restored_report.get("sw").map(String::as_str), Some("true"));
     let report = fs::read_to_string(support_root.join("reboot-recovered-read.log"))
         .expect("read post-reboot selected store report");
     assert_store_report_matches(&report, &manifest["store_uuid"]);
@@ -245,5 +271,4 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
         previous_boot_evidence,
         os_boot_time,
     );
-    fs::remove_dir_all(&canonical_root).expect("remove completed isolated reboot fixture root");
 }
