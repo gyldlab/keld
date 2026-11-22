@@ -78,6 +78,15 @@ if ($LASTEXITCODE -ne 0) { throw 'App VerifyTrust failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Recovery VerifyTrust failed' }
 ~~~
 
+The two SignTool verification commands are independent diagnostics.
+The /pa /all option does **not** prove one-primary/zero-secondary signature
+cardinality, that the inspected signer is the sole approved KELD profile,
+or that the exact image bytes were checked through a retained original hFile.
+The native D45 verifier must enforce these properties on its retained handle.
+Until then, signature cardinality, commissioned role, root certificate and
+leaf-issuer SPKI cohorts remain UNKNOWN. A valid Windows signature alone
+does not commission any KELD publisher or grant a recovery role.
+
 The separate metadata files name actual matching-region Endpoint,
 CodeSigningAccountName, and CertificateProfileName. Microsoft requires a
 supported SDK SignTool, matching dlib, .NET 8, and signer role access. The
@@ -89,32 +98,69 @@ artifact and its signer evidence. The command is not executed by this handoff.
 
 ## Independent public read-only preflight
 
-Use only OWNER-PINNED hashes/OIDs. This reads file signatures and role EKUs;
-it does not prove Keld native retained-handle signature binding, full
-issuer/root cohorts, revocation, or installed acceptance:
+Use only OWNER-PINNED hashes/OIDs. This script makes **separate, unbound
+path observations**. Get-FileHash A, Get-AuthenticodeSignature B and
+Get-FileHash A can observe different underlying files through the same
+mutable path, even when the first and last digest match. The SHA256
+observation never authenticates the separately observed signature.
+Treat every mutable or untrusted path as entirely nonauthorizing. File
+authenticity and identity require D45's native retained original-hFile
+verification. Windows Authenticode status and selected leaf EKUs do not
+establish a commissioned role, approved root/issuer-SPKI cohorts, exact
+signature cardinality, native chain/revocation rules or installed acceptance:
 
 ~~~powershell
 powershell.exe -NoProfile -NonInteractive -File docs/engineering/evidence/kel270-catalogue-admission-v2/t81_public_image_preflight.ps1 -ApplicationHost '<original signed app Host.exe>' -ApplicationSha256 '<independent SHA256>' -ApplicationProfileOid '<commissioned application OID>' -RecoveryHost '<original signed recovery Host.exe>' -RecoverySha256 '<independent SHA256>' -RecoveryProfileOid '<commissioned recovery OID>'
 ~~~
 
-Only the marker T81_PUBLIC_PREFLIGHT_ONLY_NOT_RELEASE_AUTHORITY can appear on
-a successful preliminary check. It cannot mean T81 or release PASS.
+The script prints separate T81_RAW_PATH_HASH_UNBOUND and
+T81_RAW_PATH_SIGNATURE_UNBOUND observations and
+T81_NATIVE_D45_ORIGINAL_HANDLE_REQUIRED with
+root_issuer_spki=UNKNOWN, signature_cardinality=UNKNOWN and
+commissioned_role=UNKNOWN. Its final
+T81_PATH_OBSERVATIONS_ONLY_UNBOUND_NONAUTHORIZING marker conveys no
+release status. Even an exit code of zero does not qualify T81, an artifact
+or a positive Windows release. Subsequent native D45 identity, root/issuer,
+cardinality and role checks are mandatory on original retained handles.
+
+Run the read-only PowerShell 5.1 negative controls separately:
+
+~~~powershell
+powershell.exe -NoProfile -NonInteractive -File docs/engineering/evidence/kel270-catalogue-admission-v2/t81_public_image_preflight_test.ps1 -Case all
+~~~
+
+This uses nonexistent file names to prove canonical OID refusal before I/O
+and checks the two documentation/source claims. It reports
+T81_NEGATIVE_NOT_RUN for the optional local-test Authenticode case unless
+the operator supplies a real existing, separately retained LocalTest Host
+through -LocalTestFixture. No fixture or test may produce commissioning
+authority, and no local certificate should be created to make it pass.
 
 ## Isolated ordinary SID native acceptance
 
-After authentic artifacts and owner review, log in INTERACTIVELY as a fresh
-separate standard Windows user with an independent user SID and disposable
-profile. Do not run against or change the existing shared Admin installation.
-Run this read-only identity precheck in the ordinary-user session:
+After authentic artifacts and owner review, the Windows operator must use
+a separately commissioned disposable standard-user ACCOUNT with its own
+SID and owner-private profile. Do not run against or change the shared Admin
+installation. A filtered Admin token can report a disabled administrator
+role while retaining the SAME administrator account SID. It is not an
+ordinary-user acceptance account. Run this read-only **raw token snapshot**
+in the candidate session:
 
 ~~~powershell
-$Sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$SharedAdminSid = '<independently recorded shared Admin SID>'
-if ($SharedAdminSid -notmatch '^S-1-' -or $Sid -eq $SharedAdminSid) { throw 'Ordinary SID is not distinct' }
-if ($Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrative token refused' }
-Write-Output "T81_ORDINARY_SID_OBSERVED sid=$Sid profile=$env:USERPROFILE"
+# Absolute whoami /all output includes user SID, group SIDs, attributes and
+# deny-only entries. The snapshot gives no identity or acceptance grant.
+& (Join-Path $env:SystemRoot 'System32\whoami.exe') /all
+if ($LASTEXITCODE -ne 0) { throw 'Raw Windows token snapshot failed' }
+Write-Output 'T81_RAW_TOKEN_SNAPSHOT_ONLY_NOT_SID_ACCEPTANCE'
 ~~~
+
+An independent Windows operator must compare the raw account SID with the
+separately recorded shared Admin account SID, confirm the new account's
+local SAM/LSA and nested account membership, and assess all group attributes
+including disabled or deny-only Administrators SIDs. The operator also
+verifies the disposable LocalAppData root and profile owner. No output from
+this snippet alone qualifies the account as ordinary; filtered Admin tokens
+and shared Admin profile reuse must be rejected before starting an installer.
 
 The current GH894 command is executable only with its required independent
 pins, but it proves the legacy signed-installed KEL135/KEL254 path, not

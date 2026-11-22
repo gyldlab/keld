@@ -1,7 +1,9 @@
-# T81 public, non-authorizing Windows signature preflight.
-# This reads published files and their public signer certificates. It does not
-# sign, import a certificate, modify trust, install, or grant Keld authority.
-# The values must come from the independent release-owner record.
+# T81 public path observations only; non-authorizing and UNBOUND.
+# Get-FileHash and Get-AuthenticodeSignature reopen by path separately.
+# Even hash A -> signature B -> hash A cannot prove one original file handle.
+# Only the native D45 retained-hFile verifier can bind signer and exact bytes.
+# This never signs, changes trust, installs, or grants Keld release authority.
+# Expected hashes and profile OIDs come from an independent release-owner record.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ApplicationHost,
@@ -16,16 +18,31 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Assert-Oid([string]$Name, [string]$Value) {
-    if ($Value -cnotmatch '^[0-2]\.([0-9]+\.)+[0-9]+$' -or $Value.Length -gt 255 -or
-        $Value -match '(^|\.)0[0-9]+' -or
+    # Same numeric/byte grammar as identity.md:38-46. This checks only syntax,
+    # not actual commissioning or membership of an issuer/profile cohort.
+    if ($Value.Length -lt 3 -or $Value.Length -gt 255 -or
+        $Value -cnotmatch '^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))+$' -or
         $Value -eq '1.3.6.1.5.5.7.3.3' -or
-        $Value -eq '1.3.6.1.4.1.311.97.1.0') {
+        $Value -eq '1.3.6.1.4.1.311.97.1.0' -or
+        $Value -cmatch '^1\.3\.6\.1\.4\.1\.311\.97\.1\.3(?:\.|$)') {
         throw "T81-PUBLIC-PREFLIGHT: malformed or generic $Name"
+    }
+    $arcs = $Value.Split('.')
+    if ($arcs.Count -lt 2 -or $arcs.Count -gt 64) {
+        throw "T81-PUBLIC-PREFLIGHT: malformed or generic $Name"
+    }
+    for ($index = 0; $index -lt $arcs.Count; $index++) {
+        [uint32]$parsed = 0
+        if (-not [uint32]::TryParse($arcs[$index], [ref]$parsed) -or
+            ($index -eq 0 -and $parsed -gt 2) -or
+            ($index -eq 1 -and [uint32]$arcs[0] -lt 2 -and $parsed -gt 39)) {
+            throw "T81-PUBLIC-PREFLIGHT: malformed or generic $Name"
+        }
     }
 }
 
-function Test-Image([string]$Role, [string]$Source, [string]$ExpectedSha,
-                    [string]$RequiredProfile, [string]$ForbiddenProfile) {
+function Read-UnboundPathObservations([string]$Role, [string]$Source, [string]$ExpectedSha,
+                                     [string]$RequiredProfile, [string]$ForbiddenProfile) {
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
         throw "T81-PUBLIC-PREFLIGHT: $Role image missing"
     }
@@ -37,8 +54,16 @@ function Test-Image([string]$Role, [string]$Source, [string]$ExpectedSha,
     if ($firstSha -cne $ExpectedSha.ToUpperInvariant()) {
         throw "T81-PUBLIC-PREFLIGHT: $Role independent SHA256 mismatch"
     }
+    Write-Output "T81_RAW_PATH_HASH_UNBOUND role=$Role phase=before sha256=$firstSha"
 
+    # A second PATH lookup; the signature is NOT bound to the hash above.
     $signature = Get-AuthenticodeSignature -LiteralPath $path
+    $thumb = if ($null -ne $signature.SignerCertificate) {
+        $signature.SignerCertificate.Thumbprint
+    } else {
+        'ABSENT'
+    }
+    Write-Output "T81_RAW_PATH_SIGNATURE_UNBOUND role=$Role status=$($signature.Status) type=$($signature.SignatureType) leaf_thumbprint=$thumb"
     if ($signature.Status.ToString() -cne 'Valid' -or
         $signature.SignatureType.ToString() -cne 'Authenticode' -or
         $null -eq $signature.SignerCertificate) {
@@ -57,11 +82,16 @@ function Test-Image([string]$Role, [string]$Source, [string]$ExpectedSha,
     if ($ekus -ccontains $ForbiddenProfile) {
         throw "T81-PUBLIC-PREFLIGHT: $Role carries forbidden opposite-role EKU"
     }
-    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne $firstSha) {
+    # A third PATH lookup is still not a retained-hFile identity proof.
+    $lastSha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    if ($lastSha -cne $firstSha) {
         throw "T81-PUBLIC-PREFLIGHT: $Role changed during read-only inspection"
     }
-    # Thumbprints describe observed leaves. They are not durable profile pins.
-    Write-Output "T81_PUBLIC_IMAGE_OBSERVED role=$Role sha256=$firstSha profile_oid=$RequiredProfile leaf_thumbprint=$($cert.Thumbprint)"
+    Write-Output "T81_RAW_PATH_HASH_UNBOUND role=$Role phase=after sha256=$lastSha"
+    # Windows Status Valid + leaf EKUs are necessary observations only.
+    # Full native issuer/root, one-primary/zero-secondary, and commissioned
+    # role authority remain UNKNOWN, even if every above observation succeeds.
+    Write-Output "T81_NATIVE_D45_ORIGINAL_HANDLE_REQUIRED role=$Role file_signature_binding=UNBOUND root_issuer_spki=UNKNOWN signature_cardinality=UNKNOWN commissioned_role=UNKNOWN"
 }
 
 if ($env:OS -cne 'Windows_NT') {
@@ -77,6 +107,6 @@ Assert-Oid 'RecoveryProfileOid' $RecoveryProfileOid
 if ($ApplicationProfileOid -ceq $RecoveryProfileOid) {
     throw 'T81-PUBLIC-PREFLIGHT: application/recovery profile OIDs must differ'
 }
-Test-Image 'application' $ApplicationHost $ApplicationSha256 $ApplicationProfileOid $RecoveryProfileOid
-Test-Image 'recovery' $RecoveryHost $RecoverySha256 $RecoveryProfileOid $ApplicationProfileOid
-Write-Output 'T81_PUBLIC_PREFLIGHT_ONLY_NOT_RELEASE_AUTHORITY'
+Read-UnboundPathObservations 'application' $ApplicationHost $ApplicationSha256 $ApplicationProfileOid $RecoveryProfileOid
+Read-UnboundPathObservations 'recovery' $RecoveryHost $RecoverySha256 $RecoveryProfileOid $ApplicationProfileOid
+Write-Output 'T81_PATH_OBSERVATIONS_ONLY_UNBOUND_NONAUTHORIZING'
