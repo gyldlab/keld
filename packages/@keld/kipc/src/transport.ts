@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:7e4129473924084dde4f39d23baac2a122a56d72d9379b1486faeecadfe75f74
+// @keld/kipc-transport sha256:74bcbfa86c7a2c14e1416f55a990606add93e5a9a688ff8c0d26e34f9426af1c
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -234,13 +234,16 @@ export const LIFECYCLE_CHANNEL = 3;
 export const AUTH_CHANNEL = 4;
 /** Channel `window` (`keld_ipc::channel_table::WINDOW`). */
 export const WINDOW_CHANNEL = 5;
+/** Channel `dialog` (`keld_ipc::channel_table::DIALOG`). */
+export const DIALOG_CHANNEL = 6;
 /** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
   | typeof FS_CHANNEL
   | typeof LIFECYCLE_CHANNEL
   | typeof AUTH_CHANNEL
-  | typeof WINDOW_CHANNEL;
+  | typeof WINDOW_CHANNEL
+  | typeof DIALOG_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
@@ -248,6 +251,7 @@ export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   AUTH_CHANNEL,
   WINDOW_CHANNEL,
+  DIALOG_CHANNEL,
 ]);
 /** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([

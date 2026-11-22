@@ -7,6 +7,7 @@
  */
 import { dispatchApplicationCall } from "./channels.ts";
 import { LifecycleLink } from "./link.ts";
+import type { DialogReplyV1, MessageOptions } from "./dialog.generated.ts";
 import {
   linkError,
   stateMap,
@@ -372,4 +373,16 @@ export async function invokeAuth(
   await app.whenReady();
   const link = await ensureLink();
   return link.callAuth(payload, deadlineMs);
+}
+
+/** Native Message request over the already-connected, authenticated app link.
+ * Nonces and both call correlations belong to LifecycleLink/WorkerLink, not
+ * Electron or a second socket; the Host decides actual native authority. */
+export async function invokeMessageDialog(
+  parent: WindowRef | null,
+  options: MessageOptions,
+): Promise<DialogReplyV1> {
+  await app.whenReady();
+  const link = await ensureLink();
+  return link.callMessageDialog(parent, options);
 }

@@ -16,6 +16,7 @@ import {
 } from "node:worker_threads";
 
 import {
+  DIALOG_CHANNEL,
   ECHO_CHANNEL,
   FrameKind,
   LIFECYCLE_CHANNEL,
@@ -1169,6 +1170,33 @@ async function abandonedCap(): Promise<void> {
   );
 }
 
+// GH478 A13: 256+1 caller-local timeouts on one link. Each abandoned original
+// is released by the Host's terminal ERR; a fresh Cancel CALL per cycle proves
+// the correlations stay distinct and the 257th cleanup never closes the link.
+async function dialogTimeoutCancel(): Promise<void> {
+  const { link } = await open();
+  const cycles = 257;
+  let timeouts = 0;
+  let cancelAcks = 0;
+  for (let i = 0; i < cycles; i++) {
+    const code = await link.call(DIALOG_CHANNEL, text(`original-${i}`), 1).then(
+      () => "returned",
+      (err: unknown) => codeOf(err),
+    );
+    if (code === "KELD-IPC-006") timeouts += 1;
+    const ack = decoder.decode(
+      await link.call(DIALOG_CHANNEL, text(`cancel-${i}`), 30_000),
+    );
+    if (ack === `cancel-ack-${i}`) cancelAcks += 1;
+  }
+  report("timeouts", timeouts);
+  report("cancel-acks", cancelAcks);
+  report(
+    "healthy",
+    decoder.decode(link.callBlocking(ECHO_CHANNEL, text("healthy"), 30_000)),
+  );
+}
+
 // Criterion 25: a 4 MiB ring opens; byte counters wrap at 2^32 without loss.
 async function ring4MiB(): Promise<void> {
   const { link } = await open({ ringBytes: 4 * 1024 * 1024 });
@@ -1592,6 +1620,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "outbound-order": outboundOrder,
   "inbound-admitted": inboundAdmitted,
   "abandoned-cap": abandonedCap,
+  "dialog-timeout-cancel": dialogTimeoutCancel,
   "ring-4mib": ring4MiB,
   "counter-wrap": counterWrap,
   "async-dispatch": asyncDispatch,

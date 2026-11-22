@@ -87,8 +87,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-message-box.response-checkbox today: no asynchronous native message-dialog method is exported",
-      "negative_control": "A new async showMessageBox function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a guessed response index or checkboxChecked:true without a checkbox fails the actual clicked-result oracle."
+      "test_name": "dialog.show-message-box.response-checkbox: parented async works; parentless native remains incomplete",
+      "negative_control": "Current partial GH478 Mac proof: parented actual Save/Cancel/Discard indices 0/1/2, native checkbox true/false, Guard/Cancel/parent retirement and 257+1 same-link cases pass, and this mapped Bun test checks genuine exported Promise plus early refusal. The broad Electron operation remains expected-fail because parentless async Message has no native CFRunLoop acceptance; an import-only fake Promise, missing parentless completion or guessed native click must not flip the cell to pass."
     },
     {
       "operation_id": "menu.build-from-template",

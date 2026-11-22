@@ -52,6 +52,8 @@ pub mod capability {
     pub const AUTH_BEGIN: &str = "auth.begin";
     /// Exact declared issuer for token acquisition (`app.auth.token`).
     pub const AUTH_TOKEN: &str = "auth.token";
+    /// Exact native dialog admission (`app.system` literal list).
+    pub const DIALOG: &str = "system.dialog";
 }
 
 #[cfg(windows)]
@@ -630,6 +632,9 @@ pub struct PermissionsManifest {
 /// JSON pointer under `app` for a dotted capability (`fs.read` → `/app/fs/read`).
 #[must_use]
 pub fn json_pointer_for(capability: &str) -> String {
+    if capability == capability::DIALOG {
+        return "/app/system".to_owned();
+    }
     if capability.is_empty() {
         return "/app".to_owned();
     }
@@ -789,6 +794,18 @@ pub fn evaluate(
 ) -> Decision {
     if principal != Principal::AppProcess {
         return Decision::Deny(DenyReason::NotAppProcess { principal });
+    }
+    if operation == capability::DIALOG {
+        let exact = manifest
+            .app
+            .get("system")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() == 1 && items[0].as_str() == Some("dialog"));
+        return if exact && path == "dialog" {
+            Decision::Allow(ScopePermit { grant_index: 0 })
+        } else {
+            deny_not_granted(operation, path)
+        };
     }
     let Some(node) = grant_node(manifest, operation) else {
         return deny_not_granted(operation, path);
@@ -2250,6 +2267,49 @@ mod tests {
             ),
             "v0 media sentinel is exact `*`, not an origin glob"
         );
+    }
+
+    #[test]
+    fn dialog_system_grant_is_exact_and_principal_first() {
+        let allowed = parse_manifest(r#"{"app":{"system":["dialog"]}}"#).expect("manifest");
+        assert!(matches!(
+            evaluate(&allowed, Principal::AppProcess, "system.dialog", "dialog"),
+            Decision::Allow(_)
+        ));
+        for text in [
+            r"{}",
+            r#"{"app":{"system":[]}}"#,
+            r#"{"app":{"system":"dialog"}}"#,
+            r#"{"app":{"system":["other"]}}"#,
+            r#"{"app":{"system":["dialog","dialog"]}}"#,
+            r#"{"app":{"system":["dialog","other"]}}"#,
+            r#"{"app":{"system":["*"]}}"#,
+            r#"{"app":{"system":["dialog",1]}}"#,
+        ] {
+            let manifest = parse_manifest(text).expect("valid JSON manifest");
+            let decision = evaluate(&manifest, Principal::AppProcess, "system.dialog", "dialog");
+            assert!(
+                matches!(decision, Decision::Deny(_)),
+                "{text}: {decision:?}"
+            );
+        }
+        for principal in [
+            Principal::Webview {
+                id: 7,
+                generation: 1,
+            },
+            Principal::Plugin { id: 3 },
+        ] {
+            assert!(matches!(
+                evaluate(&allowed, principal, "system.dialog", "dialog"),
+                Decision::Deny(DenyReason::NotAppProcess { .. })
+            ));
+        }
+        assert!(matches!(
+            evaluate(&allowed, Principal::AppProcess, "system.dialog", "other"),
+            Decision::Deny(_)
+        ));
+        assert_eq!(json_pointer_for("system.dialog"), "/app/system");
     }
 
     #[test]
