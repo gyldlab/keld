@@ -1864,6 +1864,37 @@ export function checkWorkflowSecurity(source: string): void {
   ) {
     fail(changesContract);
   }
+  // A frozen step inventory does not bind the job that executes it. Keep
+  // the existing Bun lane's OS census, routing and execution context exact;
+  // extra job or strategy controls need their own reviewed contract.
+  const bunJob = mapping(jobs["bun-test"], "jobs.bun-test");
+  const bunContext =
+    "Bun test job must preserve its reviewed execution context";
+  exactKeys(
+    bunJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "strategy", "if", "steps"],
+    bunContext,
+  );
+  if (
+    bunJob.name !== "bun test (TypeScript, ${{ matrix.os }})" ||
+    bunJob["runs-on"] !== "${{ matrix.os }}" ||
+    scalar(bunJob["timeout-minutes"]) !== "10" ||
+    bunJob.needs !== "changes" ||
+    bunJob.if !== "needs.changes.outputs.ts == 'true'"
+  ) {
+    fail(bunContext);
+  }
+  const bunStrategy = mapping(bunJob.strategy, `${bunContext}: strategy`);
+  exactKeys(bunStrategy, ["fail-fast", "matrix"], bunContext);
+  const bunMatrix = mapping(bunStrategy.matrix, `${bunContext}: matrix`);
+  exactKeys(bunMatrix, ["os"], bunContext);
+  if (
+    bunStrategy["fail-fast"] !== false ||
+    JSON.stringify(bunMatrix.os) !==
+      JSON.stringify(["ubuntu-latest", "macos-latest", "windows-latest"])
+  ) {
+    fail(bunContext);
+  }
   // These jobs execute native tests or hold security-events:write. The
   // existing targeted checks remain first for precise diagnostics; freezing
   // the complete parsed steps afterwards also rejects inserted executable
@@ -1872,7 +1903,15 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "72ddccabb2cd44d6dab130ee48134b9568175481d959dce7d74ed8e79341721d",
-    check: "6697d7e3790000044f3b833fab5409c4b50af6fa9af12bd344f26f9bd20f2f05",
+    // GH1301: the complete native source-fixture install plus its subsequent
+    // tests are one reviewed order. A step inserted before those tests must
+    // not be able to replace the pinned compiler or canonical SDK sources.
+    check: "26ef57a26f320e9a4f5362e18280dc1ff04a8fd64b05a681d527e67157315ccd",
+    // The TypeScript lane installs every selected frozen dependency first;
+    // restoring per-package install-and-test ordering recreates the cold CI
+    // failure. Freeze its complete executable step inventory as well.
+    "bun-test":
+      "8fa00147029c690b731642de20623caf0c442a07607c704ddba5daa8c80e8be0",
     "codeql-rust":
       "c4226d22280f60c9c2d1c1d00d60a09b16b807f86ca769f21ccc5ab6a9d3918a",
     "codeql-javascript-typescript":
@@ -1894,7 +1933,9 @@ export function checkWorkflowSecurity(source: string): void {
             ? "Windows media reviewed step inventory/order must not acquire unreviewed executable or environment writers."
             : jobName === "check"
               ? "native check reviewed step inventory/order must not acquire unreviewed executable or environment writers."
-              : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
+              : jobName === "bun-test"
+                ? "Bun test reviewed fixture install/order must not acquire unreviewed executable or environment writers."
+                : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
       );
     }
   }
