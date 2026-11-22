@@ -243,11 +243,15 @@ fn check_primary_leaf_scope_domain(raw: &str, visible: &str) -> Result<(), &'sta
     count(visible, "WINDOWS_PUBLISHER_SCOPE_DOMAIN", 2, refusal)?;
     count(visible, marker, 1, refusal)?;
     let at = visible.find(marker).ok_or(refusal)?;
-    let previous_item_end = visible
-        .get(..at)
-        .and_then(|prefix| prefix.rfind(';'))
+    // The preceding *specified* source item must be immediately adjacent
+    // in the live token stream. Searching only for the last semicolon falsely
+    // accepts an inserted macro definition/invocation with its own semicolon,
+    // even when that macro generates a production-only identity override.
+    let visible_compact = compact(visible);
+    let (_, before_domain) = visible_compact
+        .split_once("constWINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS:usize=WINDOWS_SIGNED_APP_ID_PREFIX.len()+255;")
         .ok_or(refusal)?;
-    if !visible[previous_item_end + 1..at].trim().is_empty() {
+    if !before_domain.starts_with("constWINDOWS_PUBLISHER_SCOPE_DOMAIN:&[u8]=") {
         return Err(refusal);
     }
     if raw.get(at..at + expected.len()) != Some(expected) {
