@@ -142,7 +142,7 @@ if ($Case -in @('localtest', 'all')) {
         $digest = (Get-FileHash -LiteralPath $LocalTestFixture -Algorithm SHA256).Hash
         $result = Invoke-PublicObserver '2.4294967295.1' '1.39.3' $LocalTestFixture $digest
         if ($result.ExitCode -eq 0 -or
-            $result.Output -notmatch 'application lacks valid embedded Authenticode' -or
+            $result.Output -notmatch 'application (lacks valid embedded Authenticode|has self-issued signer)' -or
             $result.Output -match 'T81_PUBLIC_IMAGE_OBSERVED') {
             throw "T81-TEST: supplied LocalTest signer not refused (exit $($result.ExitCode)): $($result.Output)"
         }
