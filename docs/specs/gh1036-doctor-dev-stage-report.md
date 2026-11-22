@@ -1,6 +1,10 @@
 # Spec: Read-only development-stage diagnostics
-Status: draft
-Linear: GH-1036 (#517) · Owner: @0monish · Updated: 2026-11-06
+
+- Status: draft
+- Tracker: GH-1036
+- Owner: @0monish
+- Updated: 2026-11-22
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
 
@@ -30,44 +34,117 @@ policy, installed-app diagnosis, or changing the Host/Guardian/sentinel cleanup 
   policy. `crates/keld-cli/tests/doctor_mcp.rs` owns CLI/MCP comparison.
   Error identifiers remain owned by `docs/engineering/keld-error-codes.md`.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+## 3. Acceptance criteria
 
-1. Given no selected project, doctor emits no `dev-stage` finding and creates no path.
-   Given a selected project with absent or empty `.keld/dev`, it emits one successful
-   finding that distinguishes absent from observed empty.
-2. Given two real directories whose basenames are 32 lowercase hexadecimal characters,
-   doctor lists both names, entry kind, stage shape and modification-time age.
-   This informational finding is successful; it alone cannot make doctor exit nonzero.
-3. Given an unexpected basename, regular file, symbolic link or Windows reparse entry,
-   doctor reports that entry's actual kind and unexpected status without following it,
-   opening its target, deleting it or treating it as a verified stage.
-4. Given a symbolic-link/reparse substitution at `.keld` or `dev`, doctor refuses
-   that observation. An outside directory's children must never appear in the result.
-   Replacing a selected parent after admission cannot redirect later reads outside it.
-5. Given a Unix `.keld` or `dev` directory with the wrong owner or non-private mode,
-   doctor emits a failed finding with the shared staging rule's diagnostic and fix.
-   It changes neither mode nor ownership. A non-private nonce entry is reported as such;
-   the diagnosis never grants authority to repair it.
-6. Given a permission-denied, enumeration or metadata failure, doctor reports failed or
-   explicitly incomplete observation, never a complete successful zero count.
-   An entry disappearing during enumeration is reported as changed, not as proof of death.
-7. Given unreadable, missing or future modification time, the age is explicitly unknown
-   or future-dated. It is never a negative duration, fabricated zero or liveness verdict.
-8. The same observations produce equivalent `Check` and `DoctorFinding` data.
-   `doctor --json` remains a top-level array; MCP uses the same finding producer.
-   Failed findings carry the existing structured error shape and a truthful remedy.
-9. An attributed filesystem-operation audit or controlled before/after fixture proves
-   that doctor made no explicit create, content-write, chmod, chown, rename or removal
-   operation. Membership, contents, owner, mode and modification time stay unchanged
-   in that fixture. Kernel access-time updates from reads are not writes by doctor;
-   concurrent actors' changes are not attributed to it. A separately observable file
-   inside a nonce is not opened; child directories are not traversed.
-10. A real running `keld dev` stage may appear in the report. The report says activity
-    is unknown and does not interrupt that session. A healthy subsequent doctor scan
-    succeeds after a failed or concurrently changed scan; every scan handle is released.
-11. Onboarding guidance points to this finding and retains manual operator confirmation
-    before any removal. It distinguishes an observed entry from a leftover proven
-    inactive by some independent means. Generated-document freshness checks pass.
+### AC-1: Distinguish absent, empty and unselected projects
+
+- **Given:** No project is selected, or a selected project has an absent or empty `.keld/dev` directory.
+- **When:** Doctor runs without allocating any stage path.
+- **Then:** With no selection, it emits no `dev-stage` finding and creates no path. With a selection, it emits one successful finding that distinguishes absent from empty.
+- **Negative control:**
+  - **Single fault:** Make absent and empty both return the same empty-success label.
+  - **At-risk precondition:** The fixture exercises both cases with no stage entry created.
+  - **Expected RED:** The output cannot distinguish absent from observed empty.
+
+### AC-2: Show real stage names without a stale verdict
+
+- **Given:** A selected project contains two real directories with distinct 32-character lowercase hexadecimal basenames.
+- **When:** Doctor inspects direct stage entries without opening their contents.
+- **Then:** The successful finding lists both names, observed kind, stage-name shape and modification-time age. This observation alone does not make doctor exit nonzero.
+- **Negative control:**
+  - **Single fault:** Treat any valid-looking nonce directory as stale and return a failed finding.
+  - **At-risk precondition:** Both nonce directories are valid and one belongs to a live development session.
+  - **Expected RED:** An informational entry incorrectly fails doctor or claims inactivity.
+
+### AC-3: Describe unexpected entries without following them
+
+- **Given:** The direct child is a malformed name, regular file, symlink or Windows reparse entry.
+- **When:** Doctor enumerates and classifies that child.
+- **Then:** The finding reports its observed kind and unexpected status. Doctor never follows its target, opens its contents, deletes it, or certifies it as a stage.
+- **Negative control:**
+  - **Single fault:** Follow a symlink to classify its target as a valid stage directory.
+  - **At-risk precondition:** An outside target has a valid-looking nonce name while the direct child is a link.
+  - **Expected RED:** The result certifies the target or an outside entry instead of describing the link.
+
+### AC-4: Reject substituted project parents and dev directories
+
+- **Given:** The selected `.keld` or `dev` directory is replaced by a symlink or Windows reparse entry, including after admission.
+- **When:** Doctor resolves and enumerates the selected project.
+- **Then:** The observation fails safely, and no children of the outside destination appear. Later operations remain bound to the admitted directory identity.
+- **Negative control:**
+  - **Single fault:** Replace retained-parent access with a second, unprotected path traversal.
+  - **At-risk precondition:** A controlled substitution points `dev` outside the selected project between admission and enumeration.
+  - **Expected RED:** An outside sentinel name appears, or doctor reports a complete successful scan.
+
+### AC-5: Report private-directory failures without repair
+
+- **Given:** A Unix `.keld` or `dev` parent has the wrong owner or a non-private mode, or a nonce entry has unsafe metadata.
+- **When:** Doctor inspects the parent and entry through the shared non-mutating staging predicates.
+- **Then:** Wrong parent ownership or mode yields a failed finding with the staging diagnostic and fix. The entry stays visible with its actual metadata. Doctor never changes owner, mode or permissions.
+- **Negative control:**
+  - **Single fault:** Call the existing preparation helper that changes permissions before reporting.
+  - **At-risk precondition:** The fixture starts with an unsafe parent and records mode and ownership before and after.
+  - **Expected RED:** The diagnostic changes the filesystem or reports the repaired state as the original observation.
+
+### AC-6: Preserve incomplete enumeration and access errors
+
+- **Given:** Enumeration, permission or metadata access fails, or an entry disappears during enumeration.
+- **When:** Doctor attempts a read-only observation of that directory.
+- **Then:** It returns a failed or explicitly incomplete finding, never a successful complete zero count. A vanished entry is reported as changed, not dead.
+- **Negative control:**
+  - **Single fault:** Convert an enumeration error into an empty successful collection.
+  - **At-risk precondition:** The fault occurs after the selected project and staging parent are admitted.
+  - **Expected RED:** A complete successful empty finding hides the observable failure.
+
+### AC-7: Qualify modification-time ages
+
+- **Given:** A stage has a missing, unreadable or future modification time, or the clock changes.
+- **When:** Doctor computes age from one captured scan-time display clock.
+- **Then:** Age is marked unknown or future-dated as appropriate. No negative duration, invented zero, creation-time claim or process-liveness verdict is emitted.
+- **Negative control:**
+  - **Single fault:** Clamp an unreadable or future timestamp to an age of zero.
+  - **At-risk precondition:** The timestamp fixture forces the invalid/future branch with a fixed clock.
+  - **Expected RED:** The result fabricates a zero-age fact instead of preserving uncertainty.
+
+### AC-8: Preserve identical CLI and MCP finding semantics
+
+- **Given:** The same project and stage observations are supplied to CLI doctor and MCP.
+- **When:** Both consumers run the shared `Check` and `DoctorFinding` producer.
+- **Then:** `doctor --json` remains a top-level array, MCP returns equivalent findings, and failed observations retain the existing structured error and truthful fix.
+- **Negative control:**
+  - **Single fault:** Drop the new finding from one serializer only.
+  - **At-risk precondition:** Both consumers use identical normal and failed observations.
+  - **Expected RED:** Their finding data, result shape or failure meaning diverges.
+
+### AC-9: Prove zero explicit filesystem mutation
+
+- **Given:** The selected project contains a nonce child with separate observable contents, under an attributed operation audit.
+- **When:** Doctor scans the stage parent and reports direct-entry metadata.
+- **Then:** Doctor makes no explicit create, content write, chmod, chown, rename or remove operation. It never opens nonce contents or walks child directories. Read access-time changes and concurrent actor changes are not attributed to doctor.
+- **Negative control:**
+  - **Single fault:** Open each nonce child file or run a chmod preparation step during diagnosis.
+  - **At-risk precondition:** The audit observes the doctor process and records before/after names, contents, ownership and modes.
+  - **Expected RED:** The operation trace or controlled manifest reports content access or an explicit doctor mutation.
+
+### AC-10: Preserve live sessions and release every scan handle
+
+- **Given:** A real `keld dev` stage is active, or an earlier scan has failed during enumeration.
+- **When:** Doctor runs, then a later healthy doctor scan runs in the same environment.
+- **Then:** The report states activity is unknown and does not stop the active session. All scan handles are released, and the healthy subsequent scan succeeds.
+- **Negative control:**
+  - **Single fault:** Leave a directory handle retained on the failing scan path.
+  - **At-risk precondition:** A controlled failure and a live stage are both available without terminating the session.
+  - **Expected RED:** The later scan fails from leaked ownership or the live session is interrupted.
+
+### AC-11: Require honest manual cleanup guidance
+
+- **Given:** Onboarding documentation explains the new stage finding and possible leftover entries.
+- **When:** An operator reads guidance after observing a named stage.
+- **Then:** Guidance distinguishes observations from independently established inactivity. It requires manual operator confirmation before removal, and generated-document freshness passes.
+- **Negative control:**
+  - **Single fault:** Replace the guidance with a command that automatically deletes old-looking entries.
+  - **At-risk precondition:** A reported age or nonstandard shape has no independent inactivity evidence.
+  - **Expected RED:** Documentation authorizes deletion from age alone, or generated-document checks fail.
 
 ## 4. Design
 
@@ -154,27 +231,38 @@ semantics, security permissions, generated sources by hand or shared CI policy.
 A new Windows production unsafe operation is outside this draft and needs its own
 nearest-owner authorization; it cannot be hidden inside a diagnostic convenience helper.
 
-## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
+## 6. Tasks
 
-- [ ] T1 Add the shared read-only metadata/shape seam and dev-stage finding with real
-  absent, empty, ordinary and unexpected-entry fixtures; prove producer behavior stays unchanged.
-- [ ] T2 Complete safe-parent and non-following enumeration on each supported OS,
-  with substitution, access-error and zero-mutation controls; keep unqualified OS cells open.
-- [ ] T3 Wire the one finding through CLI/MCP, typed errors and guidance; qualify a live
-  development session and rerun existing doctor/boot regressions on the final source.
+### T-1: Add the non-mutating stage metadata seam
 
-## 7. Test plan
+- **Blocked by:** none
+
+Extract the shared read-only metadata and nonce-shape predicate. Add the `dev-stage` finding with real absent, empty, ordinary and unexpected-entry fixtures. Prove that existing stage production stays unchanged.
+
+### T-2: Qualify non-following parent enumeration
+
+- **Blocked by:** T-1
+
+Qualify every supported OS with retained parent identity, reparse and symlink substitution, permission errors and zero-mutation controls. Keep unqualified OS cells explicitly open.
+
+### T-3: Reuse CLI and MCP findings without cleanup authority
+
+- **Blocked by:** T-2
+
+Wire the shared finding through CLI and MCP, error registry and onboarding guidance. Qualify a real active development session and rerun doctor and boot regressions on the exact final implementation.
+
+## 7. Test plan & evidence
 
 | Criteria | Test and independent negative control |
 |---|---|
-| 1–3 | Real temporary paths with exact expected names/kinds; constant-empty result fails |
-| 4 | Outside sentinel plus deterministic parent/child substitution; removing no-follow fails |
-| 5 | Owner/mode fixture plus before/after metadata; calling preparation/chmod fails |
-| 6–7 | Injected observation failure and fixed clock plus real missing entry; success/zero fallback fails |
-| 8 | Existing doctor CLI/MCP harness; omit the finding in either consumer and parity fails |
-| 9 | Attributed operation audit and controlled manifest, excluding access time; content access or explicit mutation fails |
-| 10 | Real per-OS dev session and scan-release control; stopping a session or leaking handles fails |
-| 11 | Guidance review and actual generated-doc freshness checks |
+| AC-1 through AC-3 | Real temporary paths with exact expected names/kinds; constant-empty result fails |
+| AC-4 | Outside sentinel plus deterministic parent/child substitution; removing no-follow fails |
+| AC-5 | Owner/mode fixture plus before/after metadata; calling preparation/chmod fails |
+| AC-6 and AC-7 | Injected observation failure and fixed clock plus real missing entry; success/zero fallback fails |
+| AC-8 | Existing doctor CLI/MCP harness; omit the finding in either consumer and parity fails |
+| AC-9 | Attributed operation audit and controlled manifest, excluding access time; content access or explicit mutation fails |
+| AC-10 | Real per-OS dev session and scan-release control; stopping a session or leaking handles fails |
+| AC-11 | Guidance review and actual generated-doc freshness checks |
 
 Synchronize race controls with explicit rendezvous, not sleeps. Test helpers own their
 temporary paths and cleanup; the diagnostic under test does not. Separate pure rendering
@@ -194,10 +282,15 @@ file-content hashing or process polling. Measure duration and peak retained repo
 on an empty directory and a large representative stage directory before claiming cost.
 No performance improvement or hot-path impact is claimed.
 
-## 10. Open questions
+## 10. Open questions, blockers & unknowns
 
-Exact-content approval remains pending. The implementation owner must confirm that the
-existing per-platform safe-read primitives satisfy criterion 4 without new unsafe scope.
-If a platform lacks that primitive, keep its diagnosis explicitly unsupported and obtain
-a separately reviewed owning-primitive change before claiming support.
-No permission is requested here to delete entries or to start implementation.
+### B-1: Require approved read-only OS primitives
+
+- **Status:** open
+- **Owner:** GH-1036 implementation and platform filesystem owners
+- **Impact:** The stage scanner cannot claim safe access or run implementation while the retained-handle and reparse rules are unqualified.
+- **Check:** Prove AC-4 on every proposed OS with an approved, non-mutating retained-directory reader. Keep unsupported cells marked unsupported.
+
+### Q-1: Approve the exact design before implementation
+
+Independent technical approval is pending. The responsible owner must review the exact source and AC-1 through AC-11 before implementation starts. This draft requests no permission to delete entries or start the implementation.
