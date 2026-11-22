@@ -5,6 +5,13 @@
 
 pub(super) const MUTANTS: &[(&str, &str, &str, &str, bool)] = &[
     (
+        "primary leaf ABI guard short-circuited after size comparison",
+        "\"primary leaf certificate\",\n        )?\n    {",
+        "\"primary leaf certificate\",\n        )? && false\n    {",
+        "D-45 primary leaf provider ABI guard before field access",
+        false,
+    ),
+    (
         "primary leaf certificate ABI check bypass",
         "if certificate_size\n        < windows_checked_abi_size",
         "if false && certificate_size\n        < windows_checked_abi_size",

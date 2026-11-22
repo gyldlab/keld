@@ -202,7 +202,7 @@ fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
         &[
             "letcertificate_size=unsafe{(*certificate).cbStruct};",
             "ifcertificate_size<windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(",
-            "returnErr(windows_identity_error(",
+            ",)?{returnErr(windows_identity_error(",
             "letcertificate_ref=unsafe{&*certificate};",
         ],
         "D-45 primary leaf provider ABI guard before field access",
