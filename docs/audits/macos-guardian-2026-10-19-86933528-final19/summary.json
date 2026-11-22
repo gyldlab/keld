@@ -1,0 +1,38 @@
+{
+  "additional_952_only_file_pending": "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs",
+  "all_77_historical_files_fully_reviewed": false,
+  "changed_blobs_pending": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs",
+    "crates/keld-runtime/src/macos_guardian/process_group.rs",
+    "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs"
+  ],
+  "current_pending_historical": 0,
+  "historical_949_head": "899e287ea487f38ec1cd347f7c9db8f1927348ef",
+  "historical_path_count": 77,
+  "historical_path_review_status_counts": {
+    "changed-since-949-pending": 3,
+    "historical-scoped-only": 4,
+    "source-reviewed-limited": 5,
+    "source-reviewed-limited-batch10": 7,
+    "source-reviewed-limited-batch19": 19,
+    "source-reviewed-limited-batch7": 7,
+    "source-reviewed-limited-batch8": 8,
+    "source-reviewed-limited-batch8b": 8,
+    "source-reviewed-new": 7,
+    "source-reviewed-production-followon": 4,
+    "source-reviewed-reused": 5
+  },
+  "independent_exact_head_review_pending": true,
+  "kernel_custody_proven": false,
+  "merge_authorized": false,
+  "native_suites_rerun_for_docs": false,
+  "new_limited_review_count": 19,
+  "parent_head": "334bae72d27613ca744e5e3be86dac5b850d2e9f",
+  "parent_pending_historical": 19,
+  "parent_pr": 990,
+  "schema_version": 1,
+  "source_review_scope": "All 19 remaining historical test files received LIMITED scoped source review; 77 historical paths have statuses but scope-specific semantics and changed versions need reconciliation. This is not a whole-repo census or kernel custody guarantee.",
+  "source_tip_952": "77b1c5aef9202a6cc0d84195fc1f4c32e1eb1cba",
+  "source_version_overlays_incomplete": true,
+  "whole_824_architecture_complete": false
+}
