@@ -7,7 +7,10 @@
 
 use sha2::{Digest as _, Sha256};
 
-use super::{MetadataClientRefusal, ReadyRevision, SignedRoleBytes, TufRole, require_role_bounds};
+use super::{
+    MetadataClientRefusal, ReadyRevision, SignedRoleBytes, SignedRoleReaders, TufRole,
+    read_complete_role, require_role_bounds,
+};
 use crate::records::{GenerationPhase, GenerationRecord, MetadataRoleReference};
 
 /// Check complete role bodies against the four exact D-23 recorded references.
@@ -31,6 +34,36 @@ pub(super) fn verify_ready_revision_against_recorded_generation(
         (TufRole::Targets, roles.targets, generation.targets),
     ] {
         require_recorded_body(role, body, reference)?;
+    }
+    Err(MetadataClientRefusal::TufClientNotQualified)
+}
+
+/// Refuse an incomplete D-23 graph before reading any role, then bind each
+/// complete bounded body to its recorded digest before reading the next role.
+/// A reader may already own an acquired source; this only orders `Read` calls.
+/// Even four matching bodies never create TUF or repository authority.
+pub(super) fn verify_ready_revision_against_recorded_readers(
+    readers: SignedRoleReaders<'_>,
+    generation: &GenerationRecord,
+) -> Result<ReadyRevision, MetadataClientRefusal> {
+    if generation.phase != GenerationPhase::Ready || generation.root_refresh.is_some() {
+        return Err(MetadataClientRefusal::RecordedGenerationNotReady);
+    }
+    let roles = [
+        (TufRole::Root, readers.root, Some(generation.root)),
+        (TufRole::Timestamp, readers.timestamp, generation.timestamp),
+        (TufRole::Snapshot, readers.snapshot, generation.snapshot),
+        (TufRole::Targets, readers.targets, generation.targets),
+    ];
+    if let Some(missing) = roles
+        .iter()
+        .find_map(|(role, _, reference)| reference.is_none().then_some(*role))
+    {
+        return Err(MetadataClientRefusal::RecordedRoleMissing(missing));
+    }
+    for (role, reader, reference) in roles {
+        let body = read_complete_role(role, reader)?;
+        require_recorded_body(role, &body, reference)?;
     }
     Err(MetadataClientRefusal::TufClientNotQualified)
 }

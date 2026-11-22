@@ -1,15 +1,27 @@
 //! Independent negative controls for complete D-23 role-body references.
 //! Synthetic records prove byte consistency only, never native protection.
 
-use super::verify_ready_revision_against_recorded_generation;
-use crate::metadata_client::{MetadataClientRefusal, SignedRoleBytes, TufRole};
+use super::{
+    verify_ready_revision_against_recorded_generation,
+    verify_ready_revision_against_recorded_readers,
+};
+use crate::metadata_client::{MetadataClientRefusal, SignedRoleBytes, SignedRoleReaders, TufRole};
 use crate::records::{GenerationPhase, GenerationRecord, MetadataRoleReference, RootRefresh};
 use sha2::{Digest as _, Sha256};
+use std::io::{self, Cursor, Read};
 
 const ROOT: &[u8] = b"root-envelope";
 const TIMESTAMP: &[u8] = b"timestamp-envelope";
 const SNAPSHOT: &[u8] = b"snapshot-envelope";
 const TARGETS: &[u8] = b"targets-envelope";
+
+struct FailOnRead;
+
+impl Read for FailOnRead {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        panic!("negative D-23 preflight reached a forbidden role reader")
+    }
+}
 
 fn roles() -> SignedRoleBytes<'static> {
     SignedRoleBytes {
@@ -164,4 +176,72 @@ fn substituted_same_length_role_bytes_refuse_without_reaching_tuf_grant() {
             MetadataClientRefusal::RecordedRoleMismatch(role)
         );
     }
+}
+
+// A D-23 root mismatch must stop the reader boundary before consuming later
+// untrusted sources. A per-role SHA-256 check after reading every role is too
+// late to enforce this negative ordering contract.
+#[test]
+fn recorded_reader_root_mismatch_refuses_before_downstream_reads() {
+    let mut wrong_root = Cursor::new(&b"Root-envelope"[..]);
+    let mut timestamp = FailOnRead;
+    let mut snapshot = FailOnRead;
+    let mut targets = FailOnRead;
+    assert_eq!(
+        verify_ready_revision_against_recorded_readers(
+            SignedRoleReaders {
+                root: &mut wrong_root,
+                timestamp: &mut timestamp,
+                snapshot: &mut snapshot,
+                targets: &mut targets,
+            },
+            &generation(),
+        )
+        .expect_err("different same-length root bytes must stop role intake"),
+        MetadataClientRefusal::RecordedRoleMismatch(TufRole::Root)
+    );
+}
+
+#[test]
+fn incomplete_recorded_graph_refuses_before_any_role_read() {
+    let mut record = generation();
+    record.targets = None;
+    let mut root = FailOnRead;
+    let mut timestamp = FailOnRead;
+    let mut snapshot = FailOnRead;
+    let mut targets = FailOnRead;
+    assert_eq!(
+        verify_ready_revision_against_recorded_readers(
+            SignedRoleReaders {
+                root: &mut root,
+                timestamp: &mut timestamp,
+                snapshot: &mut snapshot,
+                targets: &mut targets,
+            },
+            &record,
+        )
+        .expect_err("incomplete recorded graph must not trigger intake"),
+        MetadataClientRefusal::RecordedRoleMissing(TufRole::Targets)
+    );
+}
+
+#[test]
+fn matching_recorded_readers_still_cannot_mint_ready_revision() {
+    let mut root = Cursor::new(ROOT);
+    let mut timestamp = Cursor::new(TIMESTAMP);
+    let mut snapshot = Cursor::new(SNAPSHOT);
+    let mut targets = Cursor::new(TARGETS);
+    assert_eq!(
+        verify_ready_revision_against_recorded_readers(
+            SignedRoleReaders {
+                root: &mut root,
+                timestamp: &mut timestamp,
+                snapshot: &mut snapshot,
+                targets: &mut targets,
+            },
+            &generation(),
+        )
+        .expect_err("matching data remains unqualified without TUF and T-82"),
+        MetadataClientRefusal::TufClientNotQualified
+    );
 }
