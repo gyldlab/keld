@@ -226,6 +226,42 @@ fn incomplete_recorded_graph_refuses_before_any_role_read() {
 }
 
 #[test]
+fn impossible_recorded_role_lengths_refuse_before_any_role_read() {
+    // Independent D-21 caps, not derived from the implementation under test.
+    // A fabricated zero or over-cap recorded length cannot cause even the
+    // Root reader to run, regardless of which role carries the bad reference.
+    for (role, max_bytes) in [
+        (TufRole::Root, 65_536_u64),
+        (TufRole::Timestamp, 16_384_u64),
+        (TufRole::Snapshot, 262_144_u64),
+        (TufRole::Targets, 1_048_576_u64),
+    ] {
+        for invalid_length in [0, max_bytes + 1, u64::MAX] {
+            let mut record = generation();
+            role_reference_mut(&mut record, role).length = invalid_length;
+            let mut root = FailOnRead;
+            let mut timestamp = FailOnRead;
+            let mut snapshot = FailOnRead;
+            let mut targets = FailOnRead;
+            assert_eq!(
+                verify_ready_revision_against_recorded_readers(
+                    SignedRoleReaders {
+                        root: &mut root,
+                        timestamp: &mut timestamp,
+                        snapshot: &mut snapshot,
+                        targets: &mut targets,
+                    },
+                    &record,
+                )
+                .expect_err("impossible recorded length must refuse before any role I/O"),
+                MetadataClientRefusal::RecordedRoleMismatch(role),
+                "role {role:?} recorded length {invalid_length} reached an untrusted reader"
+            );
+        }
+    }
+}
+
+#[test]
 fn matching_recorded_readers_still_cannot_mint_ready_revision() {
     let mut root = Cursor::new(ROOT);
     let mut timestamp = Cursor::new(TIMESTAMP);

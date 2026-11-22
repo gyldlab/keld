@@ -38,8 +38,9 @@ pub(super) fn verify_ready_revision_against_recorded_generation(
     Err(MetadataClientRefusal::TufClientNotQualified)
 }
 
-/// Refuse an incomplete D-23 graph before reading any role, then bind each
-/// complete bounded body to its recorded digest before reading the next role.
+/// Refuse an incomplete D-23 graph or impossible recorded role length before
+/// reading any role, then bind each complete bounded body to its recorded
+/// length and digest before reading the next role.
 /// A reader may already own an acquired source; this only orders `Read` calls.
 /// Even four matching bodies never create TUF or repository authority.
 pub(super) fn verify_ready_revision_against_recorded_readers(
@@ -55,11 +56,15 @@ pub(super) fn verify_ready_revision_against_recorded_readers(
         (TufRole::Snapshot, readers.snapshot, generation.snapshot),
         (TufRole::Targets, readers.targets, generation.targets),
     ];
-    if let Some(missing) = roles
-        .iter()
-        .find_map(|(role, _, reference)| reference.is_none().then_some(*role))
-    {
-        return Err(MetadataClientRefusal::RecordedRoleMissing(missing));
+    for (role, _, reference) in &roles {
+        let recorded = reference
+            .as_ref()
+            .ok_or(MetadataClientRefusal::RecordedRoleMissing(*role))?;
+        let length = usize::try_from(recorded.length)
+            .map_err(|_| MetadataClientRefusal::RecordedRoleMismatch(*role))?;
+        if length == 0 || length > role.max_bytes() {
+            return Err(MetadataClientRefusal::RecordedRoleMismatch(*role));
+        }
     }
     for (role, reader, reference) in roles {
         let body = read_complete_role(role, reader)?;
