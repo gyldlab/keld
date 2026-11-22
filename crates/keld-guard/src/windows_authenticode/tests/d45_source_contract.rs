@@ -1000,6 +1000,43 @@ fn d45_reject_owner_body_attributes(
     let bytes = body.as_bytes();
     let mut at = 0;
     while at < bytes.len() {
+        if bytes[at] == b'!' {
+            let mut end = at;
+            while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                end -= 1;
+            }
+            let mut start = end;
+            while start > 0 && d45_ident_byte(bytes[start - 1]) {
+                start -= 1;
+            }
+            if start >= 2 && bytes.get(start - 2..start) == Some(b"r#") {
+                start -= 2;
+            }
+            let name = body[start..end].trim_start_matches("r#");
+            if name == "macro_rules" && !body[start..end].starts_with("r#") {
+                // An unused macro declarator is inert, not its invocations.
+                // require_expected_identity_macros rejects a forged approved
+                // macro binding or executable unapproved expansion.
+                let name_at = d45_skip_space(bytes, at + 1);
+                let (declared, name_end) = d45_ident_at(body, name_at);
+                if declared.is_empty() {
+                    return Err(D45_VERIFIED_OWNER_REFUSAL);
+                }
+                let opening = d45_skip_space(bytes, name_end);
+                at = d45_macro_tree_end(bytes, opening)?;
+                continue;
+            }
+            if name == "stringify" {
+                // stringify! does not evaluate its input. Unlike stringify!,
+                // format! and matches! can evaluate expression arguments:
+                // their nested cfg attributes MUST remain visible below.
+                let opening = d45_skip_space(bytes, at + 1);
+                if matches!(bytes.get(opening), Some(b'(' | b'[' | b'{')) {
+                    at = d45_macro_tree_end(bytes, opening)?;
+                    continue;
+                }
+            }
+        }
         if bytes[at] != b'#' {
             at += 1;
             continue;
@@ -1060,14 +1097,6 @@ fn check_verified_state_owner_and_caller(
     let extractor = method(guard, "windows_identity_from_verified_trust_state")?;
     let test_capture = "#[cfg(test)]windows_d45_capture_chain_for_test(signer);";
     count(&extractor, test_capture, 1, D45_VERIFIED_OWNER_REFUSAL)?;
-    d45_reject_owner_body_attributes(
-        function_body(guard, "windows_identity_from_image_with_policy")?,
-        false,
-    )?;
-    d45_reject_owner_body_attributes(
-        function_body(guard, "windows_identity_from_verified_trust_state")?,
-        true,
-    )?;
     if caller.contains("#[cfg") || extractor.replacen(test_capture, "", 1).contains("#[cfg") {
         return Err(D45_VERIFIED_OWNER_REFUSAL);
     }
@@ -1087,6 +1116,8 @@ fn check_verified_state_owner_and_caller(
     )?;
     require_expected_identity_macros(&caller_visible, &["matches", "format", "stringify"])?;
     require_expected_identity_macros(&extractor_visible, &["format", "stringify"])?;
+    d45_reject_owner_body_attributes(&caller_visible, false)?;
+    d45_reject_owner_body_attributes(&extractor_visible, true)?;
     let identity_macros = ["matches", "format", "stringify"];
     d45_reject_macro_use_attributes(guard)?;
     d45_reject_active_macro_bindings(guard, &identity_macros, true)?;
@@ -1827,6 +1858,47 @@ fn unary_not_block_cannot_hide_release_only_cfg_before_wintrust() {
             "parenthesized or keyword-prefixed unary negation must remain live"
         );
     }
+}
+
+#[test]
+fn executable_format_arguments_cannot_hide_release_only_cfg_before_wintrust() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale verified caller");
+    let forged = GUARD.replacen(
+        offline,
+        concat!(
+            "    let _audit = format!(\"{}\", {\n",
+            "        # [cfg(not(test))]\n",
+            "        let _release_return = {\n",
+            "            if let WindowsTrustPolicy::Full = policy {\n",
+            "                return Ok(WindowsTrustObservation {\n",
+            "                    identity: WindowsAuthenticodeIdentity {\n",
+            "                        publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "                    }, d45_chain_facts: None,\n",
+            "                });\n",
+            "            }\n",
+            "        };\n",
+            "        0\n",
+            "    });\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&forged, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "format! executes argument expressions and must not conceal release cfg return"
+    );
+    let inert = GUARD.replacen(
+        offline,
+        &format!("    let _audit = stringify!(#[cfg(not(test))]);\n{offline}"),
+        1,
+    );
+    assert_eq!(
+        contract(&inert, ROLE),
+        Ok(()),
+        "stringify! arguments remain inert even inside the verified caller"
+    );
 }
 
 #[test]
