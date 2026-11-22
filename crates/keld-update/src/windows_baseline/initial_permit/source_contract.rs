@@ -53,7 +53,9 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
     let end = visible[initializer_start..]
         .find("\nmod publication;")
         .ok_or("KEL-53 publication boundary missing")?;
-    let initializer = code(&visible[initializer_start..initializer_start + end]);
+    let function = &visible[initializer_start..initializer_start + end];
+    require_exact_initial_authorization_prelude(function)?;
+    let initializer = code(function);
     required_order(
         &initializer,
         &[
@@ -71,13 +73,14 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
     {
         return Err("bootstrap recheck must be exactly one native call");
     }
+    require_legacy_effect_order(&initializer)
+}
 
-    // A mere ordered subsequence is insufficient: an extra FILE_CREATE can
-    // occur before the recheck and still leave all five old anchors present.
-    // This closed source slice permits only the observed read-only operations
-    // from the initial token check through the first native effect. Whitespace,
-    // comments and strings are masked/normalized, but any additional live
-    // statement in this slice fails, regardless of which writer it calls.
+// A mere ordered subsequence is insufficient: an extra FILE_CREATE can occur
+// before the recheck and leave the old anchors present. This closed source
+// slice permits only the observed read-only operations from the initial token
+// check through the first native effect; any additional live statement fails.
+fn require_legacy_effect_order(initializer: &str) -> Result<(), &'static str> {
     let compact = initializer.split_whitespace().collect::<String>();
     const PREFIX_BEFORE_EFFECT: &str = concat!(
         "token_check(authority).map_err(|cause|error(,cause))?;",
@@ -115,6 +118,47 @@ fn legacy_effect_authority_contract(source: &str) -> Result<(), &'static str> {
             .find(effect)
             .ok_or("KEL-53 protected effect reordered before bootstrap recheck")?;
         remaining = &remaining[offset + effect.len()..];
+    }
+    Ok(())
+}
+
+// Freeze the executable initializer *from its body entry*, not just a
+// subsequence beginning at token_check. The only admitted earlier statements
+// are the existing direct-owner and mode refusals; any additional statement
+// could create filesystem state before the first native authority check.
+// This lexical contract is not a Rust control-flow proof or native OS oracle.
+fn require_exact_initial_authorization_prelude(function: &str) -> Result<(), &'static str> {
+    const AUTHORIZED_PRELUDE: &str = r#"
+    trust.require_direct_owner()?;
+    if trust.installation.install_mode != authority.mode() {
+        return Err(error(
+            "installer mode",
+            format!(
+                "initializer requires explicit {} mode, found {}",
+                authority.mode().as_str(),
+                trust.installation.install_mode.as_str()
+            ),
+        ));
+    }
+    token_check(authority).map_err(|cause| error("installer authority", cause))?;
+    "#;
+    let body_start = function
+        .find('{')
+        .ok_or("KEL-53 initializer body missing")?
+        + 1;
+    let token_start = function
+        .find("token_check(authority)")
+        .ok_or("initial installer token observation missing")?;
+    let token_end = token_start
+        + function[token_start..]
+            .find(';')
+            .ok_or("initial token observation not terminated")?
+        + 1;
+    if token_start <= body_start
+        || function.matches("token_check(authority)").count() != 1
+        || code(&function[body_start..token_end]) != code(&hide_non_code(AUTHORIZED_PRELUDE)?)
+    {
+        return Err("unreviewed statement or effect before initial installer authorization");
     }
     Ok(())
 }
@@ -209,6 +253,54 @@ fn native_effect_recheck_single_fault_mutations_are_refused() {
         legacy_effect_authority_contract(&unexpected_effect).is_err(),
         "an unlisted filesystem effect before native recheck must refuse"
     );
+}
+
+#[test]
+fn pre_token_effect_fails_with_owner_mode_and_later_effect_checks_intact() {
+    legacy_effect_authority_contract(LEGACY_INITIALIZER)
+        .expect("unchanged v1 owner/mode checks and KEL-53 bootstrap order are accepted");
+    const INITIAL_TOKEN: &str =
+        "    token_check(authority).map_err(|cause| error(\"installer authority\", cause))?;";
+    assert_eq!(LEGACY_INITIALIZER.matches(INITIAL_TOKEN).count(), 1);
+    let premature_create = LEGACY_INITIALIZER.replacen(
+        INITIAL_TOKEN,
+        &format!(
+            "    let _ = std::fs::create_dir(&trust.installation.install_root);\n{INITIAL_TOKEN}"
+        ),
+        1,
+    );
+    assert_eq!(
+        premature_create.matches("token_check(authority)").count(),
+        1,
+        "the mutation must retain the original token observation"
+    );
+    assert!(
+        legacy_effect_authority_contract(&premature_create).is_err(),
+        "a real filesystem write before the first token check must fail the source oracle"
+    );
+    for (label, before, after) in [
+        (
+            "direct owner dropped",
+            "    trust.require_direct_owner()?;\n",
+            "",
+        ),
+        (
+            "mode refusal replaced by unconditional result",
+            "    if trust.installation.install_mode != authority.mode() {",
+            "    if false {",
+        ),
+    ] {
+        assert_eq!(
+            LEGACY_INITIALIZER.matches(before).count(),
+            1,
+            "{label}: anchor"
+        );
+        let mutant = LEGACY_INITIALIZER.replacen(before, after, 1);
+        assert!(
+            legacy_effect_authority_contract(&mutant).is_err(),
+            "{label}: owner or mode admission was bypassed before the token check"
+        );
+    }
 }
 
 // Keep offsets unchanged so the existing method/field slicers operate on
