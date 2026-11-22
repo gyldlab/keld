@@ -629,27 +629,243 @@ fn visible_owner_body(
         .get(at..)
         .ok_or(D45_VERIFIED_OWNER_REFUSAL)?;
     function_body(source, name)
-        .map(compact)
+        .map(str::to_owned)
         .map_err(|_| D45_VERIFIED_OWNER_REFUSAL)
 }
 
-fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), &'static str> {
-    let bytes = body.as_bytes();
-    for (at, &byte) in bytes.iter().enumerate() {
-        if byte != b'!' || !matches!(bytes.get(at + 1), Some(b'(' | b'[' | b'{')) {
+fn d45_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
+}
+
+fn d45_ident_at(source: &str, at: usize) -> (&str, usize) {
+    let bytes = source.as_bytes();
+    let start = if bytes.get(at..at + 2) == Some(b"r#") {
+        at + 2
+    } else {
+        at
+    };
+    let mut end = start;
+    while bytes.get(end).is_some_and(|&byte| d45_ident_byte(byte)) {
+        end += 1;
+    }
+    (&source[start..end], end)
+}
+
+fn d45_skip_space(bytes: &[u8], mut at: usize) -> usize {
+    while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+        at += 1;
+    }
+    at
+}
+
+fn d45_macro_tree_end(bytes: &[u8], opening: usize) -> Result<usize, &'static str> {
+    let closing = |byte| match byte {
+        b'(' => Some(b')'),
+        b'[' => Some(b']'),
+        b'{' => Some(b'}'),
+        _ => None,
+    };
+    let mut stack = vec![
+        bytes
+            .get(opening)
+            .copied()
+            .and_then(closing)
+            .ok_or(D45_VERIFIED_OWNER_REFUSAL)?,
+    ];
+    for (at, &byte) in bytes.iter().enumerate().skip(opening + 1) {
+        if let Some(close) = closing(byte) {
+            stack.push(close);
+        } else if matches!(byte, b')' | b']' | b'}') {
+            if stack.pop() != Some(byte) {
+                return Err(D45_VERIFIED_OWNER_REFUSAL);
+            }
+            if stack.is_empty() {
+                return Ok(at + 1);
+            }
+        }
+    }
+    Err(D45_VERIFIED_OWNER_REFUSAL)
+}
+
+// Read *active* tokens from the ordinary mask: comments, strings and macro
+// arguments are already blank. A module import affects both release owners,
+// and a local import can shadow matches!/format! without changing either call.
+fn d45_import_binds_identity_macro(import: &str, allowed: &[&str]) -> bool {
+    let bytes = import.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'*' {
+            // A glob can introduce any of the approved macro spellings.
+            return true;
+        }
+        if !d45_ident_byte(bytes[at]) {
+            at += 1;
             continue;
         }
-        let mut start = at;
-        while start > 0
-            && (bytes[start - 1].is_ascii_alphanumeric()
-                || matches!(bytes[start - 1], b'_' | b':' | b'#')
-                || bytes[start - 1] >= 0x80)
+        let (name, end) = d45_ident_at(import, at);
+        let after = d45_skip_space(bytes, end);
+        if allowed.contains(&name) && matches!(bytes.get(after), None | Some(b',' | b'}' | b';')) {
+            return true;
+        }
+        at = end.max(at + 1);
+    }
+    false
+}
+
+fn d45_reject_active_macro_bindings(
+    source: &str,
+    allowed: &[&str],
+    module_level_only: bool,
+) -> Result<(), &'static str> {
+    let bytes = source.as_bytes();
+    let mut at = 0;
+    let mut depth = 0_usize;
+    while at < bytes.len() {
+        if bytes[at] == b'{' {
+            depth += 1;
+        } else if bytes[at] == b'}' {
+            depth = depth.saturating_sub(1);
+        }
+        if (module_level_only && depth != 0) || !bytes[at].is_ascii_alphabetic() {
+            at += 1;
+            continue;
+        }
+        if at > 0 && d45_ident_byte(bytes[at - 1]) {
+            at += 1;
+            continue;
+        }
+        let (word, end) = d45_ident_at(source, at);
+        if word == "use" {
+            let semicolon = bytes[end..]
+                .iter()
+                .position(|&byte| byte == b';')
+                .map(|offset| end + offset)
+                .ok_or(D45_VERIFIED_OWNER_REFUSAL)?;
+            if d45_import_binds_identity_macro(&source[end..=semicolon], allowed) {
+                return Err(D45_VERIFIED_OWNER_REFUSAL);
+            }
+            // A grouped import's braces do not change the surrounding scope.
+            at = semicolon + 1;
+            continue;
+        }
+        if word == "macro_rules" {
+            let bang = d45_skip_space(bytes, end);
+            if bytes.get(bang) == Some(&b'!') {
+                let name_at = d45_skip_space(bytes, bang + 1);
+                let (name, _) = d45_ident_at(source, name_at);
+                if allowed.contains(&name) {
+                    return Err(D45_VERIFIED_OWNER_REFUSAL);
+                }
+            }
+        }
+        at = end.max(at + 1);
+    }
+    Ok(())
+}
+
+fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str> {
+    let bytes = source.as_bytes();
+    let mut depth = 0_usize;
+    let mut parentheses = 0_usize;
+    let mut brackets = 0_usize;
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'{' {
+            depth += 1;
+        } else if bytes[at] == b'}' {
+            depth = depth.saturating_sub(1);
+        } else if bytes[at] == b'(' {
+            parentheses += 1;
+        } else if bytes[at] == b')' {
+            parentheses = parentheses.saturating_sub(1);
+        } else if bytes[at] == b'[' {
+            brackets += 1;
+        } else if bytes[at] == b']' {
+            brackets = brackets.saturating_sub(1);
+        }
+        if depth == 0
+            && parentheses == 0
+            && brackets == 0
+            && bytes[at..].starts_with(b"macro_rules")
         {
+            let end = at + "macro_rules".len();
+            if (at == 0 || !d45_ident_byte(bytes[at - 1]))
+                && bytes.get(end).is_none_or(|&byte| !d45_ident_byte(byte))
+            {
+                let bang = d45_skip_space(bytes, end);
+                if bytes.get(bang) == Some(&b'!') {
+                    let name_at = d45_skip_space(bytes, bang + 1);
+                    let (name, name_end) = d45_ident_at(source, name_at);
+                    if ["matches", "format", "stringify"].contains(&name) {
+                        return Err(D45_VERIFIED_OWNER_REFUSAL);
+                    }
+                    let opening = d45_skip_space(bytes, name_end);
+                    at = d45_macro_tree_end(bytes, opening)?;
+                    continue;
+                }
+            }
+        }
+        at += 1;
+    }
+    Ok(())
+}
+
+// The comment/literal mask keeps live macro invocations visible. Skip only
+// non-executing token trees (macro_rules! definitions and stringify! input).
+// In particular format!(forged!()) still contains an executable forged! call.
+fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), &'static str> {
+    let bytes = body.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'!' {
+            at += 1;
+            continue;
+        }
+        let opening = d45_skip_space(bytes, at + 1);
+        let has_opening = matches!(bytes.get(opening), Some(b'(' | b'[' | b'{'));
+        let mut end = at;
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && d45_ident_byte(bytes[start - 1]) {
             start -= 1;
         }
-        if !allowed.contains(&&body[start..at]) {
+        if start >= 2 && bytes.get(start - 2..start) == Some(b"r#") {
+            start -= 2;
+        }
+        let name = body[start..end].trim_start_matches("r#");
+        if name == "macro_rules" {
+            // Its body is inert until invoked. The exact declared name is
+            // checked here; the module-scoped form is checked separately.
+            let name_at = d45_skip_space(bytes, at + 1);
+            let (declared, name_end) = d45_ident_at(body, name_at);
+            if ["matches", "format", "stringify"].contains(&declared) {
+                return Err(D45_VERIFIED_OWNER_REFUSAL);
+            }
+            let macro_open = d45_skip_space(bytes, name_end);
+            at = d45_macro_tree_end(bytes, macro_open)?;
+            continue;
+        }
+        // Unary !(value), if !(value) and != are ordinary operators.
+        if !has_opening
+            || name.is_empty()
+            || matches!(name, "if" | "while" | "return" | "let" | "else" | "break")
+        {
+            at += 1;
+            continue;
+        }
+        if start > 0 && bytes[start - 1] == b':' {
             return Err(D45_VERIFIED_OWNER_REFUSAL);
         }
+        if !allowed.contains(&name) {
+            return Err(D45_VERIFIED_OWNER_REFUSAL);
+        }
+        if name == "stringify" {
+            at = d45_macro_tree_end(bytes, opening)?;
+            continue;
+        }
+        at = opening + 1;
     }
     Ok(())
 }
@@ -707,14 +923,19 @@ fn check_verified_state_owner_and_caller(
     )?;
     require_expected_identity_macros(&caller_visible, &["matches", "format", "stringify"])?;
     require_expected_identity_macros(&extractor_visible, &["format", "stringify"])?;
-    let macro_source = compact(macro_visible_guard);
-    for name in ["matches", "format", "stringify"] {
-        if macro_source.contains(&format!("macro_rules!{name}"))
-            || macro_source.contains(&format!("macro_rules!r#{name}"))
-        {
-            return Err(D45_VERIFIED_OWNER_REFUSAL);
-        }
-    }
+    let identity_macros = ["matches", "format", "stringify"];
+    d45_reject_active_macro_bindings(guard, &identity_macros, true)?;
+    d45_reject_active_macro_bindings(
+        function_body(guard, "windows_identity_from_image_with_policy")?,
+        &identity_macros,
+        false,
+    )?;
+    d45_reject_active_macro_bindings(
+        function_body(guard, "windows_identity_from_verified_trust_state")?,
+        &identity_macros,
+        false,
+    )?;
+    d45_reject_module_macro_declarations(macro_visible_guard)?;
     Ok(())
 }
 
@@ -963,6 +1184,171 @@ fn block_scoped_standard_macro_redefinition_fails_source_contract() {
         contract(&forged, ROLE),
         Err(D45_VERIFIED_OWNER_REFUSAL),
         "a local override of an otherwise approved macro must not bypass native VERIFY"
+    );
+}
+
+#[test]
+fn release_only_import_alias_to_forged_macro_fails_source_contract() {
+    let preceding_owner = "fn verified_windows_identity_from_image(";
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(
+        GUARD.matches(preceding_owner).count(),
+        1,
+        "stale preceding owner"
+    );
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale policy callsite");
+    let exported_forgery = concat!(
+        "#[macro_export]\n",
+        "macro_rules! d45_forge {\n",
+        "    ($($input:tt)*) => {\n",
+        "        return Ok(WindowsTrustObservation {\n",
+        "            identity: WindowsAuthenticodeIdentity {\n",
+        "                publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+        "            },\n",
+        "            d45_chain_facts: None,\n",
+        "        })\n",
+        "    };\n",
+        "}\n",
+    );
+    let forged_macro_only = GUARD.replacen(
+        preceding_owner,
+        &format!("{exported_forgery}{preceding_owner}"),
+        1,
+    );
+    assert_eq!(
+        contract(&forged_macro_only, ROLE),
+        Ok(()),
+        "an unused, differently named macro must not change the verified caller"
+    );
+    for prefix in [
+        "    use crate::d45_forge as matches;\n",
+        "    #[cfg(not(test))] use crate::d45_forge as matches;\n",
+    ] {
+        let local_alias = forged_macro_only.replacen(offline, &format!("{prefix}{offline}"), 1);
+        assert_eq!(
+            contract(&local_alias, ROLE),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "a local macro alias can fabricate Ok before WinVerifyTrust: {prefix}"
+        );
+        let active = hide_inert_text(&local_alias).expect("well-formed alias mutation");
+        assert_eq!(
+            d45_reject_active_macro_bindings(
+                function_body(&active, "windows_identity_from_image_with_policy")
+                    .expect("live VERIFY owner"),
+                &["matches", "format", "stringify"],
+                false,
+            ),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "the import scanner itself must reject both active and release-only aliases"
+        );
+    }
+    for import in [
+        "use crate::d45_forge as matches;",
+        "#[cfg(not(test))] use crate::d45_forge as matches;",
+        "use crate::{d45_forge as r#matches};",
+        "use crate::d45_forge as format;",
+    ] {
+        let module_alias =
+            forged_macro_only.replacen(preceding_owner, &format!("{import}\n{preceding_owner}"), 1);
+        assert_eq!(
+            contract(&module_alias, ROLE),
+            Err(D45_VERIFIED_OWNER_REFUSAL),
+            "module-level macro alias must be refused: {import}"
+        );
+    }
+}
+
+#[test]
+fn inactive_macro_import_text_and_different_binding_remain_green() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale policy callsite");
+    let inert = GUARD.replacen(
+        offline,
+        concat!(
+            "    /* use crate::d45_forge as matches; */\n",
+            "    let _inert = stringify!(use crate::d45_forge as matches;);\n",
+            "    let _nested = stringify!(unknown!());\n",
+            "    let _nested_rules = stringify!(macro_rules! matches { () => {} });\n",
+            "    let _unary = !(true);\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&inert, ROLE),
+        Ok(()),
+        "comments, inert macro arguments, nested stringify and unary ! are harmless"
+    );
+    let macro_owner = "fn verified_windows_identity_from_image(";
+    let named_macro = GUARD.replacen(
+        macro_owner,
+        &format!("#[macro_export]\nmacro_rules! d45_forge {{ () => {{ false }}; }}\n{macro_owner}"),
+        1,
+    );
+    let renamed = named_macro.replacen(
+        offline,
+        concat!(
+            "    use crate::d45_forge as matches_helper;\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&renamed, ROLE),
+        Ok(()),
+        "importing an unrelated name cannot shadow the approved matches! macro"
+    );
+}
+
+#[test]
+fn exact_macro_names_and_nested_calls_are_distinguished() {
+    let preceding_owner = "fn verified_windows_identity_from_image(";
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(
+        GUARD.matches(preceding_owner).count(),
+        1,
+        "stale preceding owner"
+    );
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale policy callsite");
+    let helper = GUARD.replacen(
+        preceding_owner,
+        &format!("macro_rules!matches_helper {{ () => {{ true }}; }}\n{preceding_owner}"),
+        1,
+    );
+    assert_eq!(
+        contract(&helper, ROLE),
+        Ok(()),
+        "macro_rules!matches_helper must not match the exact macro_rules!matches name"
+    );
+    let shadow = GUARD.replacen(
+        preceding_owner,
+        &format!("macro_rules! matches {{ () => {{ true }}; }}\n{preceding_owner}"),
+        1,
+    );
+    assert_eq!(
+        contract(&shadow, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "module-scoped macro_rules!matches is an active name shadow"
+    );
+    let helper = helper.replacen(
+        offline,
+        &format!("    macro_rules! format_helper {{ () => {{ true }}; }}\n{offline}"),
+        1,
+    );
+    assert_eq!(
+        contract(&helper, ROLE),
+        Ok(()),
+        "an unused local macro definition cannot substitute the approved macro"
+    );
+    let active_unknown = GUARD.replacen(
+        offline,
+        &format!("    let _dangerous = format!(unknown!());\n{offline}"),
+        1,
+    );
+    assert_eq!(
+        contract(&active_unknown, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "format! evaluates its arguments, unlike inert stringify! arguments"
     );
 }
 
