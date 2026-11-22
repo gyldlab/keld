@@ -491,9 +491,7 @@ test("foreign Git environment cannot mask a dirty source in the expected checkou
     expect(selectedCommitProblems(receipt.selectedSourceCommit)).toEqual([]);
     expect(
       selectedCommitProblems(receipt.selectedSourceCommit, join(repo, "tools")),
-    ).toEqual([
-      "git-root-mismatch",
-    ]);
+    ).toEqual(["git-root-mismatch"]);
     expect(() =>
       run(["git", "rev-parse", "--show-toplevel"], join(repo, "tools")),
     ).toThrow("unexpected Git root");
@@ -515,7 +513,10 @@ test("source checks suppress a repository-local fsmonitor command", () => {
   const sourcePath = "packages/@keld/api/src/app.ts";
   try {
     mkdirSync(dirname(join(checkout, sourcePath)), { recursive: true });
-    writeFileSync(join(checkout, sourcePath), readFileSync(join(originalSource, "app.ts")));
+    writeFileSync(
+      join(checkout, sourcePath),
+      readFileSync(join(originalSource, "app.ts")),
+    );
     writeFileSync(
       hook,
       "#!/bin/sh\nprintf 'called\\n' >> \"$KELD_FSMONITOR_MARKER\"\nprintf 'token\\n'\n",
