@@ -1171,8 +1171,12 @@ fn validate_updater_package(
 fn validate_first_party_root_lock(
     root_dependencies: &serde_json::Map<String, serde_json::Value>,
     locked_root: &serde_json::Map<String, serde_json::Value>,
+    installed_packages: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), HostAppError> {
-    for name in ["@keld/api", "@keld/kipc"] {
+    for (name, installed_path, archive_stem) in [
+        ("@keld/api", "node_modules/@keld/api", "keld-api"),
+        ("@keld/kipc", "node_modules/@keld/kipc", "keld-kipc"),
+    ] {
         let selected = root_dependencies
             .get(name)
             .and_then(serde_json::Value::as_str)
@@ -1181,6 +1185,26 @@ fn validate_first_party_root_lock(
             return Err(graph_error(
                 "first-party root lock",
                 format!("{name} root dependency differs from installed lock"),
+            ));
+        }
+        let version = installed_packages
+            .get(installed_path)
+            .and_then(|row| row.get("version"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                graph_error(
+                    "first-party installed version",
+                    format!("{name} missing locked installed version"),
+                )
+            })?;
+        // This check does not implement npm's range solver or select a
+        // publisher. For first-party providers, only an exact version or the
+        // existing bounded local archive spelling is source-consistent.
+        // Source-to-archive receipts and npm SRI remain separate authority.
+        if selected != version && !first_party_file_archive(selected, version, archive_stem) {
+            return Err(graph_error(
+                "first-party installed version",
+                format!("{name} root selector does not match the installed lock version"),
             ));
         }
     }
@@ -1260,7 +1284,7 @@ fn validate_package_data(dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostA
     {
         return Err(graph_error("lock", "root electron alias differs from lock"));
     }
-    validate_first_party_root_lock(root_dependencies, locked_root)?;
+    validate_first_party_root_lock(root_dependencies, locked_root, packages)?;
     for (root, expected_name) in PACKAGES {
         let manifest = read_json(dir, &format!("{root}/package.json"))?;
         if manifest.get("name").and_then(serde_json::Value::as_str) != Some(expected_name) {

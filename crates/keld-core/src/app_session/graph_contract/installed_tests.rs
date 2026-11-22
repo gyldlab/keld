@@ -447,6 +447,49 @@ fn retained_graph_keeps_matching_local_first_party_archive_aliases_as_data_only(
 }
 
 #[test]
+fn retained_graph_refuses_first_party_root_selector_not_matching_installed_version() {
+    // Root package and lock-root agree in every case. The installed package
+    // and installed lock row still declare 0.0.1, so a declared 0.0.2 cannot
+    // be silently admitted by rebinding only the root/lock source digests.
+    for (name, selector) in [
+        ("@keld/api", "0.0.2"),
+        ("@keld/kipc", "0.0.2"),
+        ("@keld/api", "file:vendor/keld-api-0.0.2.tgz"),
+        ("@keld/kipc", "file:vendor/keld-kipc-0.0.2.tgz"),
+    ] {
+        let fixture = Fixture::new();
+        let mut package: serde_json::Value =
+            serde_json::from_str(PACKAGE).expect("root source package");
+        let mut lock: serde_json::Value = serde_json::from_str(LOCK).expect("npm lock");
+        package["dependencies"][name] = serde_json::json!(selector);
+        lock["packages"][""]["dependencies"][name] = serde_json::json!(selector);
+        let mut package_bytes = serde_json::to_vec(&package).expect("changed root source");
+        package_bytes.push(b'\n');
+        let mut lock_bytes = serde_json::to_vec(&lock).expect("changed lock source");
+        lock_bytes.push(b'\n');
+        Fixture::write(&fixture.root, "package.json", &package_bytes);
+        Fixture::write(&fixture.root, "package-lock.json", &lock_bytes);
+        let mut expected = approved();
+        expected.expected_package_sha256 = Sha256::digest(&package_bytes).into();
+        expected.expected_lock_sha256 = Sha256::digest(&lock_bytes).into();
+        let result = make_graph_leaf_from_retained_root(
+            &fixture.root,
+            &fixture.held,
+            &expected,
+            &fixture.selected,
+            MAIN,
+        );
+        let Err(error) = result else {
+            panic!("{name} {selector}: a mismatched installed version was admitted");
+        };
+        assert!(
+            error.to_string().contains("first-party installed version"),
+            "{name} {selector}: {error}"
+        );
+    }
+}
+
+#[test]
 fn retained_graph_binding_rejects_wrong_graph_main_and_selected_preload() {
     let fixture = Fixture::new();
     let bytes = fixture.compile().expect("qualified graph");
