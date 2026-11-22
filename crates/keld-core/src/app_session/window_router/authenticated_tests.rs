@@ -215,6 +215,30 @@ fn setter_requires_native_confirmation(
     Ok(())
 }
 
+/// Require the actual correlated window retirement and link-end receipts.
+/// A generic error prefix or a Quit reply alone does not prove this ordering.
+fn opening_quit_result_is_exact(report: &str) -> bool {
+    report == "OPENING-RESULT error:KELD-IPC-022 reply KELD-IPC-022 0"
+}
+
+#[test]
+fn opening_quit_result_rejects_wrong_error_or_link_end() {
+    for wrong in [
+        "OPENING-RESULT error:KELD-IPC-007 reply KELD-IPC-022 0",
+        "OPENING-RESULT error:untyped reply KELD-IPC-027 0",
+        "OPENING-RESULT error:KELD-IPC-022 reply KELD-IPC-027 0",
+        "OPENING-RESULT error:KELD-IPC-022 reply KELD-IPC-022 1",
+    ] {
+        assert!(
+            !opening_quit_result_is_exact(wrong),
+            "wrong Create error, link end, or Created count was accepted: {wrong}"
+        );
+    }
+    assert!(opening_quit_result_is_exact(
+        "OPENING-RESULT error:KELD-IPC-022 reply KELD-IPC-022 0"
+    ));
+}
+
 /// GH-451: a real Runtime/Bun-owned Window Create can remain Opening after
 /// Core enqueues native construction. Lifecycle Quit on that SAME authenticated
 /// link owns the terminal transition; a later native build must be cleaned up
@@ -296,10 +320,8 @@ fn authenticated_opening_create_then_lifecycle_quit_cleans_late_native_build() -
     command(&mut control, "OPENING-RESULT")?;
     let report = read_control(&mut control)?;
     assert!(
-        report.starts_with("OPENING-RESULT error:")
-            && report.contains(" reply ")
-            && report.ends_with(" 0"),
-        "retired Create must not succeed or mint a Created fact: {report}"
+        opening_quit_result_is_exact(&report),
+        "retired Create must report correlated KELD-IPC-022, Quit reply, link 022, and zero Created facts: {report}"
     );
 
     router.shutdown()?;
