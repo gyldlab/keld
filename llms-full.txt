@@ -2888,8 +2888,10 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   outcomes, not dual kernel group-absence proof. The distinct **unmerged**
   [#945](https://github.com/gyldlab/keld/pull/945) KGC1 `CONTROL_CLEAR`
   fix requires both original-leader `getpgid` and full-group `kill(-PGID, 0)`
-  to return `ESRCH` inside the original deadline before acknowledging
-  `CLEARED` or admitting a successor. Unexpected guardian exit produces
+  to return `ESRCH` within one `GUARDIAN_SHUTDOWN_DEADLINE` budget. The
+  Guardian starts this budget when processing `CONTROL_CLEAR`, independently
+  of the host shutdown deadline, before acknowledging `CLEARED` or admitting
+  a successor. Unexpected guardian exit produces
   `KELD-RUNTIME-013` only after the host fail-safe; orderly shutdown closes the
   same writer. The KEL-96 supervised variant may first write one fixed
   non-authority accepted-Quit byte through that host-exclusive pipe; the
