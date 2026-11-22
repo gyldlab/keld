@@ -146,19 +146,19 @@ fn main() {
 fn run_validated_no_flag() -> Result<(), keld_core::app_session::HostRunFailure> {
     let boot = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
         .map_err(keld_core::app_session::HostRunFailure::from)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         keld_core::app_session::run_guarded(boot, pre_init_terminal)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         keld_core::app_session::run_guarded(boot)
     }
 }
 
 /// A stalled native Init cannot be unwound: its blocked main stack retains
-/// AppKit/presentation/profile custody and the live dev stage through exit.
-#[cfg(target_os = "macos")]
+/// native window/presentation/profile custody and the live dev stage through exit.
+#[cfg(any(target_os = "macos", windows))]
 fn pre_init_terminal(error: &keld_core::app_session::HostAppError) -> ! {
     let mut stderr = std::io::stderr().lock();
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -475,49 +475,19 @@ fn guardian_bun_command(
     // No `pre_exec` hook here: the Guardian's SpawnAdmission gate must be
     // the only one, so a child refused before its exec permit is its whole
     // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
-    // Runtime config can override both CLI define and preload, including
-    // direct-entry launches. Recheck the staged cwd on every generation.
-    for config in ["bunfig.toml", ".bunfig.toml"] {
-        match std::fs::symlink_metadata(root.join(config)) {
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-            _ => {
-                return Err(guardian_entry_error(format!(
-                    "KELD-CORE-037: staged runtime config {config} can override canonical boot selection or preload. Restage through `keld dev`."
-                )));
-            }
-        }
-    }
+    // Recheck the staged cwd on every generation: the one admission owner refuses
+    // runtime config, which can override both CLI define and preload, and any link.
     let mut command = Command::new("bun");
-    command.arg(if native_facade {
-        "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
-    } else {
-        "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
-    });
-    let sidecar = root.join("src").join("kipc-transport.ts");
-    match std::fs::metadata(&sidecar) {
-        Ok(metadata) if metadata.is_file() => {
-            command.arg(format!("--preload={}", sidecar.display()));
-        }
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => {
-            return Err(guardian_entry_error(String::from(
-                "KELD-CORE-037: staged kipc transport is not a regular file. Restage through `keld dev`.",
-            )));
-        }
-        Err(source) => {
-            return Err(guardian_entry_error(format!(
-                "KELD-CORE-037: staged kipc transport cannot be inspected: {source}. Restage through `keld dev`."
-            )));
-        }
-    }
     command
+        .args(keld_runtime::primary::staged_bun_launch_args(
+            root,
+            native_facade,
+        )?)
         .arg("run")
         .arg(root.join(entry))
         .current_dir(root)
         .env("KELD_APP_LINK", app_link)
-        // Bun prepends BUN_OPTIONS arguments, allowing an inherited preload
-        // to run before the qualified canonical capture.
-        .env_remove("BUN_OPTIONS")
+        .env_remove(keld_runtime::primary::BUN_OPTIONS_ENV)
         .stdin(Stdio::null());
     Ok(command)
 }
