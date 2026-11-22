@@ -16,40 +16,42 @@ external contributors do not acquire that authority.
 
 ## Session continuity and closeout
 
-This owns non-trivial completion, including research-only audits, reviews, cleanup
+Owns non-trivial completion, including research-only audits, reviews, cleanup
 and resumed sessions. Before work, save objectives, findings and owned resources
-at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Native hooks supply current paths; see
+at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Native hooks supply paths; see
 [setup](../onboarding/05-development-guide.md#agent-session-hooks). Receipts bind
 `session_id` and `turn_id`. Retain original task inventory
-across turns; steering MUST NOT silently erase/recreate it. At scope changes, milestones
+across turns; steering MUST NOT silently erase/recreate it. At scope change, milestones
 and resume, reconcile conversation, current Linear and resources; steering adds work
-unless the user cancels/replaces it. A merged follow-up MUST NOT erase its originating audit objective.
+unless user cancels/replaces it. A merged follow-up MUST NOT erase its originating audit objective.
 
 Before completion or handoff:
 
 - Every material finding MUST have a disposition: implemented with evidence, tracked
   on its owning issue with finding and next acceptance check, independently refuted
-  with evidence, or blocked with owner and exact next action. Search/dedupe first;
+  with evidence, or blocked with owner and next action. Search/dedupe first;
   local reports or unrelated ticket URLs are insufficient.
 - Within authorized scope, persist Linear findings/acceptance updates this session,
   then re-fetch and verify their content. Preserve other claims; comment evidence on
-  actively owned issues. Publication/tool blockers retain the exact pending update;
+  owned issues. Publication/tool blockers retain the exact pending update;
   never fabricate a receipt.
-- Reconcile original objectives, applicable gates, review/merge/publication and
-  parent/subtask status. Coordination owns resource disposition and actual cleanup.
-  Unresolved work requires a bounded handoff; MUST NOT label the whole session complete.
-- Run `just session-closeout <receipt>` after the final state change. Preserve receipt,
-  baseline and hashed evidence. `tools/session_closeout.py` owns the receipt format.
-  Reconcile baseline against conversation/tool history; the validator cannot discover
-  omitted work or authenticate an agent-written remote receipt. Independently re-read
-  remote updates and resource state before accepting the result.
+- Reconcile original objectives, gates, review/merge/publication and parent/subtask
+  status. Coordination owns resource disposition and actual cleanup.
+  Unresolved work requires a bounded handoff; MUST NOT label session complete.
+- Run `just session-closeout <receipt>` after the final state change.
+  Publish receipt, baseline and hashed evidence to an authorized remote record;
+  verify tip. Keep referenced files hash-valid in place until approved
+  reference migration. `tools/session_closeout.py` owns receipt format.
+  Reconcile baseline with conversation/tool history; the validator cannot
+  discover omitted work or authenticate an agent-written remote receipt.
+  Independently re-read remote updates and local resource state before acceptance.
 
-Interruptions preserve inventory/next action; refresh on resume before acting.
-Prior receipts do not prove new-turn completion; checked handoff is not implementation.
-CI checks validator/policy, not live Linear or local cleanup. Activate only for
+Interruptions retain inventory/next action; refresh on resume.
+Prior receipts do not prove new-turn completion; handoff is not implementation.
+CI checks validator/policy, not live Linear or cleanup. Activate only for
 non-trivial work, never standalone factual questions. Hook enforcement requires client
-support, registration trusted through its UI and exercised activation. Without activation,
-claim no enforcement; report unsupported/untrusted clients.
+support, UI-trusted registration and exercised activation; without it claim no
+enforcement and report unsupported/untrusted clients.
 
 ## Tracker issue
 
@@ -64,9 +66,9 @@ elsewhere never wins and is a conflict. GitHub mechanics: `.agents/coordination.
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
    including its description, comments, status and relations. Reconcile it with the
-   checked-out code and specs; read its spec, the governing `docs/architecture/*`
-   sections and target crate `AGENTS.md`; query only relevant-area entries from
-   `docs/agents/learnings.md` (query/slice only). Set only
+   checked-out code and specs; read its spec index and needed parts, the governing
+   `docs/architecture/*` sections and target crate `AGENTS.md`; query only
+   relevant-area entries from `docs/agents/learnings.md`. Set only
    the agent's own issue to `In Progress` and post scope, expected paths, non-goals,
    dependencies and the first falsifiable acceptance check. An agent MAY pick up only a
    `Todo` and unassigned issue, unless a human or the orchestration explicitly assigns
@@ -93,8 +95,8 @@ elsewhere never wins and is a conflict. GitHub mechanics: `.agents/coordination.
    owner, boundary and inputs/outputs, failure mode, observable contract, independence
    from the other atoms, and first falsifier. This is the working model before a design
    or fix is selected, not a rationale added after implementation.
-2. **Spec gate.** Larger than a bug fix and no spec? Write one from
-   `docs/agents/spec-template.md` and stop for human approval. Never implement from an
+2. **Spec gate.** Larger than a bug fix and no spec? Write one per
+   `.agents/specs.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
 3. **Isolate.** `just work-start kel-<n> <slug> --session <id>` creates a task;
    coordination owns `.keld-work/worktrees/` placement. Use `agent/kel-<n>-<slug>`
