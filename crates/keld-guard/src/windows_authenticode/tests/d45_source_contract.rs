@@ -843,6 +843,7 @@ fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str
         {
             let end = at + "macro_rules".len();
             if (at == 0 || !d45_ident_byte(bytes[at - 1]))
+                && (at < 2 || bytes.get(at - 2..at) != Some(b"r#"))
                 && bytes.get(end).is_none_or(|&byte| !d45_ident_byte(byte))
             {
                 let bang = d45_skip_space(bytes, end);
@@ -888,6 +889,7 @@ fn d45_reject_module_macro_declarations(source: &str) -> Result<(), &'static str
                 // in shipping code. All other module item macro expansions
                 // could inject a release-only import, owner or return path.
                 if name != "thread_local"
+                    || source[start..end].starts_with("r#")
                     || test_probe_macros != 0
                     || !source[..start].trim_end().ends_with("#[cfg(test)]")
                 {
@@ -932,12 +934,13 @@ fn require_expected_identity_macros(body: &str, allowed: &[&str]) -> Result<(), 
             start -= 2;
         }
         let name = body[start..end].trim_start_matches("r#");
-        if name == "macro_rules" {
-            // Its body is inert until invoked. The exact declared name is
-            // checked here; the module-scoped form is checked separately.
+        if name == "macro_rules" && !body[start..end].starts_with("r#") {
+            // Only the literal macro_rules! keyword introduces an inert
+            // definition. r#macro_rules! is an active macro identifier and
+            // can invoke an imported forgery before WinVerifyTrust.
             let name_at = d45_skip_space(bytes, at + 1);
             let (declared, name_end) = d45_ident_at(body, name_at);
-            if ["matches", "format", "stringify"].contains(&declared) {
+            if declared.is_empty() || ["matches", "format", "stringify"].contains(&declared) {
                 return Err(D45_VERIFIED_OWNER_REFUSAL);
             }
             let macro_open = d45_skip_space(bytes, name_end);
@@ -1523,6 +1526,70 @@ fn module_level_unary_negation_is_not_an_item_macro() {
         contract(&benign, ROLE),
         Ok(()),
         "ordinary unary ! in a module-level const must not appear to be a macro"
+    );
+}
+
+#[test]
+fn raw_macro_rules_identifier_is_active_not_an_inert_definition() {
+    let allowed = ["matches", "format", "stringify"];
+    assert_eq!(
+        require_expected_identity_macros("r#macro_rules!();", &allowed),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "a raw identifier called macro_rules is not the macro_rules! declaration keyword"
+    );
+    assert_eq!(
+        d45_reject_module_macro_declarations("r#macro_rules!();"),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "module-level raw macro invocation can expand to an unreviewed import"
+    );
+    assert_eq!(
+        require_expected_identity_macros("macro_rules! helper { () => { unknown!() }; }", &allowed),
+        Ok(()),
+        "an unused ordinary macro_rules! definition is inert"
+    );
+    assert_eq!(
+        require_expected_identity_macros("stringify!(r#macro_rules!())", &allowed),
+        Ok(()),
+        "stringify! inputs do not invoke nested raw macros"
+    );
+}
+
+#[test]
+fn imported_raw_macro_rules_forgery_fails_verified_caller_contract() {
+    let owner = "fn verified_windows_identity_from_image(";
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(owner).count(), 1, "stale verified owner");
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale WinTrust policy");
+    let forged = GUARD.replacen(
+        owner,
+        concat!(
+            "#[macro_export]\n",
+            "macro_rules! d45_forge { () => {{\n",
+            "    if !cfg!(test) {\n",
+            "        return Ok(WindowsTrustObservation {\n",
+            "            identity: WindowsAuthenticodeIdentity {\n",
+            "                publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "            }, d45_chain_facts: None,\n",
+            "        });\n",
+            "    }\n",
+            "}}; }\n",
+            "fn verified_windows_identity_from_image("
+        ),
+        1,
+    );
+    let injected = forged.replacen(
+        offline,
+        concat!(
+            "    use crate::d45_forge as r#macro_rules;\n",
+            "    r#macro_rules!();\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&injected, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "an imported r#macro_rules! invocation must not forge Ok before WinTrust"
     );
 }
 
