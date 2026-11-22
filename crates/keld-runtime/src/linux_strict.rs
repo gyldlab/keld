@@ -646,8 +646,35 @@ fn wait_for_launcher_ready_until(
                     if std::time::Instant::now() >= deadline {
                         break;
                     }
-                    return parse_launcher_ready(&record)
-                        .map_err(|detail| failed_readiness(child, detail));
+                    let landlock = parse_launcher_ready(&record)
+                        .map_err(|detail| failed_readiness(child, detail))?;
+                    // A completed KLS1 record proves the Landlock layer, not
+                    // that a target exec succeeded. An already-exited nonzero
+                    // child is a failed startup even if its writer later EOFs.
+                    let status = match exited {
+                        Some(status) => Some(status),
+                        None => match child.try_wait() {
+                            Ok(status) => status,
+                            Err(source) => {
+                                terminate_failed_start(child);
+                                return Err(LinuxStrictError::new(
+                                    "launcher readiness",
+                                    source.to_string(),
+                                ));
+                            }
+                        },
+                    };
+                    if let Some(status) = status {
+                        if !status.success() {
+                            return Err(failed_readiness(
+                                child,
+                                format!(
+                                    "Bubblewrap exited with {status} after post-Landlock readiness before startup admission"
+                                ),
+                            ));
+                        }
+                    }
+                    return Ok(landlock);
                 }
                 Ok(read) => {
                     record.extend_from_slice(&chunk[..read]);
@@ -1257,7 +1284,7 @@ mod role_root_tests {
 #[cfg(test)]
 mod readiness_tests {
     use std::fs::File;
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -1293,6 +1320,25 @@ mod readiness_tests {
         let mut writer = File::from(writer);
         writer.write_all(record).expect("write readiness bytes");
         (File::from(reader), writer)
+    }
+
+    struct EofAfterWouldBlock {
+        reader: File,
+        writer: Option<File>,
+        saw_would_block: bool,
+    }
+
+    impl std::io::Read for EofAfterWouldBlock {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let result = self.reader.read(output);
+            if matches!(&result, Err(source) if source.kind() == std::io::ErrorKind::WouldBlock) {
+                self.saw_would_block = true;
+                // The real pipe's last writer remains open through the first
+                // EAGAIN observation, then closes before the next parent read.
+                self.writer.take();
+            }
+            result
+        }
     }
 
     struct FragmentedReady {
@@ -1381,6 +1427,35 @@ mod readiness_tests {
             error.detail.contains("invalid readiness record length"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn exited_nonzero_child_cannot_authorize_complete_buffered_token_after_late_eof() {
+        let mut child = completed_child(false);
+        let (reader, writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        let mut reader = EofAfterWouldBlock {
+            reader,
+            writer: Some(writer),
+            saw_would_block: false,
+        };
+        let error = wait_for_launcher_ready_until(
+            &mut child,
+            &mut reader,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect_err("the already-exited nonzero target must not become strict READY");
+        assert!(reader.saw_would_block, "must observe a held-writer EAGAIN");
+        assert!(error.detail.contains("exit status: 1"), "{error}");
+    }
+
+    #[test]
+    fn exited_nonzero_child_cannot_authorize_complete_token_at_immediate_eof() {
+        let mut child = completed_child(false);
+        let (mut reader, writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        drop(writer);
+        let error = wait_for_launcher_ready(&mut child, &mut reader)
+            .expect_err("fresh nonzero exit at EOF must deny strict readiness");
+        assert!(error.detail.contains("exit status: 1"), "{error}");
     }
 
     #[test]
