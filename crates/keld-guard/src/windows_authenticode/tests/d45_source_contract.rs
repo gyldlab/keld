@@ -50,6 +50,7 @@ fn contract(guard: &str, role: &str) -> Result<(), &'static str> {
     let role = hide_inert_text(role)?;
     check_retained_ownership(&guard)?;
     check_wintrust_verify_close(&guard)?;
+    check_primary_leaf_certificate_abi(&guard)?;
     check_native_issuer_policy(&guard, &role)
 }
 
@@ -189,6 +190,23 @@ fn check_wintrust_verify_close(guard: &str) -> Result<(), &'static str> {
         "WinTrust failed VERIFY CLOSE failure propagation",
     )?;
     Ok(())
+}
+
+// The primary WinTrust signer leaf is provider-owned. Reading any tail field
+// before checking CRYPT_PROVIDER_CERT::cbStruct is an unsupported ABI access.
+// This is a source-shape deletion oracle, not a native trust-chain substitute.
+fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
+    let leaf = method(guard, "windows_publisher_scope_from_signer")?;
+    in_order(
+        &leaf,
+        &[
+            "letcertificate_size=unsafe{(*certificate).cbStruct};",
+            "ifcertificate_size<windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(",
+            "returnErr(windows_identity_error(",
+            "letcertificate_ref=unsafe{&*certificate};",
+        ],
+        "D-45 primary leaf provider ABI guard before field access",
+    )
 }
 
 fn check_native_issuer_policy(guard: &str, role: &str) -> Result<(), &'static str> {

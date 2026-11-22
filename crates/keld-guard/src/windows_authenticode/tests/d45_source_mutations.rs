@@ -5,6 +5,20 @@
 
 pub(super) const MUTANTS: &[(&str, &str, &str, &str, bool)] = &[
     (
+        "primary leaf certificate ABI check bypass",
+        "if certificate_size\n        < windows_checked_abi_size",
+        "if false && certificate_size\n        < windows_checked_abi_size",
+        "D-45 primary leaf provider ABI guard before field access",
+        false,
+    ),
+    (
+        "primary leaf certificate ABI size source removed",
+        "let certificate_size = unsafe { (*certificate).cbStruct };",
+        "let certificate_size = 0;",
+        "D-45 primary leaf provider ABI guard before field access",
+        false,
+    ),
+    (
         "WinTrust hFile",
         "hFile: image.as_raw_handle().cast(),",
         "hFile: std::ptr::null_mut(),",
