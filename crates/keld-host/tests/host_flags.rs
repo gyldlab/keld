@@ -73,7 +73,7 @@ fn qualified_host_rejects_invalid_utf16_before_any_boot_or_role() {
 
 /// The original KEL-270 initial-install argument is reserved even when the
 /// feature has not been compiled. It must not fall through into the ordinary
-/// application boot, developer-role routing or WebView initialization.
+/// application boot, developer-role routing or `WebView` initialization.
 #[cfg(all(windows, not(feature = "windows-initial-install")))]
 #[test]
 fn original_initial_install_flag_without_feature_refuses_before_boot() {
