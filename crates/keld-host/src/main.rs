@@ -28,13 +28,17 @@ use std::process::{Command, Stdio};
 const WINDOWS_DEV_STAGE_CLEANUP_ARG: &str = "--keld-windows-dev-stage-cleanup-v1";
 #[cfg(windows)]
 const WINDOWS_INITIAL_INSTALL_ARG: &str = "--keld-install-initial-v3";
-#[cfg(all(windows, feature = "windows-initial-install"))]
+// Exercise the original refusal module in default Windows unit tests without
+// compiling or dispatching it in any feature-off shipping Host binary.
+#[cfg(all(windows, any(test, feature = "windows-initial-install")))]
 mod windows_initial_install;
 
 /// Original KEL-270 distribution argv owner. This classifier permits a
 /// syntactically exact private role, but its only compiled implementation
 /// continues to refuse production catalog authority without side effects.
-#[cfg(all(windows, feature = "windows-qualified-launch"))]
+// The pure classifier also builds in default Windows unit tests. Its runtime
+// enforcement remains opt-in through enforce_qualified_windows_args_or_exit.
+#[cfg(all(windows, any(test, feature = "windows-qualified-launch")))]
 fn qualified_windows_role(args: &[std::ffi::OsString], dev_lease: bool) -> bool {
     !dev_lease
         && (args.len() == 1
@@ -46,7 +50,7 @@ fn qualified_windows_role(args: &[std::ffi::OsString], dev_lease: bool) -> bool 
 /// Retain the original Host owner's pure routing control independently of
 /// process-level refusal tests. A constant-false classifier would make all
 /// negative process cases green while silently disabling the no-flag Host.
-#[cfg(all(test, windows, feature = "windows-qualified-launch"))]
+#[cfg(all(test, windows))]
 mod qualified_windows_role_tests {
     use super::{WINDOWS_INITIAL_INSTALL_ARG, qualified_windows_role};
     use std::ffi::OsString;

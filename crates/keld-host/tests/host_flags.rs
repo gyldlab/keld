@@ -1,56 +1,103 @@
 //! Cross-platform host argument boundary.
 #![allow(clippy::expect_used)] // integration-test process/output assertions
 
-use std::io::{Read as _, Seek as _, SeekFrom};
-use std::process::{Command, ExitStatus, Stdio};
+use std::io::Read as _;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// A refusal must terminate before the nextest timeout without hanging on a
-/// pipe or an accidental GUI launch. Redirect stderr to a private file rather
-/// than waiting for a possibly inherited pipe's EOF. The child is always the
-/// host launched by this test; only that child is killed on deadline.
+/// Fail promptly when the *test-owned* Host child exceeds a bound. Never call
+/// blocking wait after an unsuccessful termination attempt, and never claim
+/// that a failure to kill the child is successful cleanup.
+fn stop_owned_host_child(child: &mut Child, reason: &str) -> ! {
+    if let Err(error) = child.kill()
+        && child.try_wait().ok().flatten().is_none()
+    {
+        panic!("{reason}: could not terminate test-owned Host child: {error}");
+    }
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(10)),
+            Ok(None) => panic!("{reason}: test-owned Host child did not terminate after kill"),
+            Err(error) => panic!("{reason}: cannot verify Host child cleanup: {error}"),
+        }
+    }
+    panic!("{reason}");
+}
+
+/// Read stderr concurrently into an in-memory 8192-byte buffer. Drain even
+/// after overflow so the child cannot block on the pipe; on overflow the
+/// waiting test kills only its own child. An inherited pipe that stays open
+/// after child exit also has a bounded EOF wait and makes the test fail.
+/// This is a test process bound, not a production startup deadline.
 fn bounded_host_refusal(command: &mut Command) -> (ExitStatus, String) {
     const DEADLINE: Duration = Duration::from_secs(10);
-    const STDERR_LIMIT: u64 = 8_192;
-    let mut stderr_file = tempfile::tempfile().expect("create private host refusal capture");
-    let child_stderr = stderr_file
-        .try_clone()
-        .expect("retain private host refusal capture");
-    command
+    const STDERR_LIMIT: usize = 8_192;
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(child_stderr));
-    let mut child = command
+        .stderr(Stdio::piped())
         .spawn()
         .expect("launch only the test-owned Host child");
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("test-owned Host child has a captured stderr pipe");
+    let overflow = Arc::new(AtomicBool::new(false));
+    let reader_overflow = Arc::clone(&overflow);
+    let (send, receive) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut captured = Vec::with_capacity(STDERR_LIMIT);
+        let mut chunk = [0_u8; 4_096];
+        let result = loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) => break Ok(captured),
+                Ok(n) => {
+                    let remaining = STDERR_LIMIT - captured.len();
+                    if n > remaining {
+                        reader_overflow.store(true, Ordering::Release);
+                    }
+                    captured.extend_from_slice(&chunk[..n.min(remaining)]);
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        let _ = send.send(result);
+    });
     let until = Instant::now() + DEADLINE;
     let status = loop {
+        if overflow.load(Ordering::Acquire) {
+            stop_owned_host_child(&mut child, "Host refusal exceeded 8192 stderr bytes");
+        }
         if let Some(status) = child.try_wait().expect("query test-owned Host child") {
             break status;
         }
         if Instant::now() >= until {
-            let _ = child.kill();
-            child.wait().expect("reap timed-out test-owned Host child");
-            panic!("Host refusal exceeded its ten-second kill switch");
+            stop_owned_host_child(
+                &mut child,
+                "Host refusal exceeded its ten-second kill switch",
+            );
         }
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(10));
     };
-    stderr_file
-        .seek(SeekFrom::Start(0))
-        .expect("rewind bounded Host refusal output");
-    let mut stderr = Vec::new();
-    stderr_file
-        .take(STDERR_LIMIT + 1)
-        .read_to_end(&mut stderr)
-        .expect("read bounded Host refusal output");
+    let captured = receive
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Host refusal stderr pipe did not reach EOF within two seconds")
+        .expect("read test-owned Host refusal stderr");
     assert!(
-        u64::try_from(stderr.len()).expect("bounded stderr fits u64") <= STDERR_LIMIT,
+        !overflow.load(Ordering::Acquire),
         "Host refusal emitted more than 8192 bytes"
     );
     (
         status,
-        String::from_utf8(stderr).expect("Host refusal uses UTF-8"),
+        String::from_utf8(captured).expect("Host refusal uses UTF-8"),
     )
 }
 
