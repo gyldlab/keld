@@ -6,6 +6,25 @@ use std::time::Instant;
 
 const UNOBSERVED: u64 = u64::MAX;
 
+/// The local Guardian error site, not an assertion about Host IPC admission.
+/// A Supervisor terminal event can happen after an authenticated Host Bound.
+#[derive(Clone, Copy)]
+pub(super) enum GuardianFailureSite {
+    Registration,
+    InitialPreparation,
+    SupervisorTerminal,
+}
+
+impl GuardianFailureSite {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Registration => "guardian_registration",
+            Self::InitialPreparation => "guardian_initial_preparation",
+            Self::SupervisorTerminal => "guardian_supervisor_terminal",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GuardianPhase {
     Kgr1Authenticated,
@@ -16,6 +35,7 @@ pub(super) enum GuardianPhase {
 }
 
 impl GuardianPhase {
+    #[cfg(test)]
     const ORDER: [Self; 5] = [
         Self::Kgr1Authenticated,
         Self::Kgc1Prepared,
@@ -35,6 +55,7 @@ impl GuardianPhase {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NextAuthBoundary {
     GuardianKgr1,
@@ -67,7 +88,7 @@ impl GuardianPhaseLedger {
 
     pub(super) fn record(&self, phase: GuardianPhase) {
         let elapsed = self.started.elapsed().as_millis();
-        let bounded_ms = elapsed.min(u128::from(UNOBSERVED - 1)) as u64;
+        let bounded_ms = u64::try_from(elapsed).unwrap_or(UNOBSERVED - 1);
         self.observed_ms[phase.index()].fetch_min(bounded_ms, Ordering::Release);
     }
 
@@ -76,6 +97,7 @@ impl GuardianPhaseLedger {
         (value != UNOBSERVED).then_some(value)
     }
 
+    #[cfg(test)]
     pub(super) fn first_unproven(
         &self,
         host_hello_observed: bool,
@@ -101,28 +123,39 @@ impl GuardianPhaseLedger {
         }
     }
 
-    pub(super) fn failure_report(&self) -> String {
+    /// A task-owned fixture may inspect a local stage without forging any
+    /// KGR1 authentication that its synthetic stream does not exercise.
+    #[cfg(test)]
+    pub(super) fn test_observed(&self, phase: GuardianPhase) -> bool {
+        self.observed_millis(phase).is_some()
+    }
+
+    pub(super) fn failure_report(&self, site: GuardianFailureSite) -> String {
         let when = |phase| {
             self.observed_millis(phase)
                 .map_or_else(|| String::from("unobserved"), |millis| millis.to_string())
         };
         // Only fixed stage identifiers and monotonic offsets appear in stderr.
+        // First-generation milestones are NOT evidence of present Host Bound
+        // state or the cause of a later Supervisor crash. Never invent Host
+        // HELLO/Init/Bound state from this Guardian-local ledger. The real
+        // KELD-CORE-037 diagnosis is owned by Host, not this trace.
         // No app-link, token, private environment, PID, command, or launch facts.
         format!(
-            "KELD-CORE-037 auth-phase failure-only=true kgr1_ms={} kgc1_prepared_ms={} bun_factory_ms={} bun_spawn_reported_ms={} kgc1_registered_ms={} hello=host-unobserved init_ack=host-unobserved bound=host-unobserved first_unproven={:?}",
+            "GH1404_GUARDIAN_PHASE failure-only=true scope={} observations=first-guardian-generation kgr1_ms={} kgc1_prepared_ms={} bun_factory_ms={} bun_spawn_reported_ms={} kgc1_registered_ms={} host_hello=not-measured host_init_ack=not-measured host_bound=not-measured",
+            site.label(),
             when(GuardianPhase::Kgr1Authenticated),
             when(GuardianPhase::Kgc1Prepared),
             when(GuardianPhase::BunFactoryReturned),
             when(GuardianPhase::BunSpawnReported),
             when(GuardianPhase::Kgc1Registered),
-            self.first_unproven(false, false),
         )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GuardianPhase, GuardianPhaseLedger, NextAuthBoundary};
+    use super::{GuardianFailureSite, GuardianPhase, GuardianPhaseLedger, NextAuthBoundary};
 
     #[test]
     fn first_unproven_separates_prepared_factory_spawn_registered_hello_and_bound() {
@@ -196,13 +229,65 @@ mod tests {
         ] {
             ledger.record(stage);
         }
-        let report = ledger.failure_report();
-        assert!(report.starts_with("KELD-CORE-037 auth-phase"));
+        let report = ledger.failure_report(GuardianFailureSite::InitialPreparation);
+        assert!(report.starts_with("GH1404_GUARDIAN_PHASE failure-only=true"));
         assert!(report.contains("kgc1_registered_ms="));
-        assert!(report.contains("hello=host-unobserved"));
-        assert!(report.contains("init_ack=host-unobserved"));
-        assert!(report.contains("bound=host-unobserved"));
+        assert!(report.contains("host_hello=not-measured"));
+        assert!(report.contains("host_init_ack=not-measured"));
+        assert!(report.contains("host_bound=not-measured"));
         assert!(!report.contains("bun_exec=true"));
         assert!(!report.contains("KELD_APP_LINK"));
+    }
+
+    #[test]
+    fn rejected_private_registration_does_not_forge_authenticated_host_state() {
+        let report = GuardianPhaseLedger::new().failure_report(GuardianFailureSite::Registration);
+        assert!(report.contains("scope=guardian_registration"));
+        assert!(report.contains("kgr1_ms=unobserved"));
+        assert!(report.contains("host_hello=not-measured"));
+        assert!(!report.contains("KELD-CORE-037"));
+    }
+
+    #[test]
+    fn real_kgc1_observation_cannot_fill_missing_kgr1_registration() {
+        let ledger = GuardianPhaseLedger::new();
+        assert!(!ledger.test_observed(GuardianPhase::Kgr1Authenticated));
+        ledger.record(GuardianPhase::Kgc1Prepared);
+        assert!(ledger.test_observed(GuardianPhase::Kgc1Prepared));
+        assert!(
+            !ledger.test_observed(GuardianPhase::Kgr1Authenticated),
+            "KGC1 cannot fabricate an earlier KGR1 handshake"
+        );
+    }
+
+    #[test]
+    fn post_bound_supervisor_crash_must_not_be_reported_as_initial_auth_failure() {
+        let ledger = GuardianPhaseLedger::new();
+        for stage in GuardianPhase::ORDER {
+            ledger.record(stage);
+        }
+        // The independent Host's already-authenticated Bound is a test premise,
+        // not a capability inferred by the Guardian from local KGC1 records.
+        assert_eq!(
+            ledger.first_unproven(true, true),
+            NextAuthBoundary::HostBound
+        );
+        let report = ledger.failure_report(GuardianFailureSite::SupervisorTerminal);
+        assert!(
+            !report.contains("KELD-CORE-037") && !report.contains("initial-auth"),
+            "later Bun crash must not be relabeled a Host initial-auth failure: {report}"
+        );
+        assert!(
+            report.contains("scope=guardian_supervisor_terminal"),
+            "a later terminal failure requires explicit attribution: {report}"
+        );
+        assert!(
+            report.contains("host_bound=not-measured"),
+            "Guardian may not infer current Host Bound state: {report}"
+        );
+        assert!(
+            !report.contains("first_unproven="),
+            "a late crash is not evidence of an unproven initial HELLO: {report}"
+        );
     }
 }

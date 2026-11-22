@@ -45,7 +45,6 @@ where
         )?;
         if attempt == 1 {
             self.initial_prepared.store(true, Ordering::Release);
-            self.phase_ledger.record(GuardianPhase::Kgc1Prepared);
         }
         let app_link = match String::from_utf8(response.payload) {
             Ok(app_link) if !app_link.is_empty() => app_link,
@@ -72,6 +71,13 @@ where
                 ));
             }
         };
+        if attempt == 1 {
+            // The transport-level PREPARED ACK remains a distinct admission
+            // fact. The diagnostic records it only after its nonempty UTF-8
+            // app-link payload was decoded; an invalid reply must not advance
+            // the apparent usable-preparation milestone.
+            self.phase_ledger.record(GuardianPhase::Kgc1Prepared);
+        }
         // The factory MUST NOT install its own `pre_exec` hook. std runs such
         // hooks in registration order, so one added here would run BEFORE
         // the SpawnAdmission gate below, could fork, and would void the
