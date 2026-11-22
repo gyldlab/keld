@@ -20,6 +20,7 @@ const ROOT_GUARD: &str = "require_no_repository_pending_siblings(self.repository
 const PENDING_READ: &str =
     "read_optional_record(self.repository, PENDING_OPERATION, self.profile)?";
 const CURRENT_READ: &str = "read_optional_record(self.repository, CURRENT, self.profile)?";
+const ANCHOR_CASE_GUARD: &str = "require_canonical_anchor_leaf(self.enrollments, &leaf)?;";
 
 fn body(visible: &str, name: &str) -> Result<String, &'static str> {
     let range = lex::method_span(visible, name)?;
@@ -164,6 +165,21 @@ fn d90_callsite_contract(metadata: &str, journal: &str) -> Result<(), &'static s
     )?;
     let current = body(&visible, "read_current")?;
     exactly(&current, CURRENT_READ, 1)?;
+    let anchor = body(&visible, "read_anchor")?;
+    exactly(&anchor, ANCHOR_CASE_GUARD, 1)?;
+    ordered(
+        &anchor,
+        &[
+            "let leaf = self.anchor_leaf();",
+            ANCHOR_CASE_GUARD,
+            "read_optional_record(self.enrollments, &leaf, self.profile)?",
+        ],
+    )?;
+    if !anchor.trim_start().starts_with(
+        "let leaf = self.anchor_leaf(); require_canonical_anchor_leaf(self.enrollments, &leaf)?;",
+    ) {
+        return Err("D90 enrollment anchor reader bypasses first case-alias guard");
+    }
 
     let no_pending = body(&visible, "require_no_pending")?;
     d90_exact_root_guard(&no_pending)?;
@@ -244,6 +260,21 @@ fn removing_only_repository_metadata_root_guard_goes_red() {
     assert_eq!(
         d90_callsite_contract(&mutant, JOURNAL_SOURCE),
         Err("D90 source lost or duplicated the retained root guard")
+    );
+}
+
+#[test]
+fn removing_only_enrollment_anchor_case_guard_goes_red() {
+    d90_callsite_contract(SOURCE, JOURNAL_SOURCE).expect("unmodified source is green");
+    let mutant = replace_one_call_in(
+        SOURCE,
+        "read_anchor",
+        ANCHOR_CASE_GUARD,
+        "let _ = self.enrollments;",
+    );
+    assert!(
+        d90_callsite_contract(&mutant, JOURNAL_SOURCE).is_err(),
+        "deleting the retained enrollment alias guard must fail the actual protected reader contract"
     );
 }
 

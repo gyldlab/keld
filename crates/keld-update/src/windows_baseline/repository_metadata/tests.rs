@@ -9,9 +9,9 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
 use super::{
-    require_empty_generation_namespace, require_established_ready_generation,
-    require_only_genesis_and_successor, require_only_genesis_generation,
-    require_pending_generation_namespace,
+    require_canonical_anchor_leaf, require_empty_generation_namespace,
+    require_established_ready_generation, require_only_genesis_and_successor,
+    require_only_genesis_generation, require_pending_generation_namespace,
 };
 use crate::UpdateError;
 use crate::records::decode_metadata_generation;
@@ -23,6 +23,68 @@ fn refusal_step(error: UpdateError) -> &'static str {
         UpdateError::Baseline { step, .. } => step,
         other => panic!("expected native D-23 baseline refusal, observed {other}"),
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn wrong_case_physical_enrollment_anchor_refuses_before_canonical_read() {
+    let canonical = format!("{}.anchor", "ab".repeat(32));
+    for alias in [
+        format!("{}.ANCHOR", "ab".repeat(32)),
+        format!("{}.Anchor", "ab".repeat(32)),
+        canonical.to_uppercase(),
+    ] {
+        let fixture = tempfile::tempdir().expect("isolated enrollment parent");
+        let alias_path = fixture.path().join(&alias);
+        let original_bytes = b"unaltered-noncanonical-enrollment";
+        fs::write(&alias_path, original_bytes).expect("persist physical noncanonical anchor");
+        // The native Windows fixture demonstrates why the original derived
+        // lowercase read could have admitted the wrong physical name.
+        assert_eq!(
+            fs::read(fixture.path().join(&canonical)).expect("NTFS case-insensitive alias"),
+            original_bytes
+        );
+        let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+            .expect("retain the actual enrollment parent");
+        let error = require_canonical_anchor_leaf(&retained, &canonical)
+            .expect_err("wrong-case anchor cannot become the protected D-23 identity");
+        assert_eq!(refusal_step(error), "metadata enrollment namespace");
+        assert_eq!(
+            fs::read(&alias_path).expect("preserve original bytes"),
+            original_bytes
+        );
+        assert_eq!(
+            fs::read_dir(fixture.path())
+                .expect("read original names")
+                .count(),
+            1,
+            "negative namespace inspection must not modify or rename the anchor"
+        );
+    }
+}
+
+#[test]
+fn canonical_enrollment_anchor_and_other_repository_remain_negative_only() {
+    let fixture = tempfile::tempdir().expect("isolated enrollment parent");
+    let canonical = format!("{}.anchor", "ab".repeat(32));
+    let other_repository = format!("{}.anchor", "cd".repeat(32));
+    let own_path = fixture.path().join(&canonical);
+    let other_path = fixture.path().join(&other_repository);
+    fs::write(&own_path, b"original-own-anchor").expect("persist canonical own anchor");
+    fs::write(&other_path, b"unrelated-repository-anchor")
+        .expect("persist another exact repository anchor");
+    let retained = Dir::open_ambient_dir(fixture.path(), ambient_authority())
+        .expect("retain enrollment namespace");
+    require_canonical_anchor_leaf(&retained, &canonical)
+        .expect("exact own anchor and unrelated canonical neighbor do not trigger alias denial");
+    assert_eq!(
+        fs::read(&own_path).expect("read unchanged canonical own anchor"),
+        b"original-own-anchor"
+    );
+    assert_eq!(
+        fs::read(&other_path).expect("read unchanged other repository anchor"),
+        b"unrelated-repository-anchor"
+    );
 }
 
 #[test]

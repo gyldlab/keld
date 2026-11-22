@@ -475,9 +475,9 @@ impl<'lease> RepositoryMetadataIo<'lease> {
     }
 
     fn read_anchor(&self) -> Result<Option<AnchorRecord>, UpdateError> {
-        let Some(bytes) =
-            read_optional_record(self.enrollments, &self.anchor_leaf(), self.profile)?
-        else {
+        let leaf = self.anchor_leaf();
+        require_canonical_anchor_leaf(self.enrollments, &leaf)?;
+        let Some(bytes) = read_optional_record(self.enrollments, &leaf, self.profile)? else {
             return Ok(None);
         };
         let anchor = decode_metadata_anchor(&bytes)?;
@@ -544,6 +544,36 @@ impl<'lease> RepositoryMetadataIo<'lease> {
         }
         Ok(generation)
     }
+}
+
+/// Refuse a different-case physical alias of this repository's enrollment
+/// anchor before the protected record reader opens its canonical derived name.
+///
+/// On case-insensitive Windows NTFS, a physical `<repo>.ANCHOR` can otherwise
+/// be opened through `<repo>.anchor` and treated as the canonical D-23 anchor.
+/// Other repositories' canonical anchors are unrelated and remain untouched.
+/// This retained-directory observation is negative evidence only; it is not
+/// D-90 repository membership, exclusive writer ownership or TUF authority.
+fn require_canonical_anchor_leaf(enrollments: &Dir, expected: &str) -> Result<(), UpdateError> {
+    for entry in enrollments
+        .entries()
+        .map_err(|cause| error("metadata enrollment namespace", cause))?
+    {
+        let entry = entry.map_err(|cause| error("metadata enrollment namespace", cause))?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            error(
+                "metadata enrollment namespace",
+                "non-UTF-8 enrollment member prevents a complete anchor namespace observation",
+            )
+        })?;
+        if name.eq_ignore_ascii_case(expected) && name != expected {
+            return Err(error(
+                "metadata enrollment namespace",
+                "a differently cased physical enrollment anchor cannot become this repository's canonical D-23 anchor",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn generation_leaf(sequence: u64) -> String {
