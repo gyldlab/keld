@@ -218,10 +218,65 @@ try {
         Write-Output "KEL270_STAGE_NEGATIVE_PASS case=$($publicationCase.name)"
     }
 
+    # Same published bytes through a post-move junction are NOT acceptable.
+    # This independent alias oracle guards the canonical final-path check:
+    # a digest-only readback would otherwise accept the foreign parent.
+    $aliasTestOnly = $stageSource.Remove($authStart, $authEnd - $authStart)
+    $aliasInjection = @(
+        '$slot = Join-Path $OutputDirectory ''bindings''',
+        '$aliasTarget = Join-Path $parent ''test-only-binding-alias-target''',
+        '[IO.Directory]::CreateDirectory($aliasTarget) | Out-Null',
+        '[IO.File]::Copy((Join-Path $slot ''keld-mcp-stdio.json''),(Join-Path $aliasTarget ''keld-mcp-stdio.json''),$false)',
+        '[IO.File]::Delete((Join-Path $slot ''keld-mcp-stdio.json''))',
+        '[IO.Directory]::Delete($slot,$false)',
+        '$null = New-Item -ItemType Junction -Path $slot -Target $aliasTarget -ErrorAction Stop'
+    ) -join [Environment]::NewLine
+    $aliasTestOnly = $aliasTestOnly.Replace(
+        $moveAnchor, $moveAnchor + [Environment]::NewLine + $aliasInjection)
+    $aliasFaultScript = Join-Path $fixture 'postmove-junction-stage.ps1'
+    [IO.File]::WriteAllText($aliasFaultScript, $aliasTestOnly,
+        (New-Object System.Text.UTF8Encoding($false)))
+    $aliasOutput = Join-Path $fixture 'postmove-junction-output'
+    $aliasLink = Join-Path $aliasOutput 'bindings'
+    try {
+        $ErrorActionPreference = 'Continue'
+        try {
+            $aliasResult = (& $powershell '-NoProfile' '-NonInteractive' '-File' $aliasFaultScript '-PinsFile' $validPinsFile '-OutputDirectory' $aliasOutput 2>&1 | Out-String)
+            $aliasExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = 'Stop'
+        }
+        $aliasTargetFile = Join-Path $fixture 'test-only-binding-alias-target/keld-mcp-stdio.json'
+        $aliasManifestFile = Join-Path $aliasOutput 'manifest.json'
+        if (-not (Test-Path -LiteralPath $aliasManifestFile -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $aliasTargetFile -PathType Leaf)) {
+            throw "KEL270_STAGE_NEGATIVE_FAILURE case=postmove-samebytes-reparse missing test fixtures exit=$aliasExit output=$aliasResult"
+        }
+        $aliasManifest = Get-Content -LiteralPath $aliasManifestFile -Raw | ConvertFrom-Json
+        $aliasDigestMatches = ((Get-FileHash -LiteralPath $aliasTargetFile -Algorithm SHA256).Hash -ceq
+            $aliasManifest.providerRecipeSha256)
+        $aliasLinkItem = Get-Item -LiteralPath $aliasLink -Force -ErrorAction Stop
+        if ($aliasExit -eq 0 -or
+            $aliasResult -notmatch 'published provider recipe has a reparse-point path or ancestor' -or
+            $aliasResult -match 'KEL270_STAGE_IMAGES_PREPARED' -or
+            -not $aliasDigestMatches -or
+            (($aliasLinkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0)) {
+            throw "KEL270_STAGE_NEGATIVE_FAILURE case=postmove-samebytes-reparse exit=$aliasExit sameDigest=$aliasDigestMatches output=$aliasResult"
+        }
+        Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postmove-samebytes-reparse'
+    } finally {
+        # Delete only the self-created junction, never its target. The outer
+        # owned fixture cleanup removes remaining regular files afterwards.
+        $item = Get-Item -LiteralPath $aliasLink -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            [IO.Directory]::Delete($aliasLink, $false)
+        }
+    }
     if ((Get-FileHash -LiteralPath $fake -Algorithm SHA256).Hash -cne $hash) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE: source changed during refusals'
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=12 source_unchanged=true positive_signed_release=NOT_RUN'
+    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=13 source_unchanged=true positive_signed_release=NOT_RUN'
 } finally {
     # Only this invocation's newly allocated disposable negative fixture.
     Remove-Item -LiteralPath $fixture -Recurse -Force
