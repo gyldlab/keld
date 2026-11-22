@@ -512,7 +512,14 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
 }
 
 fn code(source: &str) -> String {
-    source.split_whitespace().collect::<Vec<_>>().join(" ")
+    // rustfmt legitimately breaks a method chain immediately before `.`.
+    // Normalize that token spacing without accepting inert string/comment
+    // evidence (already masked by hide_non_code).
+    source
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".")
 }
 
 fn method<'a>(source: &'a str, name: &str) -> Result<(&'a str, &'a str), &'static str> {
@@ -561,6 +568,7 @@ fn required_order(body: &str, steps: &[&str]) -> Result<(), &'static str> {
 fn check_boundary(source: &str) -> Result<(), &'static str> {
     let visible = hide_non_code(source)?;
     let source = visible.as_str();
+    require_typed_admission_witnesses(source)?;
     for name in ["WindowsInitialInstallPermit", "CreationArmedEffectGate"] {
         let actual = code(fields(source, name)?);
         if !actual.contains("issuer: &'lease mut dyn NativeInitialAdmissionIssuer")
@@ -579,13 +587,13 @@ fn check_boundary(source: &str) -> Result<(), &'static str> {
         &journal,
         &[
             "thread::current().id() != self.worker",
-            "self.issuer.revalidate_under_repository_lease()?;",
+            "self.issuer.revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;",
             "self.issuer.publish_and_read_back_creation_armed()?;",
             "Ok(CreationArmedEffectGate {",
         ],
     )?;
     if journal
-        .matches("self.issuer.revalidate_under_repository_lease()?;")
+        .matches("self.issuer.revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;")
         .count()
         != 1
         || journal.contains("acquire_bootstrap_lock")
@@ -602,10 +610,10 @@ fn check_boundary(source: &str) -> Result<(), &'static str> {
         &effect,
         &[
             "thread::current().id() != self.worker",
-            "self.issuer.revalidate_under_repository_lease()?;",
+            "self.issuer.revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;",
             "self.issuer.require_durable_creation_armed()?;",
             "self.issuer.require_bound_existing_scaffold(roots)?;",
-            "self.issuer.revalidate_under_repository_lease()?;",
+            "self.issuer.revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;",
             "let lock = initialize::acquire_bootstrap_lock(roots)?;",
             "initialize::recheck_bootstrap_scaffold(roots)?;",
             "self.issuer.revalidate_bootstrap_lock(&lock)?;",
@@ -614,7 +622,7 @@ fn check_boundary(source: &str) -> Result<(), &'static str> {
         ],
     )?;
     if effect
-        .matches("self.issuer.revalidate_under_repository_lease()?;")
+        .matches("self.issuer.revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;")
         .count()
         != 2
         || effect
@@ -626,7 +634,7 @@ fn check_boundary(source: &str) -> Result<(), &'static str> {
             .count()
             != 2
         || !effect.contains(
-            "self.issuer.revalidate_under_repository_lease()?; let lock = initialize::acquire_bootstrap_lock(roots)?;",
+            "self.issuer.revalidate_under_repository_lease(self.ready_revision, self.repository_census)?; let lock = initialize::acquire_bootstrap_lock(roots)?;",
         )
     {
         return Err("D-46 effect-time checks, final handoff or single bootstrap create changed");
@@ -634,9 +642,119 @@ fn check_boundary(source: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+// D-46 is a private typestate boundary: a caller-supplied Boolean, digest,
+// decoded record or path must never substitute for the unissued T-20 and D-90
+// native-owner witnesses. These borrows are necessary but NOT sufficient:
+// the live issuer must still prove current worker, exact source, repository
+// lease and journal state before effect-time creation.
+fn require_typed_admission_witnesses(source: &str) -> Result<(), &'static str> {
+    if !code(source).contains(
+        "fn revalidate_under_repository_lease( &mut self, ready_revision: &ReadyRevision, repository_census: &RepositoryLedgerCensus, ) -> Result<(), UpdateError>;",
+    ) {
+        return Err("D-46 native issuer recheck is not bound to exact typed T-20/D-90 evidence");
+    }
+    for name in ["WindowsInitialInstallPermit", "CreationArmedEffectGate"] {
+        let members = code(fields(source, name)?);
+        for typed in [
+            "ready_revision: &'lease ReadyRevision",
+            "repository_census: &'lease RepositoryLedgerCensus",
+        ] {
+            if members.matches(typed).count() != 1 {
+                return Err("D-46 missing native T-20 or D-90 typed witness");
+            }
+        }
+    }
+    let (_, journal_body) = method(source, "consume_for_admission_journal")?;
+    let journal = code(journal_body);
+    required_order(
+        &journal,
+        &[
+            "Ok(CreationArmedEffectGate {",
+            "worker: self.worker,",
+            "issuer: self.issuer,",
+            "ready_revision: self.ready_revision,",
+            "repository_census: self.repository_census,",
+            "_worker_only: self._worker_only,",
+        ],
+    )?;
+    if journal
+        .matches("ready_revision: self.ready_revision")
+        .count()
+        != 1
+        || journal
+            .matches("repository_census: self.repository_census")
+            .count()
+            != 1
+    {
+        return Err("D-46 consumed stage lost exact borrowed evidence");
+    }
+    Ok(())
+}
+
 #[test]
 fn permit_boundary_is_one_use_thread_bound_and_checked_at_effect_time() {
     check_boundary(SOURCE).expect("closed D-46 source contract");
+}
+
+#[test]
+fn unissued_ready_and_native_census_bindings_survive_exact_one_use_transition() {
+    check_boundary(SOURCE).expect("unmodified closed D-46 source contract");
+    for (label, original, forged) in [
+        (
+            "caller Boolean replaces ReadyRevision",
+            "ready_revision: &'lease ReadyRevision",
+            "ready_revision: bool",
+        ),
+        (
+            "foreign digest replaces D-90 native census",
+            "repository_census: &'lease RepositoryLedgerCensus",
+            "repository_census: &'lease [u8; 32]",
+        ),
+        (
+            "consumption loses authenticated revision",
+            "ready_revision: self.ready_revision,",
+            "ready_revision: &self.ready_revision,",
+        ),
+        (
+            "consumption loses exact repository census",
+            "repository_census: self.repository_census,",
+            "repository_census: &self.repository_census,",
+        ),
+        (
+            "native recheck accepts a claimed Boolean instead of D-90 census",
+            "repository_census: &RepositoryLedgerCensus,",
+            "repository_census: bool,",
+        ),
+        (
+            "effect-time recheck uses an unrelated witness",
+            "self.issuer\n            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;",
+            "self.issuer\n            .revalidate_under_repository_lease(self.ready_revision, unrelated_census)?;",
+        ),
+    ] {
+        let expected = if label == "effect-time recheck uses an unrelated witness" {
+            3
+        } else if original.starts_with("ready_revision: &'lease")
+            || original.starts_with("repository_census: &'lease")
+        {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            SOURCE.matches(original).count(),
+            expected,
+            "{label}: source mutation anchor count must match the real boundary"
+        );
+        let mutated = SOURCE.replace(original, forged);
+        assert_ne!(
+            mutated, SOURCE,
+            "{label}: mutation must alter the real module"
+        );
+        assert!(
+            check_boundary(&mutated).is_err(),
+            "{label}: forged/missing typed owner prerequisite admitted"
+        );
+    }
 }
 
 // Keep the negative controls as data rather than a long test function. Every
@@ -744,8 +862,8 @@ const SOURCE_MUTATIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "final recheck moved after creation",
-        "self.issuer.revalidate_under_repository_lease()?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
-        "let lock = initialize::acquire_bootstrap_lock(roots)?;\n        self.issuer.revalidate_under_repository_lease()?;",
+        "self.issuer\n            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
+        "let lock = initialize::acquire_bootstrap_lock(roots)?;\n        self.issuer\n            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;",
     ),
     (
         "bootstrap owned readback removed",
@@ -759,8 +877,8 @@ const SOURCE_MUTATIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "callback inserted after final revalidation",
-        "self.issuer.revalidate_under_repository_lease()?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
-        "self.issuer.revalidate_under_repository_lease()?;\n        unrelated_callback();\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
+        "self.issuer\n            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
+        "self.issuer\n            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;\n        unrelated_callback();\n        let lock = initialize::acquire_bootstrap_lock(roots)?;",
     ),
 ];
 

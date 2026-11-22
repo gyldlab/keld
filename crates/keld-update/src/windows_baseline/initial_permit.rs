@@ -10,8 +10,10 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::{self, ThreadId};
 
+use super::repository_census::RepositoryLedgerCensus;
 use super::{Roots, error, initialize};
 use crate::UpdateError;
+use crate::metadata_client::ReadyRevision;
 
 // The native handle-identity denial can compile and exercise real directory
 // oracles before Guard commissions its OS-known-folder issuer. Until then no
@@ -33,7 +35,11 @@ mod source_contract;
 trait NativeInitialAdmissionIssuer {
     /// Recheck actual worker identity, sealed source, generation, deadline,
     /// expiry, discovery, and repository ownership under the retained lease.
-    fn revalidate_under_repository_lease(&mut self) -> Result<(), UpdateError>;
+    fn revalidate_under_repository_lease(
+        &mut self,
+        ready_revision: &ReadyRevision,
+        repository_census: &RepositoryLedgerCensus,
+    ) -> Result<(), UpdateError>;
 
     /// With this one-use permit already consumed, durably write and reread
     /// the D-9 evidence, D-64 admitted record, D-68 pending pointer, and
@@ -69,11 +75,18 @@ trait NativeInitialAdmissionIssuer {
 /// native issuer above. The value cannot be cloned, copied, serialized,
 /// moved to another worker, or reconstructed after a process restart.
 /// Its lifetime borrows the native writer's live lease through the journal
-/// publication and the later first installation effect.
+/// publication and the later first installation effect. The independent,
+/// unconstructible T-20/T-82 `ReadyRevision` and D-90 native census witnesses
+/// must remain borrowed across both phases. Merely retaining these types
+/// does not prove the *same* repository lease, a matching source/worker or
+/// current eligibility: the private issuer must still revalidate all of them
+/// beneath the sole native owner before each protected effect.
 #[must_use = "unconsumed admission cannot authorize an installation effect"]
 pub(super) struct WindowsInitialInstallPermit<'lease> {
     worker: ThreadId,
     issuer: &'lease mut dyn NativeInitialAdmissionIssuer,
+    ready_revision: &'lease ReadyRevision,
+    repository_census: &'lease RepositoryLedgerCensus,
     // Keep the permit on the admitted worker even if the future witness type
     // is accidentally made Send or Sync.
     _worker_only: PhantomData<Rc<()>>,
@@ -87,6 +100,8 @@ pub(super) struct WindowsInitialInstallPermit<'lease> {
 pub(super) struct CreationArmedEffectGate<'lease> {
     worker: ThreadId,
     issuer: &'lease mut dyn NativeInitialAdmissionIssuer,
+    ready_revision: &'lease ReadyRevision,
+    repository_census: &'lease RepositoryLedgerCensus,
     _worker_only: PhantomData<Rc<()>>,
 }
 
@@ -105,11 +120,14 @@ impl<'lease> WindowsInitialInstallPermit<'lease> {
                 "actual worker changed before admission journal publication",
             ));
         }
-        self.issuer.revalidate_under_repository_lease()?;
+        self.issuer
+            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;
         self.issuer.publish_and_read_back_creation_armed()?;
         Ok(CreationArmedEffectGate {
             worker: self.worker,
             issuer: self.issuer,
+            ready_revision: self.ready_revision,
+            repository_census: self.repository_census,
             _worker_only: self._worker_only,
         })
     }
@@ -135,7 +153,8 @@ impl CreationArmedEffectGate<'_> {
                 "actual worker changed before first protected effect",
             ));
         }
-        self.issuer.revalidate_under_repository_lease()?;
+        self.issuer
+            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;
         self.issuer.require_durable_creation_armed()?;
         // This MUST run before create-new: revalidation of the resulting lock
         // cannot undo an effect in an unrelated, caller-selected install root.
@@ -144,7 +163,8 @@ impl CreationArmedEffectGate<'_> {
         // deadline, and retained source *again* after journal/root I/O. No
         // issuer callback, refresh, or application dispatch follows this last
         // recheck before the KEL-53 writer makes its first protected create.
-        self.issuer.revalidate_under_repository_lease()?;
+        self.issuer
+            .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;
         let lock = initialize::acquire_bootstrap_lock(roots)?;
         initialize::recheck_bootstrap_scaffold(roots)?;
         self.issuer.revalidate_bootstrap_lock(&lock)?;
