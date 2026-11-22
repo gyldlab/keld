@@ -6,6 +6,7 @@ use std::process::Command;
 /// Launches the host with one non-Unicode argument and asserts the registered
 /// refusal: exit 2, `KELD-CLI-051` naming argv position 1, no panic, and no
 /// boot selection (`KELD-CORE-034`) or unknown-argument (`KELD-CLI-044`) path.
+#[cfg(any(unix, all(windows, not(feature = "windows-qualified-launch"))))]
 fn assert_non_unicode_argv_refused_before_boot(arg: std::ffi::OsString) {
     let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
         .arg(arg)
@@ -22,7 +23,7 @@ fn assert_non_unicode_argv_refused_before_boot(arg: std::ffi::OsString) {
     assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "windows-qualified-launch")))]
 #[test]
 fn malformed_windows_utf16_argv_is_cli_051_not_a_panic() {
     use std::os::windows::ffi::OsStringExt as _;
@@ -42,6 +43,7 @@ fn non_utf8_unix_argv_is_cli_051_not_a_panic() {
     assert_non_unicode_argv_refused_before_boot(std::ffi::OsString::from_vec(vec![0xff]));
 }
 
+#[cfg(not(all(windows, feature = "windows-qualified-launch")))]
 #[test]
 fn unknown_argument_is_cli_044_before_boot_selection() {
     let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
@@ -53,6 +55,20 @@ fn unknown_argument_is_cli_044_before_boot_selection() {
     assert!(stderr.contains("KELD-CLI-044"), "{stderr}");
     assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
     assert!(!stderr.contains("keld.boot.json"), "{stderr}");
+}
+
+#[cfg(all(windows, feature = "windows-qualified-launch"))]
+#[test]
+fn qualified_host_rejects_invalid_utf16_before_any_boot_or_role() {
+    use std::os::windows::ffi::OsStringExt as _;
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg(std::ffi::OsString::from_wide(&[0xd800]))
+        .output()
+        .expect("run qualified Host with an unpaired UTF-16 surrogate");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("fixed refusal is UTF-8");
+    assert!(stderr.contains("KELD-HOST-INITIAL-001"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
 }
 
 /// The original KEL-270 initial-install argument is reserved even when the
