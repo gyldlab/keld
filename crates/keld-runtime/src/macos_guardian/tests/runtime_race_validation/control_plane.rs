@@ -91,12 +91,16 @@ impl Drop for ControlPlane {
             let _ = stream.shutdown(Shutdown::Both);
         }
         for worker in [self.relay.take(), self.host.take()].into_iter().flatten() {
-            match worker.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("KEL143_RACE_RESCUE owner error: {error}"),
-                Err(error) => eprintln!("KEL143_RACE_RESCUE thread panic: {error:?}"),
-            }
+            report_rescue_join(&worker.join());
         }
+    }
+}
+
+fn report_rescue_join(result: &thread::Result<Result<(), RuntimeError>>) {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => eprintln!("KEL143_RACE_RESCUE owner_error"),
+        Err(_) => eprintln!("KEL143_RACE_RESCUE worker_panic"),
     }
 }
 
@@ -114,4 +118,48 @@ pub(super) fn await_initial_registration(
         Some(pid)
     );
     pid
+}
+
+#[cfg(test)]
+mod private_diagnostic_tests {
+    use super::RuntimeError;
+    use super::report_rescue_join;
+    use std::io;
+    use std::process::Command;
+
+    /// The subprocess exercises the same reporting function called by Drop.
+    /// Its own stderr is captured, so neither a sentinel nor a private value
+    /// needs to be printed by a failing parent regression.
+    #[test]
+    fn rescue_worker_stderr_uses_only_fixed_categories() {
+        const PRIVATE: &str = "KELD_SYNTHETIC_PRIVATE_RESCUE_ERROR_SENTINEL";
+        if std::env::var_os("KELD_PRIVATE_RESCUE_CHILD").is_some() {
+            let owned = RuntimeError::Lifecycle {
+                phase: "test-owned rescue failure",
+                source: io::Error::other(PRIVATE),
+            };
+            report_rescue_join(&Ok(Err(owned)));
+            report_rescue_join(&Err(Box::new(PRIVATE.to_owned())));
+            return;
+        }
+        let output = Command::new(std::env::current_exe().expect("test runner executable"))
+            .args([
+                "rescue_worker_stderr_uses_only_fixed_categories",
+                "--nocapture",
+            ])
+            .env("KELD_PRIVATE_RESCUE_CHILD", "1")
+            .output()
+            .expect("run the owned diagnostic child");
+        assert!(output.status.success(), "diagnostic child completed");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains(PRIVATE),
+            "the rescue diagnostic leaked private error data"
+        );
+        assert!(
+            stderr.contains("KEL143_RACE_RESCUE owner_error")
+                && stderr.contains("KEL143_RACE_RESCUE worker_panic"),
+            "both terminal results need fixed diagnostic categories"
+        );
+    }
 }
