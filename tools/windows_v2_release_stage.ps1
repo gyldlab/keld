@@ -41,6 +41,50 @@ function Require-Hash([string]$Value, [string]$Where, [int]$Length) {
     return $Value.ToUpperInvariant()
 }
 
+# IsPathRooted also accepts drive-relative "C:foo" and root-relative "\foo".
+# Allow only canonical local fixed-drive paths with no reparse ancestors.
+# No release-owner staging root is commissioned here: the caller-selected
+# local parent and these path observations remain NONAUTHORIZING custody.
+function Require-CanonicalLocalPath([string]$Value, [string]$Where) {
+    if ([string]::IsNullOrWhiteSpace($Value) -or
+        $Value -cnotmatch '^[A-Za-z]:\\' -or $Value.Contains('/') -or
+        $Value.Substring(2).Contains(':')) {
+        Refuse "$Where requires a fully qualified local drive path"
+    }
+    try {
+        $canonical = [IO.Path]::GetFullPath($Value)
+        $drive = New-Object IO.DriveInfo($Value.Substring(0, 1))
+    } catch {
+        Refuse "$Where requires a valid fully qualified local drive path"
+    }
+    if (-not [string]::Equals($canonical, $Value,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        $drive.DriveType -ne [IO.DriveType]::Fixed) {
+        Refuse "$Where requires a canonical fully qualified local drive path"
+    }
+    if ($Value.Length -gt 3) {
+        foreach ($part in $Value.Substring(3).Split('\')) {
+            if ([string]::IsNullOrEmpty($part) -or $part -eq '.' -or $part -eq '..' -or
+                $part.EndsWith('.') -or $part.EndsWith(' ') -or
+                $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') {
+                Refuse "$Where contains an ambiguous Windows path component"
+            }
+        }
+    }
+    $cursor = $canonical
+    while (-not [string]::IsNullOrEmpty($cursor)) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            Refuse "$Where has a reparse-point path or ancestor"
+        }
+        $parent = [IO.Path]::GetDirectoryName($cursor)
+        if ([string]::IsNullOrEmpty($parent) -or $parent -ceq $cursor) { break }
+        $cursor = $parent
+    }
+    return $canonical
+}
+
 function Require-Amd64Pe([string]$Path, [string]$Role) {
     $stream = [IO.File]::OpenRead($Path)
     try {
@@ -66,12 +110,13 @@ function Read-PinnedImage($Entry, [string]$Role, [string]$Target) {
     Require-Fields $Entry @('role', 'path', 'sha256', 'signerThumbprint') "image $Role"
     if ($Entry.role -cne $Role -or $Entry.path -isnot [string] -or
         [string]::IsNullOrWhiteSpace($Entry.path) -or
-        -not [IO.Path]::IsPathRooted($Entry.path)) {
+        $Entry.path -cnotmatch '^[A-Za-z]:\\') {
         Refuse "image $Role requires its exact role and absolute source path"
     }
+    $sourcePath = Require-CanonicalLocalPath $Entry.path "image $Role"
     $digest = Require-Hash $Entry.sha256 "image $Role SHA256" 64
     $thumbprint = Require-Hash $Entry.signerThumbprint "image $Role signer" 40
-    $original = Get-Item -LiteralPath $Entry.path -ErrorAction Stop
+    $original = Get-Item -LiteralPath $sourcePath -ErrorAction Stop
     if ($original -isnot [IO.FileInfo] -or $original.Extension -ine '.exe' -or
         (($original.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         Refuse "image $Role must be a regular non-reparse .exe"
@@ -96,9 +141,48 @@ function Read-PinnedImage($Entry, [string]$Role, [string]$Target) {
         source = $original.FullName
         destination = $Target
         sha256 = $digest
-        signerThumbprint = $thumbprint
+        expectedSignerThumbprint = $thumbprint
         length = [long]$original.Length
     }
+}
+
+# Delete only this invocation's known files from its random sibling directory.
+# Refuse unknown files or reparse points rather than recursively deleting an
+# untrusted or substituted tree.
+function Remove-OwnedTemporaryStage([string]$Temporary, [string]$ExpectedParent) {
+    if (-not [IO.Directory]::Exists($Temporary)) { return }
+    if ([IO.Path]::GetDirectoryName($Temporary) -cne $ExpectedParent -or
+        [IO.Path]::GetFileName($Temporary) -cnotmatch '^\.keld-v2-stage-[0-9a-f]{32}$') {
+        Refuse 'temporary cleanup lost its exact owned sibling path'
+    }
+    $null = Require-CanonicalLocalPath $Temporary 'temporary cleanup'
+    foreach ($relative in @(
+        'manifest.json', 'bindings/keld-mcp-stdio.json',
+        'bin/keld-host.exe', 'recovery/keld-host.exe', 'bin/keld.exe',
+        'bin/keld-role-launcher.exe', 'bin/keld-updater-helper.exe'
+    )) {
+        $entry = Join-Path $Temporary $relative
+        $item = Get-Item -LiteralPath $entry -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            if ($item -isnot [IO.FileInfo] -or
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                Refuse 'temporary cleanup found an unexpected staged object'
+            }
+            [IO.File]::Delete($entry)
+        }
+    }
+    foreach ($relative in @('bindings', 'recovery', 'bin')) {
+        $directory = Join-Path $Temporary $relative
+        $item = Get-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item) {
+            if ($item -isnot [IO.DirectoryInfo] -or
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                Refuse 'temporary cleanup found a reparse or foreign directory'
+            }
+            [IO.Directory]::Delete($directory, $false)
+        }
+    }
+    [IO.Directory]::Delete($Temporary, $false)
 }
 
 if ($env:OS -cne 'Windows_NT') { Refuse 'requires native Windows' }
@@ -106,10 +190,8 @@ if ([string]::IsNullOrWhiteSpace($PinsFile) -or
     [string]::IsNullOrWhiteSpace($OutputDirectory)) {
     Refuse 'required PinsFile and OutputDirectory'
 }
-if (-not [IO.Path]::IsPathRooted($PinsFile) -or
-    -not [IO.Path]::IsPathRooted($OutputDirectory)) {
-    Refuse 'source and destination must be absolute'
-}
+$PinsFile = Require-CanonicalLocalPath $PinsFile 'owner pins'
+$OutputDirectory = Require-CanonicalLocalPath $OutputDirectory 'output directory'
 if (Test-Path -LiteralPath $OutputDirectory) {
     Refuse 'destination already exists; no overwrite, repair or merge'
 }
@@ -117,6 +199,7 @@ $parent = Split-Path -Parent $OutputDirectory
 if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
     Refuse 'destination parent does not exist'
 }
+$null = Require-CanonicalLocalPath $parent 'destination parent'
 $pinFileItem = Get-Item -LiteralPath $PinsFile -ErrorAction Stop
 if ($pinFileItem -isnot [IO.FileInfo] -or
     (($pinFileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
@@ -156,12 +239,26 @@ if (@($images | Select-Object -ExpandProperty sha256 -Unique).Count -ne $images.
 
 # All observations precede staging writes. Nothing created here can authorize
 # an installed root, process launch, catalogue or recovered application.
-$null = New-Item -ItemType Directory -Path $OutputDirectory -ErrorAction Stop
+# A unique sibling is never merged into a pre-existing destination. The
+# final same-volume directory rename publishes only completely checked files.
+$temporary = Join-Path $parent ('.keld-v2-stage-' + [guid]::NewGuid().ToString('N'))
+$temporaryCreated = $false
+try {
+$null = Require-CanonicalLocalPath $parent 'destination parent'
+if (Test-Path -LiteralPath $temporary) {
+    Refuse 'private temporary sibling already exists'
+}
+[IO.Directory]::CreateDirectory($temporary) | Out-Null
+$temporaryCreated = $true
+$null = Require-CanonicalLocalPath $temporary 'temporary stage'
+if (@(Get-ChildItem -LiteralPath $temporary -Force).Count -ne 0) {
+    Refuse 'private temporary sibling must be empty before staging'
+}
 foreach ($relative in @('bin', 'recovery', 'bindings')) {
-    $null = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory $relative) -ErrorAction Stop
+    [IO.Directory]::CreateDirectory((Join-Path $temporary $relative)) | Out-Null
 }
 foreach ($entry in $images) {
-    $target = Join-Path $OutputDirectory $entry.destination
+    $target = Join-Path $temporary $entry.destination
     [IO.File]::Copy($entry.source, $target, $false)
     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -cne $entry.sha256 -or
         (Get-Item -LiteralPath $target).Length -ne $entry.length) {
@@ -176,7 +273,7 @@ $provider = [ordered]@{
     executableRelativeToReleaseRoot = 'bin/keld.exe'
     arguments = @('mcp', 'serve')
 }
-$recipePath = Join-Path $OutputDirectory 'bindings/keld-mcp-stdio.json'
+$recipePath = Join-Path $temporary 'bindings/keld-mcp-stdio.json'
 [IO.File]::WriteAllText($recipePath, ($provider | ConvertTo-Json -Depth 4) + "`n", $utf8)
 $recipeDigest = (Get-FileHash -LiteralPath $recipePath -Algorithm SHA256).Hash
 $manifestImages = @($images | ForEach-Object {
@@ -185,7 +282,7 @@ $manifestImages = @($images | ForEach-Object {
         relativePath = $_.destination
         sha256 = $_.sha256
         length = $_.length
-        observedSignerThumbprint = $_.signerThumbprint
+        expectedSignerThumbprint = $_.expectedSignerThumbprint
     }
 })
 $manifest = [ordered]@{
@@ -197,10 +294,10 @@ $manifest = [ordered]@{
     providerRecipeSha256 = $recipeDigest
     nativeKeldProfileAndInstallationAuthority = 'NOT_VERIFIED'
 }
-$manifestPath = Join-Path $OutputDirectory 'manifest.json'
+$manifestPath = Join-Path $temporary 'manifest.json'
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8) + "`n", $utf8)
 foreach ($entry in $images) {
-    if ((Get-FileHash -LiteralPath (Join-Path $OutputDirectory $entry.destination) -Algorithm SHA256).Hash -cne $entry.sha256) {
+    if ((Get-FileHash -LiteralPath (Join-Path $temporary $entry.destination) -Algorithm SHA256).Hash -cne $entry.sha256) {
         Refuse "staged $($entry.role) changed before manifest closeout"
     }
 }
@@ -208,4 +305,22 @@ if ((Get-FileHash -LiteralPath $recipePath -Algorithm SHA256).Hash -cne $recipeD
     Refuse 'CLI/provider recipe changed before manifest closeout'
 }
 $manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
+$null = Require-CanonicalLocalPath $parent 'destination parent'
+$null = Require-CanonicalLocalPath $temporary 'temporary stage'
+if (Test-Path -LiteralPath $OutputDirectory) {
+    Refuse 'destination appeared during stage preparation'
+}
+[IO.Directory]::Move($temporary, $OutputDirectory)
+$temporaryCreated = $false
+} catch {
+    $failure = $_
+    if ($temporaryCreated) {
+        try {
+            Remove-OwnedTemporaryStage $temporary $parent
+        } catch {
+            throw "KEL270-STAGE: staged temp cleanup refused; original failure: $failure; cleanup failure: $_"
+        }
+    }
+    throw $failure
+}
 Write-Output "KEL270_STAGE_IMAGES_PREPARED_NONAUTHORIZING source=$($pins.sourceCommit) manifest_sha256=$manifestSha256 roles=5 native_d45=NOT_RUN installer=NOT_BUILT install=NOT_RUN provider_registration=NOT_RUN"

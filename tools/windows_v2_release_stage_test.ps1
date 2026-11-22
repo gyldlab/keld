@@ -1,9 +1,14 @@
 # Focused native refusals for the offline KEL-270 release-stage tool.
 # No signer, installer, certificate, trust anchor, or positive release is created.
+[CmdletBinding()]
+param([string]$StageToolOverride)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $stageTool = Join-Path $PSScriptRoot 'windows_v2_release_stage.ps1'
+if (-not [string]::IsNullOrWhiteSpace($StageToolOverride)) {
+    $stageTool = $StageToolOverride
+}
 $powershell = Join-Path $PSHOME 'powershell.exe'
 $fixture = Join-Path $env:TEMP ('keld270-stage-negative-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $fixture
@@ -23,6 +28,22 @@ function Require-Refusal([string]$Case, $Pins, [string]$Fragment) {
     if ($exit -eq 0 -or $output -notmatch [regex]::Escape($Fragment) -or
         $output -match 'KEL270_STAGE_IMAGES_PREPARED' -or
         (Test-Path -LiteralPath $outputDirectory)) {
+        throw "KEL270_STAGE_NEGATIVE_FAILURE case=$Case exit=$exit output=$output"
+    }
+    Write-Output "KEL270_STAGE_NEGATIVE_PASS case=$Case"
+}
+
+function Require-PathRefusal([string]$Case, [string]$PinPath,
+                             [string]$OutputPath, [string]$Fragment) {
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = (& $powershell '-NoProfile' '-NonInteractive' '-File' $stageTool '-PinsFile' $PinPath '-OutputDirectory' $OutputPath 2>&1 | Out-String)
+        $exit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = 'Stop'
+    }
+    if ($exit -eq 0 -or $output -notmatch [regex]::Escape($Fragment) -or
+        (Test-Path -LiteralPath $OutputPath)) {
         throw "KEL270_STAGE_NEGATIVE_FAILURE case=$Case exit=$exit output=$output"
     }
     Write-Output "KEL270_STAGE_NEGATIVE_PASS case=$Case"
@@ -63,10 +84,78 @@ try {
     $unknown.images[0].role = 'app-host-foreign'
     Require-Refusal 'foreign-image-role' $unknown 'exact role and absolute source path'
 
+    # Five DISTINCT, structurally correct x64 PE headers, with no signature.
+    # A removed Authenticode gate must turn this specific oracle RED.
+    $unsignedImages = @()
+    for ($index = 0; $index -lt $roles.Count; $index++) {
+        $structural = New-Object byte[] 512
+        $structural[0] = 0x4d; $structural[1] = 0x5a
+        $structural[0x3c] = 0x80
+        $structural[0x80] = 0x50; $structural[0x81] = 0x45
+        $structural[0x84] = 0x64; $structural[0x85] = 0x86
+        $structural[0x90] = [byte]($index + 1)
+        $unsigned = Join-Path $fixture ("unsigned-valid-header-$index.exe")
+        [IO.File]::WriteAllBytes($unsigned, $structural)
+        $unsignedImages += [ordered]@{
+            role = $roles[$index]
+            path = $unsigned
+            sha256 = (Get-FileHash -LiteralPath $unsigned -Algorithm SHA256).Hash
+            signerThumbprint = '0' * 40
+        }
+    }
+    $unsignedPins = [ordered]@{
+        schema = 'keld.windows-v2-stage-pins/v1'
+        sourceCommit = 'a1eb38172712963483920635ad830c304987f9e2'
+        images = $unsignedImages
+    }
+    Require-Refusal 'unsigned-valid-PE-requires-signature' $unsignedPins 'lacks its independently pinned valid embedded signature'
+
+    $validPinsFile = Join-Path $fixture 'pins.json'
+    Require-PathRefusal 'drive-relative-output' $validPinsFile 'C:relative-stage' 'requires a fully qualified local drive path'
+    Require-PathRefusal 'root-relative-output' $validPinsFile '\relative-stage' 'requires a fully qualified local drive path'
+    $junction = Join-Path $fixture 'via-junction'
+    $null = New-Item -ItemType Junction -Path $junction -Target $fixture -ErrorAction Stop
+    Require-PathRefusal 'reparse-ancestor-pins' (Join-Path $junction 'pins.json') (Join-Path $fixture 'no-stage') 'reparse-point path or ancestor'
+
+    # Exercise cleanup at a post-copy cut. This uses a private TEST COPY of
+    # the script with signer validation removed ONLY to reach the cut with
+    # unsigned structural inputs; it cannot qualify any Keld release.
+    $stageSource = [IO.File]::ReadAllText($stageTool)
+    $authStart = $stageSource.IndexOf('    $authenticode = Get-AuthenticodeSignature -LiteralPath $original.FullName')
+    $authEnd = $stageSource.IndexOf('    if ((Get-FileHash -LiteralPath $original.FullName -Algorithm SHA256).Hash -cne $digest)', $authStart)
+    if ($authStart -lt 0 -or $authEnd -le $authStart) {
+        throw 'KEL270_STAGE_NEGATIVE_FAILURE signer mutation anchors missing'
+    }
+    $testOnly = $stageSource.Remove($authStart, $authEnd - $authStart)
+    $copyAnchor = '    [IO.File]::Copy($entry.source, $target, $false)'
+    if ($testOnly.IndexOf($copyAnchor) -lt 0 -or
+        $testOnly.IndexOf($copyAnchor) -ne $testOnly.LastIndexOf($copyAnchor)) {
+        throw 'KEL270_STAGE_NEGATIVE_FAILURE postcopy injection anchor missing/ambiguous'
+    }
+    $testOnly = $testOnly.Replace($copyAnchor, $copyAnchor + [Environment]::NewLine + "    throw 'INJECTED_POST_COPY_FAULT'")
+    $faultScript = Join-Path $fixture 'fault-stage-copy.ps1'
+    [IO.File]::WriteAllText($faultScript, $testOnly, (New-Object System.Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($validPinsFile, ($unsignedPins | ConvertTo-Json -Depth 6))
+    $faultOutput = Join-Path $fixture 'fault-output'
+    $ErrorActionPreference = 'Continue'
+    try {
+        $faultResult = (& $powershell '-NoProfile' '-NonInteractive' '-File' $faultScript '-PinsFile' $validPinsFile '-OutputDirectory' $faultOutput 2>&1 | Out-String)
+        $faultExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = 'Stop'
+    }
+    $leftovers = @(Get-ChildItem -LiteralPath $fixture -Directory -Force |
+        Where-Object { $_.Name -match '^\.keld-v2-stage-[0-9a-f]{32}$' })
+    if ($faultExit -eq 0 -or $faultResult -notmatch 'INJECTED_POST_COPY_FAULT' -or
+        (Test-Path -LiteralPath $faultOutput) -or $leftovers.Count -ne 0) {
+        throw "KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-cleanup exit=$faultExit temps=$($leftovers.Count) output=$faultResult"
+    }
+    Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postcopy-cleanup'
+
     if ((Get-FileHash -LiteralPath $fake -Algorithm SHA256).Hash -cne $hash) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE: source changed during refusals'
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=4 source_unchanged=true positive_signed_release=NOT_RUN'
+    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=9 source_unchanged=true positive_signed_release=NOT_RUN'
 } finally {
     # Only this invocation's newly allocated disposable negative fixture.
     Remove-Item -LiteralPath $fixture -Recurse -Force
