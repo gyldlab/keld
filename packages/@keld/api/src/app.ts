@@ -25,6 +25,7 @@ import {
   linkError,
   nativeFacadeBootSelected,
   runtimeProcessFactsSelected,
+  stateApply,
   stateFreeze,
   stateMap,
   stateMapDelete,
