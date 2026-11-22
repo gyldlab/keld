@@ -42,11 +42,12 @@ launch-fact codec extension must be versioned and reject unknown/mixed records.
 
 ### T-1: Review and approval
 
-- **Blocked by:** B-1
+- **Blocked by:** none
 
-Independently review this exact proposal and reconcile its owners.
-Obtain exact-content human specification approval before implementing the amended contract.
-Keep the spec draft and the PR open; do not merge.
+The specification owner recorded exact-content B-1 approval on 2026-11-20
+([record](https://github.com/gyldlab/keld/issues/1404#issuecomment-7032207831)).
+Independent PR review, B-2/B-3 source admission and native acceptance remain
+separate gates. Keep the PR unmerged until those requirements are met.
 
 ### T-2: Minimal installed app
 
@@ -215,16 +216,17 @@ new async runtime or performance budget waiver is proposed.
 
 ## 10. Open questions, blockers & unknowns
 
-### Q-1: Approval decision
+### Q-1: Approval decision (closed)
 
-Approve or reject this exact local-development contract:
+The specification owner approved this exact local-development contract on
+2026-11-20 ([B-1 record](https://github.com/gyldlab/keld/issues/1404#issuecomment-7032207831)):
 ad-hoc self-consistency without publisher authenticity; an ephemeral browser profile;
 existing explicit Legacy authority; no Strict/updater/publisher-profile privileges;
 the existing Host as launcher; exact bundled Bun; provenance-scoped cleanup; and a
-separately qualified original-content package caller. This is the missing feature
-spec approval artifact, not an optional implementation preference.
+separately qualified original-content package caller. Native acceptance, independent
+PR reviewer disposition and merge permission remain separate gates.
 
-### Q-2: Integration evidence
+### U-2: Integration evidence pending
 
 Owners of #499/#502/#553/#452/#570 must supply committed source/provider and
 qualification handoffs. B-3 covers the generic inputs for T-2/T-3; B-2 covers original
@@ -239,7 +241,7 @@ cleanup are tests, not assumed passes. Preserve a named blocker and owner if a
 required predicate fails. Stronger same-user replacement protection would require
 an independently approved trust anchor and cannot be promised by this artifact.
 
-### Q-3: Future platform decisions
+### U-3: Future platform decisions
 
 Windows/Linux installer format, installed trust details, signing,
 update ownership and supported native cells remain in #1405/#1406. They do not delay
@@ -249,8 +251,9 @@ macOS implementation once its own approval and source dependencies are satisfied
 
 - **Status:** closed
 - **Owner:** GYLDLAB specification owner
-- **Impact:** T-1 cannot complete and implementation under this amended contract remains gated.
-- **Check:** Record exact-content approval of the complete index and all parts.
+- **Impact:** T-1 was blocked pending approval; B-2/B-3 and native acceptance still gate release.
+- **Check:** Exact-content approval recorded on 2026-11-20
+  ([owner record](https://github.com/gyldlab/keld/issues/1404#issuecomment-7032207831)).
 
 ### B-2: Qualified original-application handoff
 

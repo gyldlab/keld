@@ -9,13 +9,14 @@
 Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 Future design only: [Windows GH-1405](https://github.com/gyldlab/keld/issues/1405)
 and [Linux GH-1406](https://github.com/gyldlab/keld/issues/1406).
-This document is a proposed contract, not implementation or approval evidence.
-The delegated implementation approval at `3c490596ceb483254551d37041d25e7e110dfa41`
-covers only that historical specification. It does not approve the later module-resolution amendment.
-Implementation of the amended contract requires exact-content human approval under
-[workflow step 2](../../agents/workflow.md) and the [spec template](../../agents/spec-template.md).
+This document records the approved B-1 specification, not completed native implementation.
+Delegated implementation approval at `3c490596ceb483254551d37041d25e7e110dfa41`
+covered only that historical revision. The specification owner subsequently
+[recorded exact-content B-1 approval](https://github.com/gyldlab/keld/issues/1404#issuecomment-7032207831)
+for the amended contract on 2026-11-20, after independent fixes.
 The user's delivery objective remains open until installed macOS acceptance passes.
-Formal specification approval, native acceptance and merge clearance are separate gates.
+Owner approval does not replace independent PR review, source B-2/B-3 acceptance,
+final G0-G12 evidence or merge clearance.
 
 ## 1. Goal & non-goals
 
