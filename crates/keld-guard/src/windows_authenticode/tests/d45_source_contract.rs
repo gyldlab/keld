@@ -1770,6 +1770,66 @@ fn release_only_inner_and_spaced_cfg_blocks_fail_verified_caller_contract() {
 }
 
 #[test]
+fn unary_not_block_cannot_hide_release_only_cfg_before_wintrust() {
+    let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";
+    assert_eq!(GUARD.matches(offline).count(), 1, "stale verified caller");
+    let forged = GUARD.replacen(
+        offline,
+        concat!(
+            "    let _audit = !{ \n",
+            "        # [cfg(not(test))]\n",
+            "        let _release_return = {\n",
+            "            if let WindowsTrustPolicy::Full = policy {\n",
+            "                return Ok(WindowsTrustObservation {\n",
+            "                    identity: WindowsAuthenticodeIdentity {\n",
+            "                        publisher_scope: [0_u8; 32], app_id: \"forged\".into(),\n",
+            "                    }, d45_chain_facts: None,\n",
+            "                });\n",
+            "            }\n",
+            "        };\n",
+            "        false\n",
+            "    };\n",
+            "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&forged, ROLE),
+        Err(D45_VERIFIED_OWNER_REFUSAL),
+        "an active unary-not block must not be masked like an inert macro body"
+    );
+    let benign = GUARD.replacen(
+        offline,
+        &format!("    let _audit = !{{ false }};\n{offline}"),
+        1,
+    );
+    assert_eq!(
+        contract(&benign, ROLE),
+        Ok(()),
+        "ordinary unary negation is safe without a cfg-selected verifier branch"
+    );
+    let masked = hide_inert_text(
+        "let _a = !{ # [cfg(not(test))] false }; let _b = stringify!(#[cfg(not(test))]);",
+    )
+    .expect("source mask");
+    assert_eq!(
+        masked.matches("# [cfg(not(test))]").count(),
+        1,
+        "unary-not block is live; only stringify! input is inert"
+    );
+    for source in [
+        "let _x = !({ #[cfg(not(test))] false });",
+        "return !{ #[cfg(not(test))] false };",
+    ] {
+        let visible = hide_inert_text(source).expect("valid source token mask");
+        assert!(
+            visible.contains("#[cfg(not(test))]"),
+            "parenthesized or keyword-prefixed unary negation must remain live"
+        );
+    }
+}
+
+#[test]
 fn exact_macro_names_and_nested_calls_are_distinguished() {
     let preceding_owner = "fn verified_windows_identity_from_image(";
     let offline = "    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);";

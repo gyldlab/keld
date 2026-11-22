@@ -171,10 +171,47 @@ fn char_literal_end(source: &str, quote: usize) -> Option<usize> {
 // Treat macro invocations and unused macro_rules bodies as inert. In particular,
 // stringify! can contain tokens for a removed security call without invoking it.
 // Rust permits spaces, comments and raw/Unicode macro names around the bang.
+// Ordinary unary !{block} and !(expr) are NOT macros; their active contents
+// must remain visible to the WinTrust owner-attribute and control-flow guards.
+fn macro_name_before_bang(visible: &[u8], bang: usize) -> bool {
+    let mut end = bang;
+    while end > 0 && visible[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0
+        && (visible[start - 1].is_ascii_alphanumeric()
+            || visible[start - 1] == b'_'
+            || visible[start - 1] >= 0x80)
+    {
+        start -= 1;
+    }
+    if start == end {
+        return false;
+    }
+    let name = &visible[start..end];
+    // Keywords can precede a unary ! but cannot name macro invocations.
+    !(name == b"if"
+        || name == b"while"
+        || name == b"return"
+        || name == b"let"
+        || name == b"else"
+        || name == b"break"
+        || name == b"for"
+        || name == b"in"
+        || name == b"match"
+        || name == b"yield"
+        || name == b"move")
+}
+
 fn hide_macro_trees(visible: &mut [u8]) -> Result<(), &'static str> {
     let mut at = 0;
     while at < visible.len() {
         if visible[at] != b'!' {
+            at += 1;
+            continue;
+        }
+        if !macro_name_before_bang(visible, at) {
             at += 1;
             continue;
         }
