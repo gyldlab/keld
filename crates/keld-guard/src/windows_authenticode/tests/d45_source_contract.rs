@@ -212,10 +212,38 @@ const D45_PRIMARY_LEAF_CALLSITE: &str = concat!(
     "(,)?{returnErr(windows_identity_error(,,));}",
     "letcertificate_ref=unsafe{&*certificate};",
 );
+const D45_PRIMARY_LEAF_IDENTITY_TAIL: &str = concat!(
+    "ifcertificate_ref.dwError!=0||certificate_ref.pCert.is_null()",
+    "{returnErr(windows_identity_error(,,));}",
+    "letcertificate_context=unsafe{&*certificate_ref.pCert};",
+    "ifcertificate_context.pCertInfo.is_null()",
+    "{returnErr(windows_identity_error(,,));}",
+    "letcertificate_info=unsafe{&*certificate_context.pCertInfo};",
+    "letspki_der=windows_encoded_spki(&certificate_info.SubjectPublicKeyInfo,)?;",
+    "letmutpublisher_hasher=Sha256::new();",
+    "publisher_hasher.update(WINDOWS_PUBLISHER_SCOPE_DOMAIN);",
+    "publisher_hasher.update(&spki_der);",
+    "letpublisher_digest=publisher_hasher.finalize();",
+    "letmutpublisher_scope=[0_u8;32];",
+    "publisher_scope.copy_from_slice(&publisher_digest);",
+    "Ok(publisher_scope)",
+);
 
 fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
     let leaf = method(guard, "windows_publisher_scope_from_signer")?;
     let refusal = "D-45 primary leaf provider ABI guard before field access";
+    // One actual function owner, not a test-only fake followed by a cfg-hidden
+    // production alternative (including the Rust raw-identifier spelling).
+    let live_source = compact(guard);
+    count(
+        &live_source,
+        "fnwindows_publisher_scope_from_signer(",
+        1,
+        refusal,
+    )?;
+    if live_source.contains("fnr#windows_publisher_scope_from_signer(") {
+        return Err(refusal);
+    }
     count(&leaf, D45_PRIMARY_LEAF_CALLSITE, 1, refusal)?;
     let (prefix, _) = leaf.split_once(D45_PRIMARY_LEAF_CALLSITE).ok_or(refusal)?;
     // The lexical mask already removes strings, comments and inert macro trees.
@@ -223,6 +251,16 @@ fn check_primary_leaf_certificate_abi(guard: &str) -> Result<(), &'static str> {
     // reachable early Ok() can otherwise bypass an intact ABI guard and forge
     // the returned publisher scope while passing an ordered-token test.
     if prefix != D45_PRIMARY_LEAF_ENTRY_PREFIX {
+        return Err(refusal);
+    }
+    // The verified leaf certificate must actually contribute the returned
+    // publisher scope. Reject conditional early Ok(), shadowed SPKI and digest
+    // substitution after a correct ABI guard. No unexpected live tail allowed.
+    let after_abi = leaf
+        .strip_prefix(D45_PRIMARY_LEAF_ENTRY_PREFIX)
+        .and_then(|rest| rest.strip_prefix(D45_PRIMARY_LEAF_CALLSITE))
+        .ok_or(refusal)?;
+    if after_abi != D45_PRIMARY_LEAF_IDENTITY_TAIL {
         return Err(refusal);
     }
     Ok(())
@@ -279,6 +317,86 @@ fn conditional_early_success_before_primary_leaf_abi_guard_fails_source_contract
         Ok(()),
         "inert comments cannot create a false-red ABI source contract"
     );
+}
+
+#[test]
+fn conditional_early_success_after_primary_leaf_abi_guard_fails_source_contract() {
+    let anchor = "let certificate_ref = unsafe { &*certificate };";
+    assert_eq!(
+        GUARD.matches(anchor).count(),
+        1,
+        "stale leaf identity anchor"
+    );
+    let bypass = GUARD.replacen(
+        anchor,
+        concat!(
+            "let certificate_ref = unsafe { &*certificate };\n",
+            "    if certificate_ref.dwError == 0 && !certificate_ref.pCert.is_null() {\n",
+            "        return Ok([0_u8; 32]);\n",
+            "    }"
+        ),
+        1,
+    );
+    assert_eq!(
+        contract(&bypass, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "an early successful return after ABI check can forge publisher scope without hashing original SPKI"
+    );
+    let harmless = GUARD.replacen(
+        anchor,
+        "let certificate_ref = unsafe { &*certificate };\n    /* an inert comment before checking the native leaf */",
+        1,
+    );
+    assert_eq!(
+        contract(&harmless, ROLE),
+        Ok(()),
+        "inert comments after ABI guard must not turn the identity source contract red"
+    );
+}
+
+#[test]
+fn primary_leaf_publisher_scope_digest_substitution_fails_source_contract() {
+    let original = "publisher_scope.copy_from_slice(&publisher_digest);";
+    assert_eq!(GUARD.matches(original).count(), 1, "stale digest anchor");
+    let forged = GUARD.replacen(original, "publisher_scope.copy_from_slice(&[0_u8; 32]);", 1);
+    assert_eq!(
+        contract(&forged, ROLE),
+        Err("D-45 primary leaf provider ABI guard before field access"),
+        "publisher scope must use the native original leaf SPKI digest"
+    );
+}
+
+#[test]
+fn cfg_shadowed_primary_leaf_publisher_owner_fails_source_contract() {
+    let owner = "fn windows_publisher_scope_from_signer(";
+    assert_eq!(GUARD.matches(owner).count(), 1, "stale primary owner");
+    let test_only = GUARD.replacen(
+        owner,
+        "#[cfg(test)]\nfn windows_publisher_scope_from_signer(",
+        1,
+    );
+    let alternate = concat!(
+        "\n#[cfg(not(test))]\n",
+        "fn windows_publisher_scope_from_signer(",
+        "_signer: *mut CRYPT_PROVIDER_SGNR)",
+        " -> Result<[u8; 32], WindowsAuthenticodeError> {",
+        " Ok([0_u8; 32])",
+        "}\n"
+    );
+    for production_owner in [
+        alternate.to_owned(),
+        alternate.replace(
+            "fn windows_publisher_scope_from_signer(",
+            "fn r#windows_publisher_scope_from_signer(",
+        ),
+    ] {
+        let duplicate = format!("{test_only}{production_owner}");
+        assert_eq!(
+            contract(&duplicate, ROLE),
+            Err("D-45 primary leaf provider ABI guard before field access"),
+            "a cfg-hidden forged release owner cannot hide behind the genuine test-only function"
+        );
+    }
 }
 
 fn check_native_issuer_policy(guard: &str, role: &str) -> Result<(), &'static str> {
