@@ -38,13 +38,13 @@ Before completion or handoff:
 - Reconcile original objectives, gates, review/merge/publication and parent/subtask
   status. Coordination owns resource disposition and actual cleanup.
   Unresolved work requires a bounded handoff; MUST NOT label the whole session complete.
-- After work, run `just session-closeout <receipt>`. Publish receipt,
-  baseline and hashed evidence to an authorized remote record; verify tip.
-  Keep referenced files hash-valid in place until approved reference migration.
-  `tools/session_closeout.py` owns receipt format. Reconcile baseline with
-  conversation/tool history; validator cannot find omissions or authenticate
-  remote receipts. Independently re-read remote updates and local resource
-  state before acceptance.
+- Run `just session-closeout <receipt>` after the final state change.
+  Publish receipt, baseline and hashed evidence to an authorized remote record;
+  verify tip. Keep referenced files hash-valid in place until approved
+  reference migration. `tools/session_closeout.py` owns format.
+  Compare baseline to conversation/tool history; validator cannot find
+  gaps or authenticate remote receipts. Independently re-read remote
+  updates and local resource state before acceptance.
 
 Interruptions preserve inventory/next action; refresh on resume.
 Prior receipts do not prove new-turn completion; checked handoff is not implementation.
