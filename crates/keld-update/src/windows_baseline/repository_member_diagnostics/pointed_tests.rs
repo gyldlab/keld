@@ -449,10 +449,68 @@ fn exact_current_pointer_name_does_not_trigger_the_negative_namespace_guard() {
     .expect("canonical D-23 current bytes");
     let current = root.path().join("current.json");
     fs::write(&current, &bytes).expect("create exact protected record leaf");
+    let unrelated = root.path().join("current.json.bak");
+    fs::write(&unrelated, b"unrelated fixture entry").expect("create distinct ordinary root name");
     require_no_repository_pending_siblings(&repository)
         .expect("the canonical name remains permitted for independent D-23 byte validation");
     assert_eq!(
         fs::read(current).expect("preserve canonical current"),
         bytes
     );
+    assert_eq!(
+        fs::read(unrelated).expect("preserve unrelated native entry"),
+        b"unrelated fixture entry"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn distinct_verbatim_current_alias_refuses_even_beside_exact_canonical_current() {
+    use std::ffi::OsStr;
+
+    for alias_name in ["current.json.", "current.json "] {
+        let (root, ..) = fixture();
+        let repository = retained(root.path());
+        let verbatim_root = fs::canonicalize(root.path())
+            .expect("retain native Windows verbatim namespace for alias creation");
+        let canonical = verbatim_root.join("current.json");
+        let alias = verbatim_root.join(alias_name);
+        fs::write(&canonical, b"exact-canonical-current")
+            .expect("create independently readable D-23 canonical member");
+        fs::write(&alias, b"separate-verbatim-alias")
+            .expect("NTFS must create a separate verbatim-suffixed name");
+
+        assert!(
+            fs::read_dir(&verbatim_root)
+                .expect("enumerate actual native directory names")
+                .any(|entry| entry
+                    .expect("read native directory entry")
+                    .file_name()
+                    .as_os_str()
+                    == OsStr::new(alias_name)),
+            "the test must prove a distinct OS directory entry, not Win32 name normalization"
+        );
+
+        let refused = require_no_repository_pending_siblings(&repository)
+            .expect_err("a second noncanonical current record must block repository preflight");
+        assert!(matches!(
+            refused,
+            UpdateError::Baseline {
+                step: "repository current namespace",
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(&canonical).expect("canonical current remains intact"),
+            b"exact-canonical-current"
+        );
+        assert_eq!(
+            fs::read(&alias).expect("alias remains intact"),
+            b"separate-verbatim-alias"
+        );
+        // Retire only this fixture's verbatim names after the preservation
+        // oracle; the production negative guard itself never deletes them.
+        fs::remove_file(&alias).expect("remove own verbatim fixture alias");
+        fs::remove_file(&canonical).expect("remove own canonical fixture member");
+    }
 }

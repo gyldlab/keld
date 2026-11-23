@@ -26,9 +26,9 @@ use crate::records::{PendingOperationKind, PendingRepositoryOperation, Repositor
 /// actual record identity and bytes are checked separately by the protected
 /// reader. This is a local negative observation, not an authenticated KEL-53
 /// repository-wide census or permission to delete anything.
-/// The same retained root observation also refuses a differently cased
-/// `current.json`. On Windows, a case-insensitive read of that name must not
-/// admit a noncanonical D-23 metadata head.
+/// The same retained root observation also refuses a differently cased or
+/// trailing-dot/space `current.json`. NTFS can retain a distinct verbatim name
+/// whose ordinary Win32 spelling is ambiguous with the protected D-23 head.
 pub(super) fn require_no_repository_pending_siblings(repository: &Dir) -> Result<(), UpdateError> {
     for entry in repository
         .entries()
@@ -51,10 +51,14 @@ pub(super) fn require_no_repository_pending_siblings(repository: &Dir) -> Result
                 "an unaccounted protected record sibling or noncanonical pending pointer blocks restart and admission",
             ));
         }
-        if name.eq_ignore_ascii_case("current.json") && name != "current.json" {
+        if name != "current.json"
+            && name
+                .trim_end_matches(|character| character == '.' || character == ' ')
+                .eq_ignore_ascii_case("current.json")
+        {
             return Err(error(
                 "repository current namespace",
-                "a noncanonical D-23 current.json alias cannot become the protected metadata head",
+                "a noncanonical D-23 current.json case or suffix alias cannot become the protected metadata head",
             ));
         }
     }
