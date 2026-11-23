@@ -29,6 +29,9 @@ $ErrorActionPreference = 'Stop'
 # Independent Windows checks verified the archive, compiler bytes and /VERSION.
 # A compiler pin cannot authorize Host, T81, T20, D90, D46, or release signing.
 $reviewedMakensisSha256 = '65343C225EC88393CC4453B0963CAF63F763F42F48CB55736D51893FF2E29D4A'
+# The exact reviewed NSIS source is a release input, not a caller-supplied pin.
+# This does not authorize the uncommissioned original Host or release signing.
+$reviewedNsisSourceSha256 = '760EE6ED9E91149A71A333479B655252375250BE530B5579C5452094543A0101'
 
 function Refuse([string]$Reason) {
     throw "KEL270-NSIS-BUILD: $Reason; no installer built or release authority granted"
@@ -299,6 +302,8 @@ $provider = Require-File (Join-Path $stage 'bindings/keld-mcp-stdio.json') 'W38 
 Require-ExactHash $provider $providerHash 'W38 provider recipe'
 $catalogue = Require-File $CommissionedCatalogue 'commissioned catalogue candidate'
 Require-ExactHash $catalogue $catalogueHash 'commissioned catalogue candidate'
+$source = Require-File (Join-Path $PSScriptRoot 'windows_v2_nsis_installer.nsi') 'fixed NSIS builder source'
+Require-ExactHash $source $reviewedNsisSourceSha256 'reviewed NSIS source'
 
 # This is the currently missing ORIGINAL-HOST native commissioning boundary.
 # A signed W38 stage or caller-supplied catalogue/hash cannot authorize it.
@@ -317,7 +322,6 @@ if ($reviewedMakensisSha256 -cnotmatch '^[0-9A-F]{64}$') {
 }
 $compiler = Require-File $MakensisExe 'reviewed makensis.exe'
 Require-ExactHash $compiler $reviewedMakensisSha256 'reviewed makensis.exe'
-$source = Require-File (Join-Path $PSScriptRoot 'windows_v2_nsis_installer.nsi') 'fixed NSIS builder source'
 $parent = Split-Path -Parent $destination
 $null = Require-LocalPath $parent 'compiler output parent'
 $temporary = Join-Path $parent ('.keld-v2-nsis-' + [guid]::NewGuid().ToString('N'))

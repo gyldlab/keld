@@ -126,6 +126,25 @@ try {
     $wrongCatalogue.ExpectedCatalogueSha256 = '0' * 64
     Assert-Refusal 'catalogue-hash-mismatch' $builder $wrongCatalogue 'differs from its independently pinned SHA256'
 
+    # Change only the adjacent NSIS source in an isolated builder copy. Its
+    # exact, source-controlled digest must refuse before the missing Host gate.
+    # No signed image, installer, or release authority is simulated.
+    $tamperedDir = Join-Path $fixture 'tampered-nsis'
+    [IO.Directory]::CreateDirectory($tamperedDir) | Out-Null
+    $tamperedBuilder = Join-Path $tamperedDir 'windows_v2_nsis_build.ps1'
+    $tamperedNsis = Join-Path $tamperedDir 'windows_v2_nsis_installer.nsi'
+    [IO.File]::Copy($builder, $tamperedBuilder, $false)
+    $nsisOriginal = [IO.File]::ReadAllText($nsis)
+    $nsisMutant = $nsisOriginal.Replace(
+        'Name "Keld Windows v2 PerUserDirect"',
+        'Name "Keld Windows v2 PerUserDirect MUTANT"'
+    )
+    if ($nsisOriginal -ceq $nsisMutant) {
+        throw 'KEL270_NSIS_SOURCE_MUTANT_NOT_APPLIED'
+    }
+    [IO.File]::WriteAllText($tamperedNsis, $nsisMutant)
+    Assert-Refusal 'tampered-nsis-template' $tamperedBuilder $arguments 'reviewed NSIS source differs from its independently pinned SHA256'
+
     # The final output does not exist yet. Its reparse ancestor must still be
     # checked before the compiler has any chance to create a private sibling.
     $outside = Join-Path $fixture 'outside'
@@ -190,7 +209,10 @@ try {
     if (-not $original.Contains($needle)) {
         throw 'KEL270_NSIS_MUTANT_NOT_APPLIED: missing original signer predicate'
     }
-    $mutant = Join-Path $fixture 'mutant-builder.ps1'
+    $mutantDir = Join-Path $fixture 'mutant-signer'
+    [IO.Directory]::CreateDirectory($mutantDir) | Out-Null
+    [IO.File]::Copy($nsis, (Join-Path $mutantDir 'windows_v2_nsis_installer.nsi'), $false)
+    $mutant = Join-Path $mutantDir 'mutant-builder.ps1'
     [IO.File]::WriteAllText($mutant, $original.Replace($needle, '$false'))
     $mutantResult = Run-Builder $mutant $arguments
     if ($mutantResult.ExitCode -eq 0 -or
@@ -292,7 +314,7 @@ try {
         throw 'KEL270_NSIS_BUILD_SOURCE_FORBIDDEN: uncommissioned parallel native authority'
     }
     Write-Output 'KEL270_NSIS_SOURCE_PASS original_host=true user_level=true persistent_target_not_selected=true'
-    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=9 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
+    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=10 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
 } finally {
     $expectedFixture = '^keld270-nsis-negative-[a-f0-9]{32}$'
     if ([IO.Path]::GetDirectoryName($fixture) -cne $env:TEMP -or
@@ -305,7 +327,11 @@ try {
         'stage/bin/keld-host.exe', 'stage/bin/keld.exe',
         'stage/bin/keld-role-launcher.exe', 'stage/bin/keld-updater-helper.exe',
         'stage/recovery/keld-host.exe', 'stage/bindings/keld-mcp-stdio.json',
-        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin', 'mutant-builder.ps1',
+        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin',
+        'mutant-signer/mutant-builder.ps1',
+        'mutant-signer/windows_v2_nsis_installer.nsi',
+        'tampered-nsis/windows_v2_nsis_build.ps1',
+        'tampered-nsis/windows_v2_nsis_installer.nsi',
         'shadow-hash/Get-FileHash.ps1',
         'shadow-signer/Get-AuthenticodeSignature.ps1',
         'shadow-modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psm1'
@@ -331,6 +357,7 @@ try {
     foreach ($relative in @(
         'stage/bin', 'stage/recovery', 'stage/bindings', 'stage',
         'compiler-parent', 'outside', 'shadow-hash', 'shadow-signer',
+        'tampered-nsis', 'mutant-signer',
         'shadow-modules/Microsoft.PowerShell.Security', 'shadow-modules', ''
     )) {
         $directory = if ($relative -eq '') { $fixture } else { Join-Path $fixture $relative }
