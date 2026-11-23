@@ -66,6 +66,22 @@ function Get-FileSha256([string]$Path) {
     finally { $sha.Dispose(); $stream.Dispose() }
 }
 
+function Get-ObservedAuthenticode([string]$Path) {
+    $manifest = [IO.Path]::Combine($PSHOME, 'Modules',
+        'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Security.psd1')
+    if (-not [IO.File]::Exists($manifest)) { Refuse 'OS Security module unavailable' }
+    $modules = @(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -ErrorAction Stop)
+    if ($modules.Count -ne 1 -or $modules[0].Path -ine $manifest) {
+        Refuse 'OS Security module provenance mismatch'
+    }
+    $cmdlet = $modules[0].ExportedCommands['Get-AuthenticodeSignature']
+    if ($cmdlet -isnot [System.Management.Automation.CmdletInfo] -or
+        $cmdlet.ImplementingType.FullName -cne 'Microsoft.PowerShell.Commands.GetAuthenticodeSignatureCommand') {
+        Refuse 'OS Authenticode cmdlet provenance mismatch'
+    }
+    return (& $cmdlet -LiteralPath $Path)
+}
+
 function Read-PublicCertificate([string]$Path, [string]$Expected) {
     $path = Require-LocalPath $Path
     $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -100,6 +116,25 @@ function Require-DevLeaf($Certificate, $Root) {
     $now = Get-Date
     if ($now -lt $Certificate.NotBefore -or $now -ge $Certificate.NotAfter -or
         $now -lt $Root.NotBefore -or $now -ge $Root.NotAfter) { Refuse 'certificate outside validity period' }
+    # A matching issuer name is not a cryptographic chain. This preflight may
+    # observe an untrusted development root but grants no Windows trust or
+    # installation authority. The product must verify the actual retained image.
+    $chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+    try {
+        $chain.ChainPolicy.VerificationTime = $now
+        $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $chain.ChainPolicy.VerificationFlags = [Security.Cryptography.X509Certificates.X509VerificationFlags]::AllowUnknownCertificateAuthority
+        [void]$chain.ChainPolicy.ExtraStore.Add($Root)
+        [void]$chain.ChainPolicy.ApplicationPolicy.Add((New-Object Security.Cryptography.Oid('1.3.6.1.5.5.7.3.3')))
+        if (!$chain.Build($Certificate) -or $chain.ChainElements.Count -ne 2 -or
+            (Get-Sha256 $chain.ChainElements[0].Certificate.RawData) -cne (Get-Sha256 $Certificate.RawData) -or
+            (Get-Sha256 $chain.ChainElements[1].Certificate.RawData) -cne (Get-Sha256 $Root.RawData) -or
+            @($chain.ChainStatus | Where-Object { $_.Status -notin @(
+                [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::NoError,
+                [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot) }).Count -ne 0) {
+            Refuse 'leaf chain does not match the exact pinned local CA'
+        }
+    } finally { $chain.Dispose() }
 }
 
 if ($AppId -cnotmatch '^com\.keld\.dev\.[a-z0-9][a-z0-9.-]{0,239}$' -or
@@ -139,7 +174,7 @@ try {
     try { $actual = [BitConverter]::ToString($sha.ComputeHash($source)).Replace('-', '') }
     finally { $sha.Dispose() }
     if ($actual -cne $sourcePin) { Refuse 'unsigned image differs from independent source pin' }
-    if ((Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $inputPath).Status -ne 'NotSigned') {
+    if ((Get-ObservedAuthenticode $inputPath).Status -ne 'NotSigned') {
         Refuse 'source image already carries a signature or cannot be inspected'
     }
     New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
@@ -156,10 +191,13 @@ try {
     finally { $rootCopy.Dispose() }
     & $signTool sign /s My /sha1 $leaf.Thumbprint /fd SHA256 /ac $publicRoot /d ('keld.app-id/v1:' + $AppId) $destination
     if ($LASTEXITCODE -ne 0) { Refuse 'SignTool failed' }
-    $observed = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $destination
+    $observed = Get-ObservedAuthenticode $destination
     if ($null -eq $observed.SignerCertificate -or
         (Get-Sha256 $observed.SignerCertificate.RawData) -cne (Get-Sha256 $leaf.RawData) -or
-        $observed.Status -in @('NotSigned', 'HashMismatch')) { Refuse 'signed copy does not contain expected signer' }
+        $observed.SignatureType.ToString() -cne 'Authenticode' -or
+        $observed.Status.ToString() -cnotin @('Valid', 'UnknownError', 'NotTrusted')) {
+        Refuse 'signed copy does not contain expected embedded signer'
+    }
     $receipt = [ordered]@{
         schema = 'keld.dev-signing-observation/v1'; scope = 'DEVELOPMENT_ONLY_NONAUTHORIZING'
         role = $Role; appId = $AppId; unsignedSha256 = $sourcePin

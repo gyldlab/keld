@@ -86,6 +86,22 @@ try {
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'same-role'
     $a.RecoveryCertificate = $paths['APP']; $a.ExpectedRecoveryCertificateSha256 = $pins['APP']
     Require-Refusal $a 'APP and RECOVERY keys must differ' 'same-role-key'
+    # Same issuer subject, different CA key: name equality alone would accept
+    # this substitution. The independent oracle is refusal before any output.
+    $owned['WRONG_ROOT'] = New-SelfSignedCertificate -Type Custom -Subject $ca.Subject `
+        -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 3072 `
+        -HashAlgorithm SHA256 -KeyExportPolicy NonExportable -KeyUsage CertSign,CRLSign `
+        -TextExtension @('2.5.29.19={critical}{text}ca=1&pathlength=0') -NotAfter (Get-Date).AddDays(3)
+    $wrongRoot = $owned['WRONG_ROOT']
+    if ($wrongRoot.Subject -cne $ca.Subject -or $wrongRoot.GetPublicKeyString() -ceq $ca.GetPublicKeyString()) {
+        throw 'wrong-root test requires same subject and distinct CA keys'
+    }
+    $wrongRootPath = Join-Path $EvidenceDirectory 'WRONG_ROOT.cer'
+    Export-Certificate -Cert $wrongRoot -FilePath $wrongRootPath -Type CERT | Out-Null
+    $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'wrong-root'
+    $a.RootCertificate = $wrongRootPath
+    $a.ExpectedRootCertificateSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $wrongRootPath).Hash
+    Require-Refusal $a 'leaf chain does not match the exact pinned local CA' 'same-subject-wrong-root'
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'production-app'
     $a.AppId = 'com.keld.production'; Require-Refusal $a 'development-only app ID' 'production-app-id'
     $a = $common.Clone(); Require-Refusal $a 'absent output directory' 'existing-output'
@@ -94,13 +110,14 @@ try {
     $a.UnsignedImage = Join-Path $common.OutputDirectory $signedReceipt.file; $a.ExpectedUnsignedSha256 = $signedReceipt.signedSha256
     Require-Refusal $a 'source image already carries a signature' 'already-signed-input'
     if ((Get-FileHash -Algorithm SHA256 -LiteralPath $UnsignedFixture).Hash -cne $pin) { throw 'source fixture changed' }
-    Write-Output 'POSITIVE_2_NEGATIVE_6_SOURCE_PRESERVED'
+    Write-Output 'POSITIVE_2_NEGATIVE_7_SOURCE_PRESERVED'
 } finally {
-    foreach ($role in @('RECOVERY', 'APP', 'ROOT')) {
+    foreach ($role in @('RECOVERY', 'APP', 'WRONG_ROOT', 'ROOT')) {
         if ($owned.ContainsKey($role)) {
             $cert = $owned[$role]; $p = 'Cert:\CurrentUser\My\' + $cert.Thumbprint
             $actual = Get-Item -LiteralPath $p -ErrorAction SilentlyContinue
-            if ($actual -and $actual.Subject -ceq ('CN=' + $label + ' ' + $role)) {
+            if ($actual -and $actual.Subject -ceq $cert.Subject -and
+                [Convert]::ToBase64String($actual.RawData) -ceq [Convert]::ToBase64String($cert.RawData)) {
                 Remove-Item -LiteralPath $p -DeleteKey -Force -ErrorAction Stop
                 if (Test-Path -LiteralPath $p) { throw 'owned certificate remains' }
             } elseif ($actual) { throw 'unexpected certificate; preserve it' }
