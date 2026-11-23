@@ -22,11 +22,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# The original KEL-270 Host always returns KELD-HOST-INITIAL-002 until its
-# catalogue and native issuer are commissioned. No source-approved gate or
-# compiler digests exist on PR1593 26fbefd. The compiler pin is deliberately
-# EMPTY; its independent review is separate from source checks and Host trust.
-$reviewedMakensisSha256 = ''
+# The original KEL-270 Host still returns KELD-HOST-INITIAL-002 until its
+# catalogue and native issuer are commissioned. This SHA256 pins only the
+# actual NSIS 3.13 Bin/makensis.exe extracted from the official publisher
+# archive (nsis-3.13.zip SHA256 BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8).
+# Independent Windows checks verified the archive, compiler bytes and /VERSION.
+# A compiler pin cannot authorize Host, T81, T20, D90, D46, or release signing.
+$reviewedMakensisSha256 = '65343C225EC88393CC4453B0963CAF63F763F42F48CB55736D51893FF2E29D4A'
 
 function Refuse([string]$Reason) {
     throw "KEL270-NSIS-BUILD: $Reason; no installer built or release authority granted"
