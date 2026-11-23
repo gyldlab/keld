@@ -59,8 +59,13 @@ def require(condition, description):
         raise ValueError(description)
 
 
-def read_json(content):
-    return json.loads(content)
+def require_json_object(value, label):
+    require(isinstance(value, dict), label + ": expected a JSON object")
+    return value
+
+
+def read_json(content, label):
+    return require_json_object(json.loads(content), label)
 
 
 class RootCustody:
@@ -791,9 +796,9 @@ def _validate_owned(source, selected, candidate, repro):
     project_package, _, _ = read_owned_file(candidate, "package.json", "candidate source manifest")
     require(project_package == selected_package,
             "candidate package.json differs from selected source")
-    manifest = read_json(project_package)
+    manifest = read_json(project_package, "candidate source manifest")
     lock_content, _, _ = read_owned_file(candidate, "package-lock.json", "candidate lock")
-    lock = read_json(lock_content)
+    lock = read_json(lock_content, "candidate lock")
     require(lock.get("lockfileVersion") == 3 and lock.get("requires") is True,
             "candidate lock is not npm lock v3")
     require(lock.get("name") == manifest.get("name") and lock.get("version") == manifest.get("version"),
@@ -804,13 +809,18 @@ def _validate_owned(source, selected, candidate, repro):
     require(rows[""].get("dependencies") == manifest.get("dependencies"),
             "candidate lock root dependencies disagree with source alias")
 
-    api = read_json(immutable["packages/@keld/api/package.json"])
-    kipc = read_json(immutable["packages/@keld/kipc/package.json"])
-    electron = read_json(immutable["packages/@keld/electron/package.json"])
+    api_path = "packages/@keld/api/package.json"
+    kipc_path = "packages/@keld/kipc/package.json"
+    electron_path = "packages/@keld/electron/package.json"
+    api = read_json(immutable[api_path], api_path)
+    kipc = read_json(immutable[kipc_path], kipc_path)
+    electron = read_json(immutable[electron_path], electron_path)
     node_version = electron["dependencies"]["@types/node"]
-    undici_row = rows.get("node_modules/undici-types", {})
+    undici_row = require_json_object(
+        rows.get("node_modules/undici-types", {}), "candidate undici-types lock row",
+    )
     undici_version = undici_row.get("version")
-    require(isinstance(undici_version, str) and re.fullmatch(r"8\.3\.\d+", undici_version),
+    require(isinstance(undici_version, str) and re.fullmatch(r"8\.3\.(?:0|[1-9][0-9]*)", undici_version),
             "candidate undici-types version outside selected type closure")
     expected = [
         ("@keld/api", "node_modules/@keld/api", f"keld-api-{api['version']}.tgz",
@@ -837,7 +847,7 @@ def _validate_owned(source, selected, candidate, repro):
     installed_closure = installed_package_closure(candidate)
     receipts = []
     for name, location, filename, source_version, dependencies in expected:
-        row = rows[location]
+        row = require_json_object(rows[location], name + " lock row")
         lock_name = row.get("name", name)
         require(lock_name == name and row.get("version") == source_version,
                 name + ": lock differs from selected source version")
@@ -860,7 +870,7 @@ def _validate_owned(source, selected, candidate, repro):
         require(row.get("integrity") == sri,
                 name + ": lock integrity does not match actual archive")
         files, archive_directories, archive_entry_count = archive_members(packed, name)
-        packed_manifest = json.loads(files["package.json"][0])
+        packed_manifest = read_json(files["package.json"][0], name + " archive manifest")
         require(packed_manifest.get("name") == name and
                 packed_manifest.get("version") == row["version"],
                 name + ": archive manifest does not match lock identity")

@@ -1221,6 +1221,35 @@ sys.exit(git.returncode)
         shutil.copyfile(path, self.repro / path.name)
         self.check(False, "integrity")
 
+    def test_refuses_non_object_lock_metadata(self):
+        (self.project / "package-lock.json").write_text("[]")
+        self.check(False, "candidate lock: expected a JSON object")
+        original = self.lock["packages"].copy()
+        for location in ("node_modules/undici-types", "node_modules/@keld/api"):
+            with self.subTest(location=location):
+                self.lock["packages"] = {**original, location: []}
+                self._write_lock()
+                self.check(False, "lock row: expected a JSON object")
+
+    def test_refuses_non_object_archive_manifest(self):
+        spec = next(row for row in self.specs if row[0] == "api")
+        self._replace_package(spec, {"package.json": b"[]"})
+        self._write_lock()
+        self.check(False, "archive manifest: expected a JSON object")
+
+    def test_undici_requires_canonical_ascii_patch(self):
+        undici = next(row for row in self.specs if row[0] == "undici-types")
+        for patch, admitted in (("00", False), ("01", False), ("١", False),
+                                ("0", True), ("12", True)):
+            with self.subTest(patch=patch):
+                spec = (*undici[:3], "8.3." + patch, undici[4])
+                self._replace_package(spec)
+                self._write_lock()
+                if admitted:
+                    self.check(True)
+                else:
+                    self.check(False, "outside selected type closure")
+
     def test_rejects_changed_integrity_with_matching_files(self):
         row = self.lock["packages"]["node_modules/electron"]
         row["integrity"] = "sha512-" + base64.b64encode(b"\x00" * 64).decode()
