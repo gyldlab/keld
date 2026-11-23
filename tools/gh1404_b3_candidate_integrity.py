@@ -165,7 +165,8 @@ def _git_run(source, *args, text):
             os.close(pinned.fd)
 
         result = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+            ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
              "-c", "maintenance.auto=false", *args],
             capture_output=True, text=text, check=False,
             preexec_fn=enter_pinned_source, pass_fds=(pinned.fd,),
@@ -930,13 +931,16 @@ def main():
             args.source_root, args.selected_revision,
             args.candidate_root, args.repro_dir,
         )
+        result = json.dumps(receipt, sort_keys=True, indent=2) + "\n"
+        if args.output is not None:
+            # The caller owns this path. Never truncate an existing receipt or
+            # follow a final symlink to a different file.
+            with args.output.open("x", encoding="utf8") as output:
+                output.write(result)
     except (ValueError, OSError, UnicodeError, tarfile.TarError, KeyError, TypeError,
             json.JSONDecodeError) as error:
         print("B3_CANDIDATE_REFUSED: " + str(error), file=sys.stderr)
         return 2
-    result = json.dumps(receipt, sort_keys=True, indent=2) + "\n"
-    if args.output is not None:
-        args.output.write_text(result, encoding="utf8")
     print(result, end="")
     return 0
 
