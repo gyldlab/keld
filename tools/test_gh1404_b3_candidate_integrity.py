@@ -1182,6 +1182,52 @@ sys.exit(git.returncode)
         self.assertEqual(result["status"], "UNQUALIFIED_SOURCE_ONLY")
         self.assertEqual(result["archiveComparison"], "SUPPLIED_BYTE_EQUIVALENCE_ONLY")
 
+    def test_rechecks_all_installed_file_bytes_after_archive_checks(self):
+        events = []
+        archive_members = verifier.archive_members
+        read_owned_file = verifier.read_owned_file
+
+        def count_archive(data, label):
+            events.append(("archive", label))
+            return archive_members(data, label)
+
+        def count_read(root, relative, label):
+            if relative.startswith("node_modules/"):
+                events.append(("installed", relative))
+            return read_owned_file(root, relative, label)
+
+        with (mock.patch.object(verifier, "archive_members", side_effect=count_archive),
+              mock.patch.object(verifier, "read_owned_file", side_effect=count_read)):
+            result = verifier.validate(self.source, SELECTED, self.project, self.repro)
+        self.assertEqual(result["status"], "UNQUALIFIED_SOURCE_ONLY")
+        last_archive = max(index for index, (kind, _) in enumerate(events)
+                           if kind == "archive")
+        first_files = [name for kind, name in events if kind == "installed"]
+        final_files = [name for kind, name in events[last_archive + 1:]
+                       if kind == "installed"]
+        expected_files = {location + "/" + member
+                          for _, location, _, _, _ in self.specs
+                          for member in ("entry.js", "package.json")}
+        # Both real passes must read every member, not only the package roots.
+        self.assertCountEqual(first_files, list(expected_files) * 2)
+        self.assertCountEqual(final_files[-len(expected_files):], expected_files)
+        self.assertEqual(len(final_files), len(expected_files) + 2)
+
+    def test_installed_recheck_refuses_different_expected_member_bytes(self):
+        location = "node_modules/@keld/api"
+        found, directories = verifier.installed_inventory(self.project, location, "@keld/api")
+        members = {}
+        for member in found:
+            content, identity, _ = verifier.read_owned_file(
+                self.project, location + "/" + member, "@keld/api"
+            )
+            members[member] = (hashlib.sha256(content).digest(), identity)
+        # A stale byte witness alone must fail even with matching stat data.
+        _, identity = members["entry.js"]
+        members["entry.js"] = (hashlib.sha256(b"previous fixture bytes").digest(), identity)
+        with self.assertRaisesRegex(ValueError, "installed member changed.*entry.js"):
+            verifier.recheck_installed(self.project, location, (members, directories), "@keld/api")
+
     def test_core_provider_fingerprint_matches_pinned_two_file_vector(self):
         # Reference vector from the Core graph contract: SHA256 of each
         # sorted relative path + NUL + decimal size + NUL + raw SHA256 + NUL.

@@ -5,6 +5,7 @@ This reviewer check does not select qualified Host/Bun/provider inputs, compute
 the shipping graph hash, or authorize release. It requires a source-preserving
 candidate lock and an actual offline-installed tree prepared outside the repo.
 It checks supplied archive bytes, not independent producer executions.
+Installed-byte observations are repeated, not an atomic filesystem snapshot.
 """
 
 import argparse
@@ -719,6 +720,7 @@ def _compare_installed(candidate, location, files, archive_directories, label):
             require(actual_directories[name] == mode,
                     label + ": installed directory mode changed: " + name)
     rows = []
+    member_observations = {}
     # Core graph_contract.rs:1922-1948 owns the canonical provider fingerprint.
     # This independent reader computes the same *candidate* data over physical
     # installed file bytes; a matching value is not an owner approval or grant.
@@ -726,20 +728,36 @@ def _compare_installed(candidate, location, files, archive_directories, label):
     for name, (archive_bytes, expected_mode) in sorted(
         files.items(), key=lambda item: item[0].encode("utf8")
     ):
-        physical, _, mode = read_owned_file(
+        physical, identity, mode = read_owned_file(
             candidate, location + "/" + name, label + " installed " + name,
         )
         require(physical == archive_bytes, label + ": installed member bytes changed: " + name)
         require(mode == expected_mode, label + ": installed member mode changed: " + name)
-        rows.append({"path": name, "sha256": sha256(physical).hexdigest(), "mode": oct(mode)})
+        file_digest = sha256(physical).digest()
+        member_observations[name] = (file_digest, identity)
+        rows.append({"path": name, "sha256": file_digest.hex(), "mode": oct(mode)})
         # Core's sorted GraphDocument row algorithm (no file-mode bytes):
         # relative UTF-8 path, decimal length and *raw* SHA-256, each NUL-terminated.
         core_fingerprint.update(name.encode("utf8") + b"\0")
         core_fingerprint.update(str(len(physical)).encode("ascii") + b"\0")
-        core_fingerprint.update(sha256(physical).digest() + b"\0")
+        core_fingerprint.update(file_digest + b"\0")
     # A reviewer-defined file/mode witness, NOT Keld's shipping provider-tree digest.
     witness = sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return witness, core_fingerprint.hexdigest()
+    return witness, core_fingerprint.hexdigest(), (member_observations, actual_directories)
+
+
+def recheck_installed(candidate, location, observation, label):
+    """Reobserve the known bounded member set without retaining archive bodies."""
+    members, directories = observation
+    found, current_directories = installed_inventory(candidate, location, label)
+    require(found == set(members) and current_directories == directories,
+            label + ": installed member inventory changed during verification")
+    for name, (expected_digest, expected_identity) in members.items():
+        physical, identity, _ = read_owned_file(
+            candidate, location + "/" + name, label + " installed " + name,
+        )
+        require(identity == expected_identity and sha256(physical).digest() == expected_digest,
+                label + ": installed member changed during verification: " + name)
 
 
 def require_supplied_archive_match(packed, packed_identity, comparison, comparison_identity, name):
@@ -845,6 +863,7 @@ def _validate_owned(source, selected, candidate, repro):
     }, "candidate source alias is not the closed first-party selector")
 
     installed_closure = installed_package_closure(candidate)
+    installed_observations = []
     receipts = []
     for name, location, filename, source_version, dependencies in expected:
         row = require_json_object(rows[location], name + " lock row")
@@ -887,9 +906,10 @@ def _validate_owned(source, selected, candidate, repro):
             require(b"KELD_KIPC_TEST_HOOKS" not in transport and
                     b"openWorkerLinkForTest" not in transport,
                     "KIPC release transport retains test hooks")
-        witness, candidate_core_tree = compare_installed(
+        witness, candidate_core_tree, observation = compare_installed(
             candidate, location, files, archive_directories, name,
         )
+        installed_observations.append((location, observation, name))
         row_receipt = {
             "name": name, "lockRow": location, "resolved": row["resolved"],
             "archiveSha256": sha256(packed).hexdigest(), "archiveSha512Integrity": sri,
@@ -904,6 +924,11 @@ def _validate_owned(source, selected, candidate, repro):
         )
         require(physical == selected_bytes and identity == initial_identities[relative],
                 "selected source changed during verification: " + relative)
+    # Complete the other package and source checks before reobservation, then
+    # close with the outer scope census. This detects differing observations;
+    # it cannot prove a tree stayed unchanged after each descriptor was closed.
+    for location, observation, name in installed_observations:
+        recheck_installed(candidate, location, observation, name)
     require(installed_package_closure(candidate) == installed_closure,
             "installed package scope changed during verification")
     return {
