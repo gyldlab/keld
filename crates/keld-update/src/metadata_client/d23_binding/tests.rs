@@ -2,11 +2,14 @@
 //! Synthetic records prove byte consistency only, never native protection.
 
 use super::{
-    verify_ready_revision_against_recorded_generation,
+    read_unqualified_d23_historical_roles, verify_ready_revision_against_recorded_generation,
     verify_ready_revision_against_recorded_readers,
 };
 use crate::metadata_client::{MetadataClientRefusal, SignedRoleBytes, SignedRoleReaders, TufRole};
-use crate::records::{GenerationPhase, GenerationRecord, MetadataRoleReference, RootRefresh};
+use crate::records::{
+    CurrentRecord, GenerationPhase, GenerationRecord, MetadataRoleReference, RootRefresh,
+    encode_metadata_generation,
+};
 use sha2::{Digest as _, Sha256};
 use std::io::{self, Cursor, Read};
 
@@ -55,6 +58,19 @@ fn generation() -> GenerationRecord {
         targets: Some(reference(TARGETS)),
         root_refresh: None,
     }
+}
+
+fn canonical_current(generation: &GenerationRecord) -> (CurrentRecord, Vec<u8>) {
+    let bytes = encode_metadata_generation(generation)
+        .expect("the D-23 fixture must be an exact canonical generation");
+    (
+        CurrentRecord {
+            repository_id: generation.repository_id,
+            sequence: generation.sequence,
+            generation_sha256: Sha256::digest(&bytes).into(),
+        },
+        bytes,
+    )
 }
 
 fn role_reference_mut(
@@ -279,5 +295,116 @@ fn matching_recorded_readers_still_cannot_mint_ready_revision() {
         )
         .expect_err("matching data remains unqualified without TUF and T-82"),
         MetadataClientRefusal::TufClientNotQualified
+    );
+}
+
+#[test]
+fn old_d23_historical_envelopes_preserve_exact_bytes_for_real_tuf_floor_checks() {
+    let mut prior = generation();
+    prior.root.version = 100;
+    prior.timestamp.as_mut().unwrap().version = 100;
+    prior.snapshot.as_mut().unwrap().version = 100;
+    prior.targets.as_mut().unwrap().version = 100;
+    prior.utc_floor_millis = 1_700_000_000_000;
+    let (current, serialized) = canonical_current(&prior);
+
+    let captured = read_unqualified_d23_historical_roles(
+        &current,
+        &serialized,
+        &mut Cursor::new(TIMESTAMP),
+        &mut Cursor::new(SNAPSHOT),
+    )
+    .expect("exact D-23 references copy old opaque signed envelopes as data");
+    assert_eq!(captured.timestamp.as_slice(), TIMESTAMP);
+    assert_eq!(captured.snapshot.as_slice(), SNAPSHOT);
+    assert_eq!(captured.recorded_versions, [100; 4]);
+    assert_eq!(captured.utc_floor_millis, 1_700_000_000_000);
+    // A successful copy never authenticates an Ed25519 TUF signature, source
+    // root, protected OS handle, D-90 lease or ReadyRevision. The real pinned
+    // tough R5 test independently authenticates signed v100 -> v101 history.
+}
+
+#[test]
+fn forged_current_digest_repository_or_sequence_refuses_before_old_role_reads() {
+    let (current, serialized) = canonical_current(&generation());
+    let mut mismatches = Vec::new();
+    let mut wrong_hash = current.clone();
+    wrong_hash.generation_sha256[0] ^= 1;
+    mismatches.push(wrong_hash);
+    let mut wrong_repository = current.clone();
+    wrong_repository.repository_id[0] ^= 1;
+    mismatches.push(wrong_repository);
+    let mut wrong_sequence = current;
+    wrong_sequence.sequence += 1;
+    mismatches.push(wrong_sequence);
+
+    for candidate in mismatches {
+        let mut timestamp = FailOnRead;
+        let mut snapshot = FailOnRead;
+        assert_eq!(
+            read_unqualified_d23_historical_roles(
+                &candidate,
+                &serialized,
+                &mut timestamp,
+                &mut snapshot
+            )
+            .unwrap_err(),
+            MetadataClientRefusal::RecordedGenerationMismatch
+        );
+    }
+    let (current, mut malformed) = canonical_current(&generation());
+    malformed[0] ^= 1;
+    let mut timestamp = FailOnRead;
+    let mut snapshot = FailOnRead;
+    assert_eq!(
+        read_unqualified_d23_historical_roles(&current, &malformed, &mut timestamp, &mut snapshot)
+            .unwrap_err(),
+        MetadataClientRefusal::RecordedGenerationMismatch
+    );
+}
+
+#[test]
+fn d23_historical_timestamp_mismatch_never_reads_snapshot() {
+    let (current, serialized) = canonical_current(&generation());
+    let mut altered_timestamp = Cursor::new(&b"Timestamp-envelope"[..]);
+    let mut forbidden_snapshot = FailOnRead;
+    assert_eq!(
+        read_unqualified_d23_historical_roles(
+            &current,
+            &serialized,
+            &mut altered_timestamp,
+            &mut forbidden_snapshot
+        )
+        .unwrap_err(),
+        MetadataClientRefusal::RecordedRoleMismatch(TufRole::Timestamp)
+    );
+}
+
+#[test]
+fn d23_historical_snapshot_substitution_refuses_after_authentic_timestamp_bytes() {
+    let (current, serialized) = canonical_current(&generation());
+    assert_eq!(
+        read_unqualified_d23_historical_roles(
+            &current,
+            &serialized,
+            &mut Cursor::new(TIMESTAMP),
+            &mut Cursor::new(&b"Snapshot-envelope"[..])
+        )
+        .unwrap_err(),
+        MetadataClientRefusal::RecordedRoleMismatch(TufRole::Snapshot)
+    );
+}
+
+#[test]
+fn d23_nonready_history_refuses_before_old_role_reads() {
+    let mut incomplete = generation();
+    incomplete.phase = GenerationPhase::Roles;
+    let (current, serialized) = canonical_current(&incomplete);
+    let mut timestamp = FailOnRead;
+    let mut snapshot = FailOnRead;
+    assert_eq!(
+        read_unqualified_d23_historical_roles(&current, &serialized, &mut timestamp, &mut snapshot)
+            .unwrap_err(),
+        MetadataClientRefusal::RecordedGenerationNotReady
     );
 }

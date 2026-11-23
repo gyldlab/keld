@@ -74,6 +74,7 @@ pub(crate) enum MetadataClientRefusal {
     RoleExceedsCap(TufRole),
     RoleReadFailed(TufRole),
     RecordedGenerationNotReady,
+    RecordedGenerationMismatch,
     RecordedRoleMissing(TufRole),
     RecordedRoleMismatch(TufRole),
     TufClientNotQualified,
