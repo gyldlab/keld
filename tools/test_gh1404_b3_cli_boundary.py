@@ -14,7 +14,7 @@ import gh1404_b3_candidate_integrity as verifier
 class BoundaryTests(unittest.TestCase):
     def test_git_runs_with_global_no_replace_switch(self):
         with TemporaryDirectory() as directory, patch.object(verifier.subprocess, "run") as run:
-            verifier._git_run(Path(directory), "rev-parse", "HEAD", text=True)
+            verifier._git_run(Path(directory).resolve(strict=True), "rev-parse", "HEAD", text=True)
         command = run.call_args.args[0]
         self.assertEqual(command[:2], ["git", "--no-replace-objects"])
         self.assertEqual(command[-2:], ["rev-parse", "HEAD"])
