@@ -12,7 +12,7 @@ use rustix::fs::{Dir, Mode, OFlags, RenameFlags, openat, renameat_with};
 use sha2::Digest as _;
 
 use crate::{
-    MACOS_APP_RELATIVE_PATH, MACOS_BUN_RELATIVE_PATH, MACOS_HOST_EXECUTABLE, MACOS_LOCAL_TARGET,
+    MACOS_APP_RELATIVE_PATH, MACOS_BUN_RELATIVE_PATH, MACOS_HOST_EXECUTABLE, MacosBundleMetadata,
 };
 
 use super::capture::{
@@ -224,11 +224,11 @@ where
     let mut tools = BTreeMap::new();
     tools.insert(
         "host-build-commands",
-        verify_macho(&host_path, &input.metadata.minimum_system_version)?,
+        verify_macho(&host_path, &input.metadata)?,
     );
     tools.insert(
         "bun-build-commands",
-        verify_macho(&bun_path, &input.metadata.minimum_system_version)?,
+        verify_macho(&bun_path, &input.metadata)?,
     );
     let plist = input
         .metadata
@@ -411,7 +411,7 @@ fn write_receipt(
     let receipt = serde_json::json!({
         "schema": 1,
         "artifactClass": "local-adhoc",
-        "target": MACOS_LOCAL_TARGET,
+        "target": input.metadata.target,
         "application": { "id": input.metadata.app_id, "name": input.metadata.name, "declaredVersion": input.metadata.version, "declaredBundleVersion": input.metadata.bundle_version, "declaredMinimumSystemVersion": input.metadata.minimum_system_version },
         "inputHost": { "declaredVersion": input.host.version, "file": assembly.input_host },
         "inputBun": { "declaredVersion": input.bun.version, "file": assembly.input_bun },
@@ -423,7 +423,11 @@ fn write_receipt(
         "osVersion": os.stdout.trim(), "developerTools": developer_tools.stdout.trim(),
         "toolSha256": tool_digests, "nativeToolResults": assembly.tools,
         "versionQualification": "declared labels only; externally qualified input versions and original app/provider commits require independent evidence",
-        "installedWorkflowQualification": "required separately; assembly and copy checks do not establish application behavior"
+        "installedWorkflowQualification": if input.metadata.target == "macos-arm64" {
+            "required separately; assembly and copy checks do not establish application behavior"
+        } else {
+            "blocked: x64/universal installed admission is not implemented in Core; qualified signed runtime inputs, native Intel acceptance and release signing are unverified"
+        }
     });
     let receipt_bytes = serde_json::to_vec_pretty(&receipt)
         .map_err(|error| MacosPackError::new("artifact receipt", error))?;
@@ -497,47 +501,102 @@ fn version_tuple(value: &str) -> Result<[u32; 3], MacosPackError> {
     Ok(tuple)
 }
 
-fn verify_macho(path: &Path, configured_minimum: &str) -> Result<ToolOutput, MacosPackError> {
-    let architectures = run(
-        command("/usr/bin/xcrun").args(["lipo", "-archs"]).arg(path),
-        "input architecture",
-    )?;
-    if architectures.stdout.trim() != "arm64" {
+fn require_target_architectures(
+    observed: &str,
+    metadata: &MacosBundleMetadata,
+) -> Result<&'static [&'static str], MacosPackError> {
+    let required = metadata
+        .target_architectures()
+        .map_err(|error| MacosPackError::new("input architecture", error))?;
+    let actual: Vec<_> = observed.split_whitespace().collect();
+    if actual.len() != required.len()
+        || actual.iter().any(|arch| !required.contains(arch))
+        || required.iter().any(|arch| !actual.contains(arch))
+    {
         return Err(MacosPackError::new(
             "input architecture",
-            "first native cell accepts exactly arm64 Mach-O inputs",
+            "Host and Bun must contain exactly the selected architecture slices",
         ));
     }
-    let build = run(
-        command("/usr/bin/xcrun")
-            .args(["vtool", "-show-build"])
-            .arg(path),
-        "input deployment floor",
-    )?;
+    Ok(required)
+}
+
+/// The Intel Host may carry the old, macOS-specific LC_VERSION_MIN_MACOSX;
+/// modern Bun and ARM64 Host carry LC_BUILD_VERSION. One exact version command
+/// per selected slice is required before the configured deployment floor is admitted.
+fn verify_slice_deployment_floor(
+    output: &str,
+    arch: &str,
+    configured_minimum: &str,
+) -> Result<(), MacosPackError> {
+    let mut build_commands = 0;
+    let mut legacy_commands = 0;
     let mut platforms = Vec::new();
     let mut minimums = Vec::new();
-    for line in build.stdout.lines() {
+    let mut legacy_versions = Vec::new();
+    for line in output.lines() {
         let words: Vec<_> = line.split_whitespace().collect();
-        if let ["platform", platform] = words.as_slice() {
-            platforms.push(*platform);
-        }
-        if let ["minos", minimum] = words.as_slice() {
-            minimums.push(*minimum);
+        match words.as_slice() {
+            ["cmd", "LC_BUILD_VERSION"] => build_commands += 1,
+            ["cmd", "LC_VERSION_MIN_MACOSX"] => legacy_commands += 1,
+            ["platform", platform] => platforms.push(*platform),
+            ["minos", minimum] => minimums.push(*minimum),
+            ["version", version] => legacy_versions.push(*version),
+            _ => {}
         }
     }
-    if platforms.as_slice() != ["MACOS"] || minimums.len() != 1 {
-        return Err(MacosPackError::new(
-            "input deployment floor",
-            "input must declare one macOS LC_BUILD_VERSION floor",
-        ));
-    }
-    if version_tuple(configured_minimum)? < version_tuple(minimums[0])? {
+    let floor = match (build_commands, legacy_commands) {
+        (1, 0) if platforms.as_slice() == ["MACOS"] && minimums.len() == 1 => minimums[0],
+        (0, 1)
+            if arch == "x86_64"
+                && platforms.is_empty()
+                && minimums.is_empty()
+                && legacy_versions.len() == 1 =>
+        {
+            legacy_versions[0]
+        }
+        _ => {
+            return Err(MacosPackError::new(
+                "input deployment floor",
+                "each selected slice must declare one macOS deployment command",
+            ));
+        }
+    };
+    if version_tuple(configured_minimum)? < version_tuple(floor)? {
         return Err(MacosPackError::new(
             "input deployment floor",
             "minimumSystemVersion understates a pinned executable requirement",
         ));
     }
-    Ok(build)
+    Ok(())
+}
+
+fn verify_macho(path: &Path, metadata: &MacosBundleMetadata) -> Result<ToolOutput, MacosPackError> {
+    let architectures = run(
+        command("/usr/bin/xcrun").args(["lipo", "-archs"]).arg(path),
+        "input architecture",
+    )?;
+    let required = require_target_architectures(&architectures.stdout, metadata)?;
+    let mut result = ToolOutput {
+        stdout: format!(
+            "target={} architecture={}\n",
+            metadata.target,
+            architectures.stdout.trim()
+        ),
+        stderr: architectures.stderr,
+    };
+    for arch in required {
+        let build = run(
+            command("/usr/bin/xcrun")
+                .args(["vtool", "-arch", arch, "-show-build"])
+                .arg(path),
+            "input deployment floor",
+        )?;
+        verify_slice_deployment_floor(&build.stdout, arch, &metadata.minimum_system_version)?;
+        result.stdout.push_str(&build.stdout);
+        result.stderr.push_str(&build.stderr);
+    }
+    Ok(result)
 }
 
 fn verify_app(app: &Path) -> Result<ToolOutput, MacosPackError> {
@@ -1146,7 +1205,95 @@ fn verify_mounted_app(
 mod tests {
     use serde_json::json;
 
-    use super::{ToolOutput, attached_device, valid_disk_device, verify_signature_facts};
+    use super::{
+        ToolOutput, attached_device, require_target_architectures, valid_disk_device,
+        verify_signature_facts, verify_slice_deployment_floor,
+    };
+    use crate::MacosBundleMetadata;
+
+    fn target_metadata(target: &str) -> MacosBundleMetadata {
+        MacosBundleMetadata {
+            target: target.to_owned(),
+            app_id: "org.example.keld.test".into(),
+            name: "Keld Fixture".into(),
+            version: "1.2.3".into(),
+            bundle_version: "4".into(),
+            minimum_system_version: "14.0".into(),
+            icon: false,
+            bun_sha256: [0; 32],
+        }
+    }
+
+    #[test]
+    fn selected_target_refuses_missing_extra_and_repeated_slices() {
+        let arm = target_metadata("macos-arm64");
+        let intel = target_metadata("macos-x64");
+        let universal = target_metadata("macos-universal");
+        assert_eq!(
+            require_target_architectures("arm64\n", &arm).unwrap(),
+            ["arm64"]
+        );
+        assert_eq!(
+            require_target_architectures("x86_64\n", &intel).unwrap(),
+            ["x86_64"]
+        );
+        assert_eq!(
+            require_target_architectures("x86_64 arm64\n", &universal).unwrap(),
+            ["arm64", "x86_64"]
+        );
+        for (observed, selected) in [
+            ("arm64", &intel),
+            ("x86_64", &arm),
+            ("arm64", &universal),
+            ("x86_64", &universal),
+            ("arm64 x86_64", &arm),
+            ("arm64 arm64", &universal),
+            ("x86_64 x86_64", &universal),
+            ("x86_64 arm64 arm64", &universal),
+            ("arm64 ppc", &universal),
+        ] {
+            assert!(
+                require_target_architectures(observed, selected).is_err(),
+                "bad Host or Bun slice set admitted: {} / {}",
+                selected.target,
+                observed
+            );
+        }
+    }
+
+    #[test]
+    fn each_slice_requires_exact_supported_macos_deployment_floor() {
+        let modern =
+            "Load command 12\n cmd LC_BUILD_VERSION\n platform MACOS\n minos 13.0\n sdk 26.5\n";
+        let intel_legacy =
+            "Load command 9\n cmd LC_VERSION_MIN_MACOSX\n version 10.12\n sdk 26.2\n";
+        assert!(verify_slice_deployment_floor(modern, "arm64", "13.0").is_ok());
+        assert!(verify_slice_deployment_floor(modern, "x86_64", "14.0").is_ok());
+        assert!(verify_slice_deployment_floor(intel_legacy, "x86_64", "13.0").is_ok());
+        assert!(verify_slice_deployment_floor(modern, "arm64", "12.0").is_err());
+        assert!(verify_slice_deployment_floor(intel_legacy, "x86_64", "10.11").is_err());
+        assert!(verify_slice_deployment_floor(intel_legacy, "arm64", "14.0").is_err());
+        assert!(
+            verify_slice_deployment_floor(&modern.replace("MACOS", "IOS"), "arm64", "14.0")
+                .is_err()
+        );
+        assert!(
+            verify_slice_deployment_floor(
+                &format!("{modern}\n cmd LC_BUILD_VERSION\n platform MACOS\n minos 13.0"),
+                "arm64",
+                "14.0"
+            )
+            .is_err()
+        );
+        assert!(
+            verify_slice_deployment_floor(
+                &format!("{intel_legacy}\n cmd LC_BUILD_VERSION"),
+                "x86_64",
+                "14.0"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn attached_image_detach_identity_is_observed_and_does_not_accept_commands() {

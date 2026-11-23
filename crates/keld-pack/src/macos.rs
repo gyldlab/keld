@@ -3,7 +3,7 @@
 
 mod assemble;
 mod capture;
-#[cfg(all(test, target_arch = "aarch64"))]
+#[cfg(test)]
 mod tests;
 mod tool_output;
 
@@ -53,7 +53,7 @@ pub struct MacosGeneratedFile {
     pub bytes: Vec<u8>,
 }
 
-/// One native macOS-arm64, local ad-hoc packaging request.
+/// One closed-architecture native macOS local ad-hoc packaging request.
 #[derive(Debug)]
 pub struct MacosPackageInput {
     /// Canonical invocation directory; there is no ancestor project search.
@@ -150,7 +150,7 @@ pub fn validate_macos_executable_metadata(metadata: &Metadata) -> Result<(), Mac
 
 /// Assemble, sign, verify, construct and copy-check a local `.app` and DMG.
 ///
-/// Only native arm64 macOS is supported. Every candidate lives in one newly owned
+/// Native macOS assembles the exact pinned architecture set. Every candidate lives in one newly owned
 /// staging directory on the destination filesystem. An exclusive atomic directory
 /// rename publishes the complete output set; errors never overwrite an old output.
 ///
@@ -160,12 +160,6 @@ pub fn validate_macos_executable_metadata(metadata: &Metadata) -> Result<(), Mac
 pub fn produce_macos_local(
     input: &MacosPackageInput,
 ) -> Result<ProducedMacosLocal, MacosPackError> {
-    if !cfg!(target_arch = "aarch64") {
-        return Err(MacosPackError::new(
-            "target",
-            "macos-arm64 requires a native arm64 build host",
-        ));
-    }
     assemble::produce(input)
 }
 
@@ -190,11 +184,5 @@ where
     E: fmt::Display,
     F: FnOnce(&Path, &File, &[MacosCopiedMember]) -> Result<MacosGraphCompiled, E>,
 {
-    if !cfg!(target_arch = "aarch64") {
-        return Err(MacosPackError::new(
-            "target",
-            "macos-arm64 requires a native arm64 build host",
-        ));
-    }
     assemble::produce_with_graph(input, finalize)
 }

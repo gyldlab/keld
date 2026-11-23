@@ -59,6 +59,7 @@ pub(super) struct ExecutablePin {
 /// Exact local package selection. No paths are opened during parsing.
 #[derive(Debug)]
 pub(super) struct LocalBuildConfig {
+    pub(super) target: String,
     pub(super) bundle_version: String,
     pub(super) minimum_system_version: String,
     pub(super) icon: Option<String>,
@@ -376,8 +377,15 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
 pub(super) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> {
     let phase = "keld.build.ts";
     let mut root = fields(source, phase)?;
-    if required_text(&mut root, "target", phase)? != "macos-arm64" {
-        return Err(invalid(phase, "target must be exactly 'macos-arm64'"));
+    let target = required_text(&mut root, "target", phase)?;
+    if !matches!(
+        target.as_str(),
+        "macos-arm64" | "macos-x64" | "macos-universal"
+    ) {
+        return Err(invalid(
+            phase,
+            "target must be macos-arm64, macos-x64 or macos-universal",
+        ));
     }
     if required_text(&mut root, "signing", phase)? != "adhoc-local" {
         return Err(invalid(phase, "signing must be exactly 'adhoc-local'"));
@@ -393,6 +401,7 @@ pub(super) fn parse_build(source: &str) -> Result<LocalBuildConfig, BuildError> 
     let out_dir = PathBuf::from(required_text(&mut root, "outDir", phase)?);
     closed(&root, phase)?;
     Ok(LocalBuildConfig {
+        target,
         bundle_version,
         minimum_system_version,
         icon,
@@ -470,6 +479,7 @@ mod tests {
     #[test]
     fn build_fields_capture_exact_digest_and_refuse_bad_modes() {
         let parsed = parse_build(&build()).expect("valid build");
+        assert_eq!(parsed.target, "macos-arm64");
         assert_eq!(parsed.host.sha256, [0xaa; 32]);
         assert_eq!(parsed.bun.sha256, [0; 32]);
         assert_eq!(parsed.host.path, PathBuf::from("host"));
@@ -481,6 +491,12 @@ mod tests {
         assert_eq!(parsed.out_dir, PathBuf::from("output"));
         assert_eq!(parsed.icon, None);
         assert_eq!(parsed.resources.len(), 0);
+        for target in ["macos-x64", "macos-universal"] {
+            assert!(
+                parse_build(&build().replace("macos-arm64", target)).is_ok(),
+                "supported target {target} must parse as inert pinned input"
+            );
+        }
         for source in [
             build().replace("adhoc-local", "developer-id"),
             build().replace("macos-arm64", "windows-x64"),

@@ -26,6 +26,12 @@ fn fixture(root: &Path) -> MacosPackageInput {
     MacosPackageInput {
         project_root: fs::canonicalize(root).expect("canonical fixture root"),
         metadata: MacosBundleMetadata {
+            target: if cfg!(target_arch = "x86_64") {
+                "macos-x64"
+            } else {
+                "macos-arm64"
+            }
+            .to_owned(),
             app_id: "org.example.keld.localfixture".to_owned(),
             name: "Keld Fixture".to_owned(),
             version: "1.2.3".to_owned(),
@@ -423,17 +429,67 @@ fn run_tool(mut command: Command) {
     );
 }
 
-fn compile_fixture(root: &Path, name: &str) -> PathBuf {
+fn compile_fixture_for_arch(root: &Path, name: &str, arch: &str) -> PathBuf {
     let source = root.join("test-main.c");
     fs::write(&source, b"int main(void) { return 0; }\n").expect("native fixture source");
     let destination = root.join(name);
     let mut clang = Command::new("/usr/bin/xcrun");
     clang
-        .args(["clang", "-arch", "arm64", "-mmacosx-version-min=13.0", "-o"])
+        .args(["clang", "-arch", arch, "-mmacosx-version-min=13.0", "-o"])
         .arg(&destination)
         .arg(source);
     run_tool(clang);
     destination
+}
+
+fn compile_fixture(root: &Path, name: &str) -> PathBuf {
+    let native = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "arm64"
+    };
+    compile_fixture_for_arch(root, name, native)
+}
+
+#[test]
+fn wrong_host_or_bun_slice_refuses_before_artifact_publication() {
+    for mismatch in ["Host", "Bun"] {
+        let dir = TempDir::new().expect("temporary native project");
+        let mut request = fixture(dir.path());
+        request.metadata.target = "macos-x64".to_owned();
+        let host_arch = if mismatch == "Host" {
+            "arm64"
+        } else {
+            "x86_64"
+        };
+        let bun_arch = if mismatch == "Bun" { "arm64" } else { "x86_64" };
+        let host = compile_fixture_for_arch(&request.project_root, "host", host_arch);
+        let bun = compile_fixture_for_arch(&request.project_root, "bun", bun_arch);
+        let mut sign_bun = Command::new("/usr/bin/codesign");
+        sign_bun
+            .args(["--sign", "-", "--force", "--timestamp=none"])
+            .arg(&bun);
+        run_tool(sign_bun);
+        request.host.sha256 = digest_file(&host).expect("pinned Host");
+        request.bun.sha256 = digest_file(&bun).expect("pinned Bun");
+        request.metadata.bun_sha256 = request.bun.sha256;
+        let error = produce_macos_local(&request).expect_err("wrong slice must fail");
+        assert!(
+            error.to_string().contains("input architecture"),
+            "wrong {mismatch} failure: {error}"
+        );
+        assert!(!request.project_root.join("output").exists());
+    }
+}
+
+#[test]
+fn mismatched_sealed_bun_digest_refuses_before_capturing_any_runtime() {
+    let dir = TempDir::new().expect("temporary native project");
+    let mut request = fixture(dir.path());
+    request.metadata.bun_sha256 = [0x7f; 32];
+    let error = produce_macos_local(&request).expect_err("mismatched Bun pin");
+    assert!(error.to_string().contains("sealed Bun/icon facts"));
+    assert!(!request.project_root.join("output").exists());
 }
 
 #[test]

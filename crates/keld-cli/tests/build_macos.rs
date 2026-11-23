@@ -1,6 +1,6 @@
 //! Native CLI refusal controls for the first GH-1404 local packaging cell.
 
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(target_os = "macos")]
 #![allow(clippy::expect_used)] // Integration fixture setup failures must fail the test.
 
 use std::fs;
@@ -52,6 +52,24 @@ fn build(root: &Path) -> Output {
         .current_dir(root)
         .output()
         .expect("run native CLI")
+}
+
+#[test]
+fn closed_cli_target_and_inert_authoring_target_must_match_before_any_runtime_io() {
+    let mismatch = tempfile::tempdir().expect("isolated mismatched-target project");
+    write_inputs(mismatch.path());
+    let result = Command::new(env!("CARGO_BIN_EXE_keld"))
+        .args(["build", "--target", "macos-x64"])
+        .current_dir(mismatch.path())
+        .output()
+        .expect("native build CLI");
+    assert_eq!(result.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("command target and keld.build.ts target"),
+        "target disagreement must refuse: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!mismatch.path().join("output").exists());
 }
 
 fn refused_without_output(root: &Path, expected: &str) {

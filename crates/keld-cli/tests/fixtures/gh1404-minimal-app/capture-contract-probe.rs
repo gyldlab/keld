@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input = MacosPackageInput {
         project_root: project_root.clone(),
         metadata: MacosBundleMetadata {
+            target: "macos-arm64".into(),
             app_id: "dev.keld.gh1404.minimal".into(),
             name: "Keld GH1404 Minimal".into(),
             version: "0.0.1".into(),

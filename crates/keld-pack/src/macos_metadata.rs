@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
 
-/// Only target admitted by the initial local macOS package contract.
+/// Original supported local macOS target; retained for existing callers.
 pub const MACOS_LOCAL_TARGET: &str = "macos-arm64";
 /// Fixed main executable name recorded in the bundle metadata.
 pub const MACOS_HOST_EXECUTABLE: &str = "keld-host";
@@ -29,6 +29,8 @@ const XML_DOCTYPE: &str = "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\
 /// neither this codec nor a valid digest authenticates a publisher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacosBundleMetadata {
+    /// Exact sealed architecture selection. This record is not publisher authority.
+    pub target: String,
     /// Application identifier, subject to the existing canonical-ID predicate.
     pub app_id: String,
     /// User-visible application name.
@@ -76,6 +78,19 @@ fn invalid(detail: &'static str) -> MacosMetadataError {
 }
 
 impl MacosBundleMetadata {
+    /// Returns the complete required Mach-O architecture set for this sealed target.
+    ///
+    /// # Errors
+    /// Refuses any unknown target spelling without inferring one from the build host.
+    pub fn target_architectures(&self) -> Result<&'static [&'static str], MacosMetadataError> {
+        match self.target.as_str() {
+            "macos-arm64" => Ok(&["arm64"]),
+            "macos-x64" => Ok(&["x86_64"]),
+            "macos-universal" => Ok(&["arm64", "x86_64"]),
+            _ => Err(invalid("unsupported local macOS target")),
+        }
+    }
+
     /// Validates the representation owned by Apple's metadata fields.
     ///
     /// Canonical KELD application identity and executable deployment floors are
@@ -85,6 +100,7 @@ impl MacosBundleMetadata {
     ///
     /// Refuses invalid strings, Apple identifier characters or numeric versions.
     pub fn validate(&self) -> Result<(), MacosMetadataError> {
+        self.target_architectures()?;
         if !valid_text(&self.name, 255)
             || !valid_text(&self.app_id, 255)
             || !self
@@ -132,7 +148,7 @@ impl MacosBundleMetadata {
             emit_string(&mut xml, "CFBundleIconFile", "app.icns");
         }
         xml.push_str("<key>KELDLocalBundle</key><dict>\n<key>schema</key><integer>1</integer>\n");
-        emit_string(&mut xml, "target", MACOS_LOCAL_TARGET);
+        emit_string(&mut xml, "target", &self.target);
         let mut digest = String::with_capacity(64);
         for byte in &self.bun_sha256 {
             // Formatting into a String cannot fail.
@@ -181,11 +197,10 @@ impl MacosBundleMetadata {
                 "local bundle record is missing or is not a dictionary",
             ));
         };
-        if !matches!(local.remove("schema"), Some(Value::Integer(1)))
-            || take_text(&mut local, "target")? != MACOS_LOCAL_TARGET
-        {
+        if !matches!(local.remove("schema"), Some(Value::Integer(1))) {
             return Err(invalid("unsupported local schema or target"));
         }
+        let target = take_text(&mut local, "target")?;
         let bun_sha256 = parse_digest(&take_text(&mut local, "bunSha256")?)?;
         if !local.is_empty() {
             return Err(invalid("unknown local bundle field"));
@@ -196,6 +211,7 @@ impl MacosBundleMetadata {
             _ => return Err(invalid("icon must use the fixed app.icns resource")),
         };
         let metadata = Self {
+            target,
             app_id: take_text(&mut fields, "CFBundleIdentifier")?,
             name: take_text(&mut fields, "CFBundleName")?,
             version: take_text(&mut fields, "CFBundleShortVersionString")?,
@@ -401,6 +417,7 @@ mod tests {
 
     fn metadata() -> MacosBundleMetadata {
         MacosBundleMetadata {
+            target: "macos-arm64".to_owned(),
             app_id: "org.example.local".to_owned(),
             name: "A & B <Local> \"quoted\" 'name'".to_owned(),
             version: "1.2.3".to_owned(),
@@ -413,6 +430,40 @@ mod tests {
 
     fn encoded() -> String {
         String::from_utf8(metadata().to_plist().expect("valid fixture")).expect("UTF-8")
+    }
+
+    #[test]
+    fn target_metadata_requires_one_closed_architecture_set() {
+        for (target, expected) in [
+            ("macos-arm64", &["arm64"][..]),
+            ("macos-x64", &["x86_64"][..]),
+            ("macos-universal", &["arm64", "x86_64"][..]),
+        ] {
+            let mut fixture = metadata();
+            fixture.target = target.to_owned();
+            assert_eq!(fixture.target_architectures(), Ok(expected));
+            let encoded = fixture.to_plist().expect("supported target");
+            assert_eq!(MacosBundleMetadata::from_plist(&encoded), Ok(fixture));
+        }
+        for target in [
+            "",
+            "macos-arm",
+            "macos-universal2",
+            "macos-x86_64",
+            "windows-x64",
+        ] {
+            let mut fixture = metadata();
+            fixture.target = target.to_owned();
+            assert!(fixture.to_plist().is_err(), "invalid target {target}");
+            let forged = encoded().replace(
+                "<string>macos-arm64</string>",
+                &format!("<string>{target}</string>"),
+            );
+            assert!(
+                MacosBundleMetadata::from_plist(forged.as_bytes()).is_err(),
+                "forged target {target}"
+            );
+        }
     }
 
     #[test]
@@ -463,7 +514,10 @@ mod tests {
                 "<integer>1</integer>",
                 "<integer>18446744073709551616</integer>",
             ),
-            ("<string>macos-arm64</string>", "<string>macos-x64</string>"),
+            (
+                "<string>macos-arm64</string>",
+                "<string>macos-universal2</string>",
+            ),
             ("<string>keld-host</string>", "<string>../other</string>"),
             ("<string>APPL</string>", "<string>BNDL</string>"),
             ("<string>app.icns</string>", "<string>../icon.icns</string>"),
