@@ -177,7 +177,10 @@ function emittedSourceFacts(root: string): string[] {
 function buildMetadataProblems(selectedCommit: string, root = repo): string[] {
   const problems: string[] = [];
   for (const path of buildMetadataPaths) {
-    const selected = run(["git", "rev-parse", `${selectedCommit}:${path}`], root);
+    const selected = run(
+      ["git", "rev-parse", `${selectedCommit}:${path}`],
+      root,
+    );
     const head = run(["git", "rev-parse", `HEAD:${path}`], root);
     if (head !== selected) problems.push("build-metadata-head:" + path);
     const source = join(root, path);
@@ -264,7 +267,9 @@ function validateArchive(archive: string, extractedRoot: string): string[] {
 }
 
 test("unverified archive bytes are refused before tar and extraction", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-row6-archive-negative-"));
+  const scratch = mkdtempSync(
+    join(tmpdir(), "keld-gh1404-row6-archive-negative-"),
+  );
   try {
     const archive = join(scratch, apiArchiveName);
     const extraction = join(scratch, "extracted");
@@ -427,7 +432,10 @@ test("a different committed Git source HEAD cannot reuse the unchanged selected 
       mkdirSync(dirname(join(scratch, path)), { recursive: true });
       cpSync(join(repo, path), join(scratch, path));
     }
-    run(["git", "add", "packages/@keld/api/src", ...buildMetadataPaths], scratch);
+    run(
+      ["git", "add", "packages/@keld/api/src", ...buildMetadataPaths],
+      scratch,
+    );
     run(
       [
         "git",
