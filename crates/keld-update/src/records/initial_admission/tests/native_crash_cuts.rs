@@ -7,10 +7,53 @@
 
 use super::{anchor, assert_refuses, pointer, record};
 use crate::records::initial_admission::{
-    AdmissionInspection, InitialAdmissionPhase, decode_initial_admission_record,
-    decode_pending_repository_operation, encode_initial_admission_record,
-    encode_pending_repository_operation, inspect_initial_admission,
+    AdmissionInspection, InitialAdmissionPhase, PendingOperationKind,
+    decode_initial_admission_record, decode_pending_repository_operation,
+    encode_initial_admission_record, encode_pending_repository_operation,
+    inspect_initial_admission,
 };
+
+#[test]
+fn every_pointed_phase_refuses_a_foreign_d68_identity_before_classification() {
+    for phase in [
+        InitialAdmissionPhase::Admitted,
+        InitialAdmissionPhase::CreationArmed,
+        InitialAdmissionPhase::BootstrapOwned,
+        InitialAdmissionPhase::ProvenancePublished,
+        InitialAdmissionPhase::Complete,
+        InitialAdmissionPhase::Aborted,
+    ] {
+        let mut journal = record();
+        journal.phase = phase;
+        let matching = pointer(&journal);
+
+        let mut wrong_attempt = matching.clone();
+        wrong_attempt.attempt_id[0] ^= 1;
+        let mut wrong_repository = matching.clone();
+        wrong_repository.repository_id[0] ^= 1;
+        let mut wrong_owner = matching.clone();
+        wrong_owner.owner_sid = "S-1-5-21-100-200-300-1002".to_owned();
+        let mut wrong_app = matching.clone();
+        wrong_app.app_id = "com.gyldlab.other".to_owned();
+        let mut wrong_kind = matching;
+        wrong_kind.kind = PendingOperationKind::ManualRecovery;
+
+        for foreign in [
+            wrong_attempt,
+            wrong_repository,
+            wrong_owner,
+            wrong_app,
+            wrong_kind,
+        ] {
+            assert_refuses(inspect_initial_admission(
+                &anchor(),
+                Some(&journal),
+                Some(&foreign),
+                &[],
+            ));
+        }
+    }
+}
 
 #[test]
 fn every_d64_phase_cut_requires_the_exact_d68_pointer_or_a_terminal_diagnosis() {

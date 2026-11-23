@@ -237,18 +237,7 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
                 "journal or pending attempt differs from the exact frozen input",
             ));
         }
-        let expected_disposition = match phase {
-            InitialAdmissionPhase::Admitted => AdmissionInspection::AdmittedUnarmed,
-            InitialAdmissionPhase::CreationArmed => {
-                AdmissionInspection::CreationArmedOperatorDispositionRequired
-            }
-            InitialAdmissionPhase::BootstrapOwned | InitialAdmissionPhase::ProvenancePublished => {
-                AdmissionInspection::BoundRecoveryRequired
-            }
-            InitialAdmissionPhase::Complete | InitialAdmissionPhase::Aborted => {
-                AdmissionInspection::TerminalCoherenceProofRequired
-            }
-        };
+        let expected_disposition = phase.pointed_inspection();
         if disposition != expected_disposition {
             return Err(error(
                 "initial admission phase readback",
