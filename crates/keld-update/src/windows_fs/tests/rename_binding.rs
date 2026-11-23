@@ -12,7 +12,7 @@
 // once the source handle exists.
 
 use super::super::{
-    RecordSlot, before_rename_binding_pending, publish_new, replace_record_slot,
+    RecordSlot, before_rename_binding_pending, publish_new_record_file, replace_record_slot,
     set_before_rename_binding,
 };
 use super::support::{
@@ -38,7 +38,7 @@ fn publication_stays_bound_to_retained_parent_when_its_path_changes_mid_rename()
     let (_fixture, parent, original, moved, outside) =
         rename_fixture("prepared", "published", None);
     substitute_before_rename_binding(&original, &moved, &outside, "prepared");
-    let result = publish_new(&parent, "prepared", "published");
+    let result = publish_new_record_file(&parent, "prepared", "published");
     assert!(
         !before_rename_binding_pending(),
         "the mid-rename parent substitution must have run"

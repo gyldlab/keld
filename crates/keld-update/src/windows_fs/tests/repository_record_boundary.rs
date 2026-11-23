@@ -4,10 +4,12 @@
 // tests pin the narrower operations that WindowsFS currently permits; they do
 // not mint a repository writer, perform retirement or qualify D90's census.
 
-use super::super::{RecordSlot, publish_new, replace_record_slot};
-use super::support::retained_directory;
+use super::super::{RecordSlot, publish_new, publish_new_record_file, replace_record_slot};
+use super::support::{junction, retained_directory};
 use std::fs;
+use std::os::windows::fs::MetadataExt as _;
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
+use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
 /// The Rust type is exhaustive: adding any slot requires review of this
 /// activation-only contract before a new replacement target can compile.
@@ -59,7 +61,7 @@ fn absent_publication_never_replaces_existing_d64_or_d68_record() {
         let control = directory.join("absent-publication-control.json");
         assert!(!control.exists(), "control target starts absent");
         fs::write(&sibling, b"control record").expect("valid pending source fixture");
-        publish_new(&parent, &prepared, "absent-publication-control.json")
+        publish_new_record_file(&parent, &prepared, "absent-publication-control.json")
             .expect("the same retained parent and generated source can publish absent-only");
         assert_eq!(
             fs::read(&control).expect("positive native rename produced its target"),
@@ -70,7 +72,7 @@ fn absent_publication_never_replaces_existing_d64_or_d68_record() {
         fs::write(&prior, b"original durable record").expect("existing protected target fixture");
         fs::write(&sibling, b"new pending record").expect("pending publication fixture");
 
-        let refused = publish_new(&parent, &prepared, &target)
+        let refused = publish_new_record_file(&parent, &prepared, &target)
             .expect_err("native absent-target rename must refuse an existing destination");
         assert!(
             matches!(
@@ -136,4 +138,126 @@ fn repository_records_cannot_be_activation_replacement_sources() {
             b"unrelated activation state"
         );
     }
+}
+
+/// Independent native OS oracle: the pending name is a real directory or
+/// junction. Without the source-kind check, an absent target can be renamed
+/// into that protected record slot. The target must remain absent here.
+#[test]
+fn prepared_repository_record_never_publishes_directory_or_junction_source() {
+    for linked in [false, true] {
+        let fixture = tempfile::tempdir().expect("isolated native repository fixture");
+        let directory = fixture.path().join("repository");
+        fs::create_dir(&directory).expect("repository fixture parent");
+        let parent = retained_directory(&directory);
+        let prepared = format!("pending-{}", "7c".repeat(32));
+        let source = directory.join(&prepared);
+        let target = directory.join("pending-operation.json");
+        let outside = fixture.path().join("outside");
+        fs::create_dir(&outside).expect("independent junction target");
+        fs::write(outside.join("sentinel"), b"unrelated target data")
+            .expect("independent outside data");
+        if linked {
+            junction(&source, &outside);
+            assert_ne!(
+                fs::symlink_metadata(&source)
+                    .expect("native junction metadata")
+                    .file_attributes()
+                    & FILE_ATTRIBUTE_REPARSE_POINT,
+                0,
+                "the negative source must be a real Windows reparse point"
+            );
+        } else {
+            fs::create_dir(&source).expect("native directory source");
+            assert!(
+                fs::symlink_metadata(&source)
+                    .expect("native directory metadata")
+                    .is_dir()
+            );
+        }
+
+        let refused = publish_new_record_file(&parent, &prepared, "pending-operation.json")
+            .expect_err("a nonregular source cannot be published as a D68 pointer");
+        assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported);
+        assert!(source.exists(), "rejected source must remain named");
+        assert!(!target.exists(), "no protected pointer may be created");
+        assert_eq!(
+            fs::read(outside.join("sentinel")).expect("independent data remains"),
+            b"unrelated target data"
+        );
+        if linked {
+            let denied = publish_new(&parent, &prepared, "published-version")
+                .expect_err("even directory publication must reject a reparse entry");
+            assert_eq!(denied.kind(), std::io::ErrorKind::Unsupported);
+            assert!(!directory.join("published-version").exists());
+        }
+        drop(parent);
+        if linked {
+            fs::remove_dir(&source).expect("remove only the fixture junction");
+        }
+    }
+}
+
+#[test]
+fn real_completed_version_directory_still_publishes_under_retained_parent() {
+    let fixture = tempfile::tempdir().expect("real version directory fixture");
+    let parent = retained_directory(fixture.path());
+    let staged = fixture.path().join("incomplete-version");
+    fs::create_dir(&staged).expect("create completed stage directory");
+    fs::write(staged.join("content"), b"protected package bytes")
+        .expect("stage content stays inside the source");
+
+    publish_new(&parent, "incomplete-version", "1.0.0")
+        .expect("native directory publication must remain supported");
+    assert!(!staged.exists(), "source directory name was consumed");
+    assert_eq!(
+        fs::read(fixture.path().join("1.0.0").join("content"))
+            .expect("published version still contains the original bytes"),
+        b"protected package bytes"
+    );
+}
+
+#[test]
+fn replacement_must_not_promote_reparse_source_to_activation_record() {
+    let fixture = tempfile::tempdir().expect("isolated native replacement fixture");
+    let parent = retained_directory(fixture.path());
+    let pending = format!("pending-{}", "48".repeat(32));
+    let source = fixture.path().join(&pending);
+    let outside = fixture.path().join("outside");
+    fs::create_dir(&outside).expect("independent junction target");
+    fs::write(outside.join("sentinel"), b"preserve").expect("outside marker");
+    junction(&source, &outside);
+    assert_ne!(
+        fs::symlink_metadata(&source)
+            .expect("native junction metadata")
+            .file_attributes()
+            & FILE_ATTRIBUTE_REPARSE_POINT,
+        0
+    );
+    let target = fixture.path().join(RecordSlot::Journal.leaf());
+    assert!(!target.exists());
+
+    let refused = replace_record_slot(&parent, &pending, RecordSlot::Journal)
+        .expect_err("replacement cannot install a junction as the activation journal");
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        fs::symlink_metadata(&source).is_ok(),
+        "junction remains named"
+    );
+    assert!(!target.exists(), "activation journal remains absent");
+    assert_eq!(
+        fs::read(outside.join("sentinel")).expect("outside data stays intact"),
+        b"preserve"
+    );
+
+    drop(parent);
+    fs::remove_dir(&source).expect("remove only the fixture junction");
+    fs::write(&source, b"real prepared record").expect("regular source control");
+    let parent = retained_directory(fixture.path());
+    replace_record_slot(&parent, &pending, RecordSlot::Journal)
+        .expect("regular pending record can still replace its exact slot");
+    assert_eq!(
+        fs::read(&target).expect("positive control published the record"),
+        b"real prepared record"
+    );
 }

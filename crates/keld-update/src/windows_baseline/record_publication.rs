@@ -6,7 +6,7 @@
 use super::{error, random_leaf_name, read_record};
 use crate::UpdateError;
 use crate::windows_extraction::ensure_regular;
-use crate::windows_fs::{create_file_relative_with_profile, publish_new};
+use crate::windows_fs::{create_file_relative_with_profile, publish_new_record_file};
 use cap_std::fs::{Dir, File as CapFile};
 use std::io;
 use std::io::Write as _;
@@ -118,7 +118,7 @@ pub(super) fn publish_prepared_record(
         .into_std_file();
     let leaf = match target {
         RecordTarget::Absent(leaf) => {
-            publish_new(&retained_parent, temporary, leaf)
+            publish_new_record_file(&retained_parent, temporary, leaf)
                 .map_err(|cause| error("record publication", cause))?;
             leaf
         }

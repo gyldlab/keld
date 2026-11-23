@@ -1159,7 +1159,7 @@ impl Transaction {
             .try_clone()
             .map_err(|cause| self.fault("journal removal", cause))?
             .into_std_file();
-        crate::windows_fs::publish_new(&parent, JOURNAL, &removed)
+        crate::windows_fs::publish_new_record_file(&parent, JOURNAL, &removed)
             .map_err(|cause| self.fault("journal removal", cause))?;
         self.journaled = false;
         observe(true, "journal-removed");

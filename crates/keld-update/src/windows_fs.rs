@@ -220,12 +220,23 @@ impl RecordSlot {
     }
 }
 
-/// Publishes to an absent sibling under the retained parent HANDLE.
+/// Publishes a directory to an absent sibling under the retained parent HANDLE.
 ///
-/// Unlike a pathname reconstructed from the parent, the source and destination
-/// remain bound to the retained directory even if its live reparse data changes.
+/// This path is for completed version trees and retirement directories. The
+/// source must itself be a real directory, never a reparse entry or file.
 pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io::Result<()> {
-    rename_relative(parent, source, destination, false)
+    rename_relative(parent, source, destination, false, EntryKind::Directory)
+}
+
+/// Publishes a regular protected record to an absent sibling under the same
+/// retained parent. A directory or reparse entry cannot become a journal,
+/// pointer, marker or completion record.
+pub(crate) fn publish_new_record_file(
+    parent: &File,
+    source: &str,
+    destination: &str,
+) -> io::Result<()> {
+    rename_relative(parent, source, destination, false, EntryKind::File)
 }
 
 /// Replaces one fixed activation record slot with a prepared same-parent sibling.
@@ -240,7 +251,7 @@ pub(crate) fn replace_record_slot(parent: &File, source: &str, slot: RecordSlot)
             "replacement source must be a generated pending record sibling",
         ));
     }
-    rename_relative(parent, source, slot.leaf(), true)
+    rename_relative(parent, source, slot.leaf(), true, EntryKind::File)
 }
 
 /// Atomically renames one entry under one retained parent, with no ambient path
@@ -258,6 +269,7 @@ fn rename_relative(
     source: &str,
     destination: &str,
     replace: bool,
+    expected_kind: EntryKind,
 ) -> io::Result<()> {
     if source.eq_ignore_ascii_case(destination) {
         return Err(unsupported(
@@ -276,6 +288,14 @@ fn rename_relative(
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "publication source is absent")
             })?;
+    // The relative open deliberately observes a reparse point as itself.
+    // Require the exact native source kind for the selected operation. A
+    // directory is valid for version publication, but not for record files.
+    if source.kind() != expected_kind {
+        return Err(unsupported(
+            "relative publication source has the wrong native kind or is a reparse point",
+        ));
+    }
 
     // FILE_RENAME_INFORMATION has a trailing, variable-length UTF-16 name. Allocate
     // at least its full struct size, plus the validated name and a terminator.

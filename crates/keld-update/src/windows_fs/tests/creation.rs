@@ -2,7 +2,7 @@
 
 use super::super::{
     create_directory_relative, create_file_relative_exclusive_with_profile,
-    duplicate_activation_lease_for_keeper, publish_new,
+    duplicate_activation_lease_for_keeper, publish_new_record_file,
 };
 use super::support::{
     assert_rename_stayed_in_retained_parent, rename_fixture, substitute_parent_spelling,
@@ -87,7 +87,7 @@ fn sibling_publication_never_replaces_or_copies() {
         .expect("retain publication parent");
     std::fs::write(fixture.path().join("pending"), b"verified bytes").expect("source");
     std::fs::write(fixture.path().join("existing"), b"existing sentinel").expect("target");
-    assert!(publish_new(&parent, "pending", "existing").is_err());
+    assert!(publish_new_record_file(&parent, "pending", "existing").is_err());
     assert_eq!(
         std::fs::read(fixture.path().join("existing")).expect("sentinel"),
         b"existing sentinel"
@@ -98,11 +98,11 @@ fn sibling_publication_never_replaces_or_copies() {
     );
     for destination in ["../outside", "a/b", "a\\b", "pending", "PENDING"] {
         assert!(
-            publish_new(&parent, "pending", destination).is_err(),
+            publish_new_record_file(&parent, "pending", destination).is_err(),
             "{destination}"
         );
     }
-    publish_new(&parent, "pending", "published").expect("absent sibling publication");
+    publish_new_record_file(&parent, "pending", "published").expect("absent sibling publication");
     assert!(!fixture.path().join("pending").exists());
     assert_eq!(
         std::fs::read(fixture.path().join("published")).expect("published bytes"),
@@ -188,7 +188,7 @@ fn live_reparse_parent_cannot_redirect_absent_publication() {
         .expect("ambient rename reaches outside");
     assert!(outside.join("ambient-moved").is_file());
 
-    let result = super::super::publish_new(&parent, "prepared", "published");
+    let result = super::super::publish_new_record_file(&parent, "prepared", "published");
     let outside_source = std::fs::read(outside.join("prepared"));
     let outside_target = std::fs::read(outside.join("published"));
     clear_mount_point_on_open_directory(&hostile);
@@ -291,7 +291,7 @@ fn replaced_spelling_with_pinned_source(
 fn publication_uses_pinned_source_and_destination_after_parent_path_substitution() {
     let (_fixture, parent, original, moved, outside) =
         replaced_spelling_with_pinned_source("prepared", "published", None);
-    publish_new(&parent, "prepared", "published")
+    publish_new_record_file(&parent, "prepared", "published")
         .expect("publish real source into retained parent despite hostile pathname");
     assert_rename_stayed_in_retained_parent(&moved, &outside, "prepared", "published");
     drop(parent);
