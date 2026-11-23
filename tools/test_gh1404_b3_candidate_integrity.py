@@ -27,6 +27,14 @@ verifier = importlib.util.module_from_spec(VERIFIER_SPEC)
 VERIFIER_SPEC.loader.exec_module(verifier)
 
 
+def fixture_git_env():
+    """Do not let the parent shell redirect disposable fixture Git commands."""
+    return {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+
+
 def packed(name, version, dependencies, extras=None):
     files = {
         "package.json": (json.dumps({
@@ -774,7 +782,9 @@ class CandidateIntegrityTest(unittest.TestCase):
             ["git", "-C", str(checkout), "checkout", "--detach", SELECTED],
         ]
         for command in commands:
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                command, env=fixture_git_env(), capture_output=True, text=True, check=False,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
         self.source = checkout
 
@@ -1147,7 +1157,9 @@ sys.exit(git.returncode)
 
     def test_accepts_matching_explicit_archive_directory_and_counts_entries(self):
         self._add_archive_directory("api", "empty")
-        (self.project / "node_modules/@keld/api/empty").mkdir()
+        empty = self.project / "node_modules/@keld/api/empty"
+        empty.mkdir()
+        empty.chmod(0o755)
         receipt = json.loads(self.check(True).stdout)
         api = next(row for row in receipt["packages"] if row["name"] == "@keld/api")
         self.assertEqual(api["memberCount"], 3)
@@ -1161,7 +1173,7 @@ sys.exit(git.returncode)
         ):
             immutable = subprocess.run(
                 ["git", "-C", str(SOURCE), "show", SELECTED + ":" + path],
-                check=True, capture_output=True,
+                env=fixture_git_env(), check=True, capture_output=True,
             ).stdout
             self.assertEqual(receipt[field], hashlib.sha256(immutable).hexdigest())
 
@@ -1288,8 +1300,10 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
             path.write_bytes(content)
 
             def run_git(*argv):
-                done = subprocess.run(["git", *argv], capture_output=True,
-                                      text=True, check=False)
+                done = subprocess.run(
+                    ["git", *argv], env=fixture_git_env(), capture_output=True,
+                    text=True, check=False,
+                )
                 self.assertEqual(done.returncode, 0, done.stderr)
                 return done.stdout.strip()
 
@@ -1324,57 +1338,25 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
                 verifier.selected_source_packages_unchanged(source, selected)
             self.assertFalse(marker.exists(), "dirty-source check ran untrusted clean filter")
 
-    def test_repository_external_diff_helper_cannot_run_during_source_check(self):
-        # Git can run local diff.external during `git diff --quiet` when the
-        # repository enables diff.trustExitCode. The verifier must not execute
-        # such a helper, even when changed committed provider source is refused.
-        with tempfile.TemporaryDirectory(
-            prefix="gh1404-b3-git-external-diff-",
-            dir=os.path.realpath(tempfile.gettempdir()),
-        ) as temporary:
-            parent = Path(temporary)
-            source = parent / "source"
-            source.mkdir()
-            helper = parent / "external-diff.sh"
-            witness = parent / "diff-external-executed"
-            helper.write_text("#!/bin/sh\necho invoked > " + str(witness) + "\nexit 1\n")
-            helper.chmod(0o700)
+    def test_source_admission_disables_external_diff_helper(self):
+        selected = "a" * 40
+        source = mock.sentinel.source
+        refusal = ValueError("diff rejected")
+        with (
+            mock.patch.object(verifier, "require_pinned_git_worktree"),
+            mock.patch.object(verifier, "git", side_effect=["", "", refusal]) as git,
+            mock.patch.object(verifier, "selected_source_packages_unchanged") as census,
+            self.assertRaisesRegex(ValueError, "diff rejected"),
+        ):
+            verifier._validate_owned(source, selected, mock.sentinel.candidate, mock.sentinel.repro)
 
-            def run_git(*argv):
-                done = subprocess.run(["git", *argv], capture_output=True,
-                                      text=True, check=False)
-                self.assertEqual(done.returncode, 0, done.stderr)
-                return done.stdout.strip()
-
-            run_git("init", "-q", str(source))
-            run_git("-C", str(source), "config", "maintenance.auto", "false")
-            path = source / "packages/@keld/check.txt"
-            path.parent.mkdir(parents=True)
-            path.write_text("selected original\n")
-            run_git("-C", str(source), "add", "packages/@keld/check.txt")
-            commit = ["-c", "user.name=B3 fixture", "-c", "user.email=b3@example.invalid",
-                      "-c", "commit.gpgsign=false", "commit", "-qm"]
-            run_git("-C", str(source), *commit, "selected")
-            selected = run_git("-C", str(source), "rev-parse", "HEAD")
-            path.write_text("different committed source\n")
-            run_git("-C", str(source), "add", "packages/@keld/check.txt")
-            run_git("-C", str(source), *commit, "changed")
-            run_git("-C", str(source), "config", "diff.external", str(helper))
-            run_git("-C", str(source), "config", "diff.trustExitCode", "true")
-            # The ordinary Git invocation can execute this configured helper.
-            uncontrolled = verifier._git_run(
-                source, "diff", "--quiet", selected, "HEAD", "--", "packages/@keld",
-                text=True,
-            )
-            self.assertNotEqual(uncontrolled.returncode, 0)
-            if witness.exists():
-                witness.unlink()
-            # The actual admission check must refuse changed source without
-            # executing the helper. A clean source is checked by other tests.
-            with verifier.RootCustody(source, "source root") as pinned:
-                with self.assertRaisesRegex(ValueError, "source Git identity or tree mismatch"):
-                    verifier._validate_owned(pinned, selected, pinned, pinned)
-            self.assertFalse(witness.exists(), "external Git diff helper executed")
+        self.assertEqual(git.call_args_list, [
+            mock.call(source, "rev-parse", "--verify", selected + "^{commit}"),
+            mock.call(source, "merge-base", "--is-ancestor", selected, "HEAD"),
+            mock.call(source, "diff", "--no-ext-diff", "--quiet", selected, "HEAD",
+                      "--", "packages/@keld"),
+        ])
+        census.assert_not_called()
 
     def test_rebound_git_worktree_alias_cannot_hide_extra_physical_source(self):
         with tempfile.TemporaryDirectory(
@@ -1391,8 +1373,10 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
             file.write_text('{"name":"@keld/api","version":"0.0.1"}\n')
 
             def run_git(*args):
-                done = subprocess.run(["git", *args], capture_output=True,
-                                      text=True, check=False)
+                done = subprocess.run(
+                    ["git", *args], env=fixture_git_env(), capture_output=True,
+                    text=True, check=False,
+                )
                 self.assertEqual(done.returncode, 0, done.stderr)
                 return done.stdout.strip()
 
@@ -1435,7 +1419,7 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
 
             def run_git(*argv):
                 completed = subprocess.run(
-                    ["git", *argv], capture_output=True, text=True, check=False,
+                    ["git", *argv], env=fixture_git_env(), capture_output=True, text=True, check=False,
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 return completed.stdout.strip()
@@ -1471,15 +1455,15 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
             helper.write_text("#!/bin/sh\necho invoked > " + str(witness) + "\nexit 0\n")
             helper.chmod(0o700)
             init = subprocess.run(["git", "init", "-q", str(source)],
-                                  capture_output=True, text=True, check=False)
+                                  env=fixture_git_env(), capture_output=True, text=True, check=False)
             self.assertEqual(init.returncode, 0, init.stderr)
             subprocess.run(
                 ["git", "-C", str(source), "config", "maintenance.auto", "false"],
-                capture_output=True, text=True, check=True,
+                env=fixture_git_env(), capture_output=True, text=True, check=True,
             )
             config = subprocess.run(
                 ["git", "-C", str(source), "config", "core.fsmonitor", str(helper)],
-                capture_output=True, text=True, check=False,
+                env=fixture_git_env(), capture_output=True, text=True, check=False,
             )
             self.assertEqual(config.returncode, 0, config.stderr)
             (source / "payload.txt").write_text("uncommitted input\n")
@@ -1494,10 +1478,7 @@ class GitEnvironmentIsolationTest(unittest.TestCase):
             source = Path(temporary) / "source"
             clean = Path(temporary) / "clean-foreign"
             source.mkdir()
-            baseline_env = {
-                key: value for key, value in os.environ.items()
-                if not key.startswith("GIT_")
-            }
+            baseline_env = fixture_git_env()
 
             def run_git(*args):
                 result = subprocess.run(
