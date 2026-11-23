@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::thread::{self, ThreadId};
 
 use super::repository_census::RepositoryLedgerCensus;
+use super::repository_metadata::RepositoryWriterLease;
 use super::{Roots, error, initialize};
 use crate::UpdateError;
 use crate::metadata_client::ReadyRevision;
@@ -85,6 +86,7 @@ trait NativeInitialAdmissionIssuer {
 pub(super) struct WindowsInitialInstallPermit<'lease> {
     worker: ThreadId,
     issuer: &'lease mut dyn NativeInitialAdmissionIssuer,
+    repository_lease: &'lease RepositoryWriterLease<'lease>,
     ready_revision: &'lease ReadyRevision,
     repository_census: &'lease RepositoryLedgerCensus,
     // Keep the permit on the admitted worker even if the future witness type
@@ -100,6 +102,7 @@ pub(super) struct WindowsInitialInstallPermit<'lease> {
 pub(super) struct CreationArmedEffectGate<'lease> {
     worker: ThreadId,
     issuer: &'lease mut dyn NativeInitialAdmissionIssuer,
+    repository_lease: &'lease RepositoryWriterLease<'lease>,
     ready_revision: &'lease ReadyRevision,
     repository_census: &'lease RepositoryLedgerCensus,
     _worker_only: PhantomData<Rc<()>>,
@@ -120,12 +123,14 @@ impl<'lease> WindowsInitialInstallPermit<'lease> {
                 "actual worker changed before admission journal publication",
             ));
         }
+        self.repository_lease.revalidate()?;
         self.issuer
             .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;
         self.issuer.publish_and_read_back_creation_armed()?;
         Ok(CreationArmedEffectGate {
             worker: self.worker,
             issuer: self.issuer,
+            repository_lease: self.repository_lease,
             ready_revision: self.ready_revision,
             repository_census: self.repository_census,
             _worker_only: self._worker_only,
@@ -153,6 +158,7 @@ impl CreationArmedEffectGate<'_> {
                 "actual worker changed before first protected effect",
             ));
         }
+        self.repository_lease.revalidate()?;
         self.issuer
             .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;
         self.issuer.require_durable_creation_armed()?;
@@ -163,6 +169,7 @@ impl CreationArmedEffectGate<'_> {
         // deadline, and retained source *again* after journal/root I/O. No
         // issuer callback, refresh, or application dispatch follows this last
         // recheck before the KEL-53 writer makes its first protected create.
+        self.repository_lease.revalidate()?;
         self.issuer
             .revalidate_under_repository_lease(self.ready_revision, self.repository_census)?;
         let lock = initialize::acquire_bootstrap_lock(roots)?;

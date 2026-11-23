@@ -12,6 +12,7 @@
 //! fallback is added here.
 
 use super::initial_admission_journal::InitialAdmissionJournalIo;
+use super::locate::ObjectIdentity;
 use super::record_publication::read_optional_record;
 use super::repository_census::RepositoryLedgerCensus;
 use super::repository_member_diagnostics::{
@@ -26,11 +27,129 @@ use crate::records::{
     decode_metadata_current, decode_metadata_generation, encode_metadata_anchor,
     encode_metadata_current, encode_metadata_generation,
 };
-use cap_std::fs::Dir;
+use crate::windows_extraction::ensure_regular;
+use cap_fs_ext::{FollowSymlinks, MetadataExt as _, OpenOptionsFollowExt as _};
+use cap_std::fs::{Dir, File, OpenOptions, OpenOptionsExt as _};
 use sha2::{Digest as _, Sha256};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_READ_ATTRIBUTES, FILE_READ_DATA, READ_CONTROL, SYNCHRONIZE,
+};
 
 const CURRENT: &str = "current.json";
 const PENDING_OPERATION: &str = "pending-operation.json";
+// T-82 review candidate: D-44 has not yet commissioned this exact leaf or
+// its creator. This open-only adapter does not create the persistent lease.
+const REPOSITORY_LEASE: &str = "repository.lock";
+
+/// An opened, owned, exclusive native file beneath one retained D-44 repository.
+///
+/// The handle is not a D-90 completeness witness, metadata grant or D-46
+/// installer permit. This constructor CAN open a different physical root
+/// supplied by its caller. The future D-44 owner must independently authenticate
+/// LocalAppData, repository ID, app, captured SID and every root namespace
+/// before using this handle for any effect. The unissued D-90 witness
+/// prevents the constructor from becoming installation authority.
+#[derive(Debug)]
+pub(super) struct RepositoryWriterLease<'repository> {
+    pub(super) repository: &'repository Dir,
+    pub(super) expected: &'repository RepositoryAnchor,
+    handle: File,
+    repository_object: ObjectIdentity,
+    lease_object: ObjectIdentity,
+}
+
+impl<'repository> RepositoryWriterLease<'repository> {
+    /// Opens an ALREADY provisioned fixed lock. Missing, linked, misprotected
+    /// or busy objects refuse. A different authentic-looking physical root
+    /// is NOT refused here: D-44 still owns that independent identity proof.
+    /// This never creates or repairs a lock.
+    pub(super) fn open_existing(
+        repository: &'repository Dir,
+        expected: &'repository RepositoryAnchor,
+    ) -> Result<Self, UpdateError> {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .access_mode(FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+            .share_mode(0)
+            .follow(FollowSymlinks::No);
+        let handle = repository
+            .open_with(REPOSITORY_LEASE, &options)
+            .map_err(|cause| error("repository metadata lease", cause))?;
+        let repository_object = ObjectIdentity::of_dir(repository)
+            .map_err(|cause| error("repository metadata lease root identity", cause))?;
+        let lease_object = ObjectIdentity::of_cap_file(&handle)
+            .map_err(|cause| error("repository metadata lease file identity", cause))?;
+        let lease = Self {
+            repository,
+            expected,
+            handle,
+            repository_object,
+            lease_object,
+        };
+        lease.revalidate()?;
+        Ok(lease)
+    }
+
+    /// Rechecks the SAME pinned file and parent. The OS's sharing contract
+    /// excludes data writers but not attribute-only access or reparse mutation.
+    pub(super) fn revalidate(&self) -> Result<(), UpdateError> {
+        let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
+        let retained_parent = self
+            .repository
+            .try_clone()
+            .map_err(|cause| error("repository metadata lease parent", cause))?
+            .into_std_file();
+        crate::windows_fs::qualify_volume(&retained_parent)
+            .map_err(|cause| error("repository metadata lease volume", cause))?;
+        keld_guard::validate_windows_install_directory(&retained_parent, profile)
+            .map_err(|cause| error("repository metadata lease parent", cause))?;
+        let actual_root = ObjectIdentity::of_dir(self.repository)
+            .map_err(|cause| error("repository metadata lease root identity", cause))?;
+        if actual_root != self.repository_object {
+            return Err(error(
+                "repository metadata lease root identity",
+                "retained repository root changed physical file or volume identity",
+            ));
+        }
+        let metadata = self
+            .handle
+            .metadata()
+            .map_err(|cause| error("repository metadata lease kind", cause))?;
+        ensure_regular(&metadata)
+            .map_err(|cause| error("repository metadata lease kind", cause))?;
+        let actual_file = ObjectIdentity::of_cap_file(&self.handle)
+            .map_err(|cause| error("repository metadata lease file identity", cause))?;
+        if actual_file != self.lease_object {
+            return Err(error(
+                "repository metadata lease file identity",
+                "retained repository lock changed physical file or volume identity",
+            ));
+        }
+        if metadata.len() != 0
+            || metadata.dev()
+                != self
+                    .repository
+                    .dir_metadata()
+                    .map_err(|cause| error("repository metadata lease volume", cause))?
+                    .dev()
+        {
+            return Err(error(
+                "repository metadata lease identity",
+                "repository lock must be empty and on the pinned parent volume",
+            ));
+        }
+        keld_guard::validate_windows_install_file(
+            &self
+                .handle
+                .try_clone()
+                .map_err(|cause| error("repository metadata lease handle", cause))?
+                .into_std(),
+            profile,
+        )
+        .map_err(|cause| error("repository metadata lease protection", cause))
+    }
+}
 
 /// Classification of pinned, canonical metadata bytes, without a TUF grant.
 #[derive(Debug)]
@@ -78,6 +197,7 @@ pub(super) enum NativeRepositoryRestart {
 /// The owner must have pinned and checked acquisition ancestry, no-reparse,
 /// volume, actual captured SID, DACL and fixed NTFS before constructing this.
 pub(super) struct RepositoryMetadataIo<'lease> {
+    lease: &'lease RepositoryWriterLease<'lease>,
     enrollments: &'lease Dir,
     repository: &'lease Dir,
     generations: &'lease Dir,
@@ -118,23 +238,22 @@ impl<'lease> RepositoryMetadataIo<'lease> {
     /// cannot be constructed by a production caller before T-82 qualification.
     pub(super) const fn new(
         enrollments: &'lease Dir,
-        repository: &'lease Dir,
         generations: &'lease Dir,
         operations: &RetainedOperationParents<'lease>,
-        expected: &'lease RepositoryAnchor,
+        lease: &'lease RepositoryWriterLease<'lease>,
         eligibility: &'lease RepositoryLedgerCensus,
-        profile: keld_guard::WindowsInstallProtectionProfile,
     ) -> Self {
         Self {
+            lease,
             enrollments,
-            repository,
+            repository: lease.repository,
             generations,
             admissions: operations.admissions,
             recoveries: operations.recoveries,
             transitions: operations.transitions,
-            expected,
+            expected: lease.expected,
             eligibility,
-            profile,
+            profile: keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
         }
     }
 
@@ -142,13 +261,11 @@ impl<'lease> RepositoryMetadataIo<'lease> {
     /// D-90 witness and repository parent. No successful result grants launch.
     pub(super) fn inspect_restart(&self) -> Result<NativeRepositoryRestart, UpdateError> {
         let journal = InitialAdmissionJournalIo::new(
-            self.repository,
+            self.lease,
             self.admissions,
             self.recoveries,
             self.transitions,
-            self.expected,
             self.eligibility,
-            self.profile,
         );
         if let Some((record, disposition)) = journal.inspect_pointed_attempt()? {
             return Ok(NativeRepositoryRestart::InitialAdmission {
@@ -435,6 +552,7 @@ impl<'lease> RepositoryMetadataIo<'lease> {
     }
 
     fn require_no_pending(&self) -> Result<(), UpdateError> {
+        self.lease.revalidate()?;
         // Even without a published D-68 pointer, a flushed pending-* sibling
         // at the retained repository root belongs to an interrupted writer.
         require_no_repository_pending_siblings(self.repository)?;

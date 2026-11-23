@@ -14,6 +14,7 @@ use super::repository_census::RepositoryLedgerCensus;
 use super::repository_member_diagnostics::{
     require_no_repository_pending_siblings, require_only_pointed_repository_member,
 };
+use super::repository_metadata::RepositoryWriterLease;
 use super::{error, publish_new_record};
 use crate::UpdateError;
 use crate::error::hex_digest;
@@ -34,6 +35,7 @@ const PENDING_OPERATION: &str = "pending-operation.json";
 /// wrapper. The witness has no constructor until its complete native producer
 /// is qualified, so this code currently cannot publish a journal.
 pub(super) struct InitialAdmissionJournalIo<'lease> {
+    lease: &'lease RepositoryWriterLease<'lease>,
     repository: &'lease Dir,
     admissions: &'lease Dir,
     recoveries: &'lease Dir,
@@ -47,28 +49,28 @@ impl<'lease> InitialAdmissionJournalIo<'lease> {
     /// Attaches to handles authenticated by the repository owner under its lease.
     /// The unforgeable D-90 witness must remain borrowed through every I/O call.
     pub(super) const fn new(
-        repository: &'lease Dir,
+        lease: &'lease RepositoryWriterLease<'lease>,
         admissions: &'lease Dir,
         recoveries: &'lease Dir,
         transitions: &'lease Dir,
-        anchor: &'lease RepositoryAnchor,
         eligibility: &'lease RepositoryLedgerCensus,
-        profile: keld_guard::WindowsInstallProtectionProfile,
     ) -> Self {
         Self {
-            repository,
+            lease,
+            repository: lease.repository,
             admissions,
             recoveries,
             transitions,
-            anchor,
+            anchor: lease.expected,
             _eligibility: eligibility,
-            profile,
+            profile: keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
         }
     }
 
     /// Reads the exact protected pointer, refusing malformed or foreign bytes.
     /// Absence is only an observation; the caller must perform D-90 census.
     pub(super) fn read_pending(&self) -> Result<Option<PendingRepositoryOperation>, UpdateError> {
+        self.lease.revalidate()?;
         // A crash before the absent-target D-68 publication leaves only the
         // prepared sibling in this same retained parent. Refuse to misread
         // that state as a fresh repository or an ordinary metadata restart.

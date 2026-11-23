@@ -669,6 +669,7 @@ fn require_typed_admission_witnesses(source: &str) -> Result<(), &'static str> {
     for name in ["WindowsInitialInstallPermit", "CreationArmedEffectGate"] {
         let members = code(fields(source, name)?);
         for typed in [
+            "repository_lease: &'lease RepositoryWriterLease",
             "ready_revision: &'lease ReadyRevision",
             "repository_census: &'lease RepositoryLedgerCensus",
         ] {
@@ -685,15 +686,20 @@ fn require_typed_admission_witnesses(source: &str) -> Result<(), &'static str> {
             "Ok(CreationArmedEffectGate {",
             "worker: self.worker,",
             "issuer: self.issuer,",
+            "repository_lease: self.repository_lease,",
             "ready_revision: self.ready_revision,",
             "repository_census: self.repository_census,",
             "_worker_only: self._worker_only,",
         ],
     )?;
     if journal
-        .matches("ready_revision: self.ready_revision")
+        .matches("repository_lease: self.repository_lease")
         .count()
         != 1
+        || journal
+            .matches("ready_revision: self.ready_revision")
+            .count()
+            != 1
         || journal
             .matches("repository_census: self.repository_census")
             .count()
