@@ -6,7 +6,12 @@ not code.** This is the Rspack/Rolldown lesson applied to desktop (see
 "Median" is defined and measured, not vibed: we maintain a corpus of open-source
 Electron apps and publish per-app compat scores.
 
-## 1. The developer experience (the whole flow)
+## 1. The developer experience (future workflow)
+
+This entire example is a design target, not a sequence supported by the current
+CLI. The `migrate` command and automatic Electron alias setup are not live;
+the signed-installer and delta-update workflow shown here is also deferred.
+See §3 for the narrow build that is available now.
 
 ```bash
 cd my-electron-app
@@ -98,8 +103,10 @@ export default defineConfig({
 crate version, not an Electron release) and `process.type` is `"browser"`
 in this main-process package. The Electron `app` facade delegates to
 `@keld/api`'s singleton lifecycle link, which uses `@keld/kipc`'s
-Worker-owned transport; the shim does not open a second link. Bundler-side
-alias (`keld build`) is deferred because `keld build` is not live.
+Worker-owned transport; the shim does not open a second link. The current CLI
+supports the narrow `keld build --target macos-arm64` path for admitted inputs.
+It does not provide the Electron/bundler alias, production signing, or
+delta-update workflow in §1; those features remain deferred.
 
 Match (scoreboard ✔): with no `window-all-closed` listener, a host
 `LastWindowClosed` event quits the app — Electron's documented default
