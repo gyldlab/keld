@@ -24,6 +24,7 @@ import {
   checkPullRequestTargetWorkflow,
   checkWindowsMediaOracle,
   checkWorkflowSecurity,
+  checkCommittedWorkflowSnapshot,
   checkRustToolchainPins,
   codeqlLanguages,
   codeqlRoute,
@@ -334,6 +335,183 @@ function check(f: Fixture): void {
 
 test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
+});
+
+test("KEL-270 B-82 refuses shell startup and unreviewed hygiene context", () => {
+  const evidenceName = "KEL-270 definition evidence (read-only)";
+  const malicious = "./tools/attacker-init.sh";
+  const mutations: Array<[string, (workflow: Fixture) => void]> = [
+    [
+      "hygiene job BASH_ENV",
+      (workflow) => {
+        workflow.jobs.hygiene!.env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "evidence step BASH_ENV",
+      (workflow) => {
+        step(workflow, "hygiene", evidenceName).env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "hygiene job PATH",
+      (workflow) => {
+        workflow.jobs.hygiene!.env = { PATH: "attacker-bin" };
+      },
+    ],
+    [
+      "evidence step PATH",
+      (workflow) => {
+        step(workflow, "hygiene", evidenceName).env = { PATH: "attacker-bin" };
+      },
+    ],
+    [
+      "hygiene job skipped",
+      (workflow) => {
+        workflow.jobs.hygiene!.if = false;
+      },
+    ],
+    [
+      "hygiene checkout startup env",
+      (workflow) => {
+        workflow.jobs.hygiene!.steps[0]!.env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "hygiene Rust installer startup env",
+      (workflow) => {
+        workflow.jobs.hygiene!.steps[1]!.env = { BASH_ENV: malicious };
+      },
+    ],
+    [
+      "unreviewed Rust installer component",
+      (workflow) => {
+        (workflow.jobs.hygiene!.steps[1]!.with as Step).components =
+          "rustfmt, clippy, attacker";
+      },
+    ],
+  ];
+  expect(() => check(fixture())).not.toThrow();
+  for (const [label, mutate] of mutations) {
+    const workflow = fixture();
+    mutate(workflow);
+    expect(() => check(workflow), label).toThrow("KEL-270 B-82 hygiene");
+  }
+});
+
+test("KEL-270 B-82 rejects a modified evidence script before it can run", () => {
+  const name = "KEL-270 definition evidence (read-only)";
+  const original = String(step(fixture(), "hygiene", name).run);
+  for (const injected of [
+    "bash tools/attacker-init.sh\n" + original,
+    "exit 0\n" + original,
+    original + "\nexit 0",
+    original.replace("set -euo pipefail", "set +e"),
+  ]) {
+    expect(injected).not.toBe(original);
+    const f = fixture();
+    step(f, "hygiene", name).run = injected;
+    expect(() => check(f)).toThrow("KEL-270 B-82 hygiene");
+  }
+});
+
+test("KEL-270 B-82 preserves equivalent routing and the canonical Rust pin owner", () => {
+  const withList = fixture();
+  withList.jobs.hygiene!.needs = ["changes"];
+  expect(() => check(withList)).not.toThrow();
+
+  // The semantic B-82 checker does not own the exact Rust version; the
+  // separate canonical toolchain checker must reject a divergent installer.
+  const updated = fixture();
+  const sourceToolchain = Bun.TOML.parse(selectedRustToolchain) as {
+    toolchain: { channel: string };
+  };
+  const nextToolchain = sourceToolchain.toolchain.channel.replace(
+    /\.(\d+)$/,
+    (_, patch: string) => `.${Number(patch) + 1}`,
+  );
+  expect(nextToolchain).not.toBe(sourceToolchain.toolchain.channel);
+  const hygieneInstaller = updated.jobs.hygiene!.steps[1]!;
+  (hygieneInstaller.with as Step).toolchain = nextToolchain;
+  const yaml = Bun.YAML.stringify(updated, null, 2);
+  expect(() => checkWorkflowSecurity(yaml)).not.toThrow();
+  expect(() => checkRustToolchainPins(yaml, selectedRustToolchain)).toThrow();
+});
+
+test("KEL-270 B-82 refuses a restored checkout that hides a hostile committed workflow", () => {
+  const root = mkdtempSync(join(tmpdir(), "keld270-committed-ci-"));
+  const path = join(root, ".github/workflows/ci.yml");
+  const git = (...args: string[]) => {
+    const out = Bun.spawnSync([
+      "git",
+      "-C",
+      root,
+      "-c",
+      "maintenance.auto=false",
+      ...args,
+    ]);
+    expect(out.exitCode).toBe(0);
+    return new TextDecoder().decode(out.stdout).trim();
+  };
+  const commit = (message: string) => {
+    git("add", "--", ".github/workflows/ci.yml");
+    git(
+      "-c",
+      "user.name=B-82 contract test",
+      "-c",
+      "user.email=kel270@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      message,
+    );
+    return git("rev-parse", "HEAD");
+  };
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    git("init", "-q", "--object-format=sha1");
+    git("config", "maintenance.auto", "false");
+    writeFileSync(path, source);
+    const approved = commit("Original reviewed workflow");
+    expect(() =>
+      checkCommittedWorkflowSnapshot(root, approved, source),
+    ).not.toThrow();
+
+    const modified = fixture();
+    const evidence = step(
+      modified,
+      "hygiene",
+      "KEL-270 definition evidence (read-only)",
+    );
+    evidence.run =
+      'echo "UNREVIEWED PRE-EVIDENCE CODE"\n' + String(evidence.run);
+    const hostileBytes = Bun.YAML.stringify(modified, null, 2);
+    writeFileSync(path, hostileBytes);
+    const hostileCommit = commit("Hostile evidence step");
+    expect(hostileCommit).not.toBe(approved);
+
+    // The hostile step has run; it now restores original bytes before the
+    // later Bun and Rust validators read the mutable checkout.
+    writeFileSync(path, source);
+    expect(() =>
+      checkWorkflowSecurity(readFileSync(path, "utf8")),
+    ).not.toThrow();
+    expect(() =>
+      checkCommittedWorkflowSnapshot(root, hostileCommit, source),
+    ).toThrow("CI workflow checkout differs from exact Git event commit");
+    expect(() =>
+      checkCommittedWorkflowSnapshot(root, approved, source),
+    ).toThrow("CI workflow checkout differs from exact Git event commit");
+
+    // An unrestored hostile committed source must fail the exact B-82 program
+    // hash, not be admitted just because its shell and step name match.
+    expect(() =>
+      checkCommittedWorkflowSnapshot(root, hostileCommit, hostileBytes),
+    ).toThrow("KEL-270 B-82 hygiene");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Linux and Windows native acceptance tests print cargo failure output", () => {
@@ -3052,10 +3230,18 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
     ]);
     expect(compilation.exitCode).toBe(0);
     // The CLI must use the same verified Bun executable as this test process.
+    const inheritedPath =
+      Object.entries(process.env).find(
+        ([key]) => key.toLowerCase() === "path",
+      )?.[1] ?? "";
     const runtimeEnv = {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => key.toLowerCase() !== "path",
+        ),
+      ),
       KELD_CI_BASE_REF: "HEAD",
-      PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+      PATH: `${dirname(process.execPath)}${delimiter}${inheritedPath}`,
     };
     const run = (yaml: string, env = runtimeEnv) => {
       phase = `semantic CLI invocation ${++cliInvocations}`;
