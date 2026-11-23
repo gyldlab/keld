@@ -5,6 +5,8 @@
 //! retained no-follow handles and repeated handoff checks detect substitution.
 //! An ad-hoc outer signature is not a publisher identity or a durable store.
 
+mod macho;
+
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
 use std::io;
@@ -311,12 +313,6 @@ impl ValidatedMacLocalBundle {
     /// Every fixed root is opened without following symlinks, and Bun bytes
     /// must equal the digest in the sealed Info.plist.
     pub(super) fn from_current_process() -> Result<Self, HostAppError> {
-        if !cfg!(target_arch = "aarch64") {
-            return Err(admission_error(
-                "local bundle target",
-                "the first local macOS artifact admits only an arm64 Host process",
-            ));
-        }
         let signing = verified_current_local_bundle_signing_info()
             .map_err(|error| admission_error("current local code signature", error))?;
         verify_running_bundle_location(&signing)?;
@@ -337,6 +333,7 @@ impl ValidatedMacLocalBundle {
         }
         let (info, metadata) =
             read_sealed_local_metadata(&contents, &resources, &bun, &signing.signing_identifier)?;
+        macho::admit_bundle_architectures(&host, &bun, &metadata)?;
         let (boot, boot_bytes, parsed, policy, entry) =
             read_installed_local_boot_files(&app, &metadata)?;
         let original_graph_entry = parsed
