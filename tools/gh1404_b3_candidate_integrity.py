@@ -495,6 +495,7 @@ class BoundedTarInfo(tarfile.TarInfo):
         # Metadata pseudoheaders are supported only in the producer formats
         # independently exercised by the first-party npm and PAX/GNU tests.
         physical_header = bytes(raw[header_start:header_start + 512])
+        require(physical_header, "archive incomplete tar end marker")
         require(len(physical_header) == 512, "archive incomplete raw tar header")
         if not any(physical_header):
             archive._b3_end_header = header_start
