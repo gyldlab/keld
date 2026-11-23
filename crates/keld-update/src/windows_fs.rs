@@ -283,9 +283,9 @@ fn rename_relative(
     // while any child is open, so after that open the parent cannot be substituted.
     #[cfg(test)]
     run_before_rename_binding();
-    // The rename source needs DELETE, READ_ATTRIBUTES and READ_CONTROL, not
-    // data writes. Admit's FILE_SHARE_READ denies new write/delete openers
-    // while its native kind is checked and the exact handle is renamed.
+    // Keep data-write and delete opens excluded while renaming this handle.
+    // Windows sharing does not exclude attribute-only access, so this is not
+    // proof of immutable metadata or independent repository authority.
     let source =
         open_units_for_delete_with_options(parent, source_name, DeletePurpose::Admit, true)?
             .ok_or_else(|| {
@@ -338,6 +338,12 @@ fn rename_relative(
             ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
             destination_name.len(),
         );
+    }
+    // Recheck the live source, not its cached classification. This detects a
+    // changed kind before the syscall; it is not an atomic metadata fence.
+    // The protected owner and its lease must still exclude unauthorized effects.
+    if entry_kind(source.file())? != expected_kind {
+        return Err(unsupported("relative publication source kind changed"));
     }
     // SAFETY: source is the live DELETE-access synchronous file handle opened
     // without following a reparse point relative to parent. NtSetInformationFile
@@ -399,8 +405,8 @@ fn run_before_rename_binding() {
 
 #[cfg(test)]
 thread_local! {
-    /// One-shot probe after an authenticated source kind and before the native
-    /// rename; a second writer cannot acquire attributes while this handle lives.
+    /// One-shot probe after source-kind observation and before native rename.
+    /// Data-write and delete access must remain excluded on the retained handle.
     static AFTER_RENAME_SOURCE_KIND: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }

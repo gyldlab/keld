@@ -8,17 +8,20 @@ use super::super::{
     RecordSlot, publish_new, publish_new_record_file, replace_record_slot,
     set_after_rename_source_kind,
 };
-use super::support::{junction, retained_directory};
+use super::support::{
+    clear_mount_point_on_open_directory, junction, retained_directory,
+    set_mount_point_on_open_directory,
+};
 use std::cell::Cell;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::rc::Rc;
 use windows_sys::Win32::Foundation::{
     ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_SHARING_VIOLATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_WRITE_ATTRIBUTES,
+    DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
 };
 
 /// The Rust type is exhaustive: adding any slot requires review of this
@@ -246,12 +249,11 @@ fn directory_publication_refuses_a_regular_file_as_a_version_tree() {
     );
 }
 
-/// A source-kind check without write-sharing exclusion would be stale by the
-/// time NtSetInformationFile uses the original handle. Mutation: change the
-/// source open from Admit to Remove. The concurrent FILE_WRITE_ATTRIBUTES
-/// opener succeeds and this test becomes RED at the actual OS sharing result.
+/// The retained source excludes concurrent data-write and delete opens, but
+/// Windows sharing is not an attribute-only access fence. Changing the source
+/// open from Admit to Remove makes the data-write/delete controls fail.
 #[test]
-fn native_record_source_remains_write_exclusive_after_kind_validation() {
+fn native_record_source_excludes_data_writes_and_delete_during_rename() {
     let fixture = tempfile::tempdir().expect("native rename source custody fixture");
     let parent = retained_directory(fixture.path());
     let source = fixture.path().join("pending-verified-record");
@@ -261,16 +263,25 @@ fn native_record_source_remains_write_exclusive_after_kind_validation() {
     let saw_open = Rc::clone(&observed);
     let attacked_source = source.clone();
     set_after_rename_source_kind(move || {
-        let denied = OpenOptions::new()
+        for access in [FILE_WRITE_DATA, DELETE] {
+            let denied = OpenOptions::new()
+                .access_mode(access)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .open(&attacked_source)
+                .expect_err("source handle must exclude concurrent data-write/delete access");
+            assert_eq!(
+                denied.raw_os_error(),
+                Some(ERROR_SHARING_VIOLATION.cast_signed()),
+                "the actual OS share check must deny conflicting access"
+            );
+        }
+        // Attribute-only access is explicitly outside the sharing guarantee.
+        let attributes = OpenOptions::new()
             .access_mode(FILE_WRITE_ATTRIBUTES)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .open(&attacked_source)
-            .expect_err("source handle must deny a concurrent metadata writer");
-        assert_eq!(
-            denied.raw_os_error(),
-            Some(ERROR_SHARING_VIOLATION.cast_signed()),
-            "the actual OS share check must deny metadata mutation during the kind-to-rename cut"
-        );
+            .expect("attribute-only access is not a share-mode conflict");
+        drop(attributes);
         saw_open.set(true);
     });
     publish_new_record_file(&parent, "pending-verified-record", "published-record")
@@ -284,10 +295,55 @@ fn native_record_source_remains_write_exclusive_after_kind_validation() {
         b"verified record bytes"
     );
     let _after = OpenOptions::new()
-        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .access_mode(FILE_WRITE_DATA)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(&target)
-        .expect("the same test-owned file allows attribute writes after rename and handle drop");
+        .expect("the same test-owned file allows data-write access after handle drop");
+}
+
+/// An attribute-only opener can set a junction after the first kind check.
+/// The live recheck must refuse before rename. Removing the recheck exposes
+/// this exact cut; this does not prove an atomic fence for later mutations.
+#[test]
+fn directory_publication_refuses_kind_changed_after_initial_observation() {
+    let fixture = tempfile::tempdir().expect("native kind-recheck fixture");
+    let parent = retained_directory(fixture.path());
+    let source = fixture.path().join("incomplete-version");
+    let target = fixture.path().join("1.0.0");
+    let outside = fixture.path().join("outside");
+    fs::create_dir(&source).expect("empty real directory before admission");
+    fs::create_dir(&outside).expect("independent target directory");
+    fs::write(outside.join("sentinel"), b"preserve").expect("independent bytes");
+
+    let captured = Rc::new(Cell::new(None::<File>));
+    let retained = Rc::clone(&captured);
+    let attacked_source = source.clone();
+    let junction_target = outside.clone();
+    set_after_rename_source_kind(move || {
+        let attributes = OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&attacked_source)
+            .expect("attribute-only access remains possible during rename");
+        set_mount_point_on_open_directory(&attributes, &junction_target);
+        retained.set(Some(attributes));
+    });
+
+    let result = publish_new(&parent, "incomplete-version", "1.0.0");
+    // Clear the test-owned mount point through the exact retained handle before
+    // asserting the result, even if a mutant incorrectly renamed the directory.
+    let attributes = captured.take().expect("native kind-change probe ran");
+    clear_mount_point_on_open_directory(&attributes);
+    drop(attributes);
+    let error = result.expect_err("the live source kind changed before publication");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(source.is_dir(), "original directory name remains present");
+    assert!(!target.exists(), "no version name may be published");
+    assert_eq!(
+        fs::read(outside.join("sentinel")).expect("independent bytes remain"),
+        b"preserve"
+    );
 }
 
 #[test]
