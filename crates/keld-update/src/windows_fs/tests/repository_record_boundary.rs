@@ -4,12 +4,22 @@
 // tests pin the narrower operations that WindowsFS currently permits; they do
 // not mint a repository writer, perform retirement or qualify D90's census.
 
-use super::super::{RecordSlot, publish_new, publish_new_record_file, replace_record_slot};
+use super::super::{
+    RecordSlot, publish_new, publish_new_record_file, replace_record_slot,
+    set_after_rename_source_kind,
+};
 use super::support::{junction, retained_directory};
-use std::fs;
-use std::os::windows::fs::MetadataExt as _;
-use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
-use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+use std::cell::Cell;
+use std::fs::{self, OpenOptions};
+use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+use std::rc::Rc;
+use windows_sys::Win32::Foundation::{
+    ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_SHARING_VIOLATION,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_ATTRIBUTES,
+};
 
 /// The Rust type is exhaustive: adding any slot requires review of this
 /// activation-only contract before a new replacement target can compile.
@@ -215,6 +225,69 @@ fn real_completed_version_directory_still_publishes_under_retained_parent() {
             .expect("published version still contains the original bytes"),
         b"protected package bytes"
     );
+}
+
+#[test]
+fn directory_publication_refuses_a_regular_file_as_a_version_tree() {
+    let fixture = tempfile::tempdir().expect("real directory-type refusal fixture");
+    let parent = retained_directory(fixture.path());
+    let source = fixture.path().join("incomplete-version");
+    let target = fixture.path().join("1.0.0");
+    fs::write(&source, b"ordinary file not a version tree")
+        .expect("create real file where directory is required");
+
+    let error = publish_new(&parent, "incomplete-version", "1.0.0")
+        .expect_err("a file cannot enter the protected version-directory namespace");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(!target.exists());
+    assert_eq!(
+        fs::read(source).expect("preserve unrelated file"),
+        b"ordinary file not a version tree"
+    );
+}
+
+/// A source-kind check without write-sharing exclusion would be stale by the
+/// time NtSetInformationFile uses the original handle. Mutation: change the
+/// source open from Admit to Remove. The concurrent FILE_WRITE_ATTRIBUTES
+/// opener succeeds and this test becomes RED at the actual OS sharing result.
+#[test]
+fn native_record_source_remains_write_exclusive_after_kind_validation() {
+    let fixture = tempfile::tempdir().expect("native rename source custody fixture");
+    let parent = retained_directory(fixture.path());
+    let source = fixture.path().join("pending-verified-record");
+    let target = fixture.path().join("published-record");
+    fs::write(&source, b"verified record bytes").expect("one real prepared record");
+    let observed = Rc::new(Cell::new(false));
+    let saw_open = Rc::clone(&observed);
+    let attacked_source = source.clone();
+    set_after_rename_source_kind(move || {
+        let denied = OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&attacked_source)
+            .expect_err("source handle must deny a concurrent metadata writer");
+        assert_eq!(
+            denied.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION.cast_signed()),
+            "the actual OS share check must deny metadata mutation during the kind-to-rename cut"
+        );
+        saw_open.set(true);
+    });
+    publish_new_record_file(&parent, "pending-verified-record", "published-record")
+        .expect("the original pinned record remains publishable");
+    assert!(
+        observed.get(),
+        "the probe ran while the source handle was retained"
+    );
+    assert_eq!(
+        fs::read(&target).expect("read the published record"),
+        b"verified record bytes"
+    );
+    let _after = OpenOptions::new()
+        .access_mode(FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(&target)
+        .expect("the same test-owned file allows attribute writes after rename and handle drop");
 }
 
 #[test]

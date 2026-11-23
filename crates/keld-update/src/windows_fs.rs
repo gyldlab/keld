@@ -283,8 +283,11 @@ fn rename_relative(
     // while any child is open, so after that open the parent cannot be substituted.
     #[cfg(test)]
     run_before_rename_binding();
+    // The rename source needs DELETE, READ_ATTRIBUTES and READ_CONTROL, not
+    // data writes. Admit's FILE_SHARE_READ denies new write/delete openers
+    // while its native kind is checked and the exact handle is renamed.
     let source =
-        open_units_for_delete_with_options(parent, source_name, DeletePurpose::Remove, true)?
+        open_units_for_delete_with_options(parent, source_name, DeletePurpose::Admit, true)?
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "publication source is absent")
             })?;
@@ -296,6 +299,8 @@ fn rename_relative(
             "relative publication source has the wrong native kind or is a reparse point",
         ));
     }
+    #[cfg(test)]
+    run_after_rename_source_kind();
 
     // FILE_RENAME_INFORMATION has a trailing, variable-length UTF-16 name. Allocate
     // at least its full struct size, plus the validated name and a terminator.
@@ -387,6 +392,27 @@ fn before_rename_binding_pending() -> bool {
 #[cfg(test)]
 fn run_before_rename_binding() {
     let action = BEFORE_RENAME_BINDING.with(|slot| slot.borrow_mut().take());
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// One-shot probe after an authenticated source kind and before the native
+    /// rename; a second writer cannot acquire attributes while this handle lives.
+    static AFTER_RENAME_SOURCE_KIND: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_after_rename_source_kind(action: impl FnOnce() + 'static) {
+    AFTER_RENAME_SOURCE_KIND.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn run_after_rename_source_kind() {
+    let action = AFTER_RENAME_SOURCE_KIND.with(|slot| slot.borrow_mut().take());
     if let Some(action) = action {
         action();
     }
