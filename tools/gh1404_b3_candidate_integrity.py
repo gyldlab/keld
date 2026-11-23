@@ -457,15 +457,31 @@ class BoundedTarInfo(tarfile.TarInfo):
 
     @classmethod
     def fromtarfile(cls, archive):
-        # TarInfo._proc_pax calls fromtarfile recursively without returning
-        # PAX records to TarFile iteration, so member_count alone is insufficient.
+        # Older tarfile versions dispatch both initial and nested reads here.
+        # Patched versions delegate to _fromtarfile, including nested reads.
+        if not hasattr(tarfile.TarInfo, "_fromtarfile"):
+            cls.observe_header(archive)
+        return super().fromtarfile(archive)
+
+    @classmethod
+    def _fromtarfile(cls, archive, *, dircheck=True):
+        cls.observe_header(archive)
+        return super()._fromtarfile(archive, dircheck=dircheck)
+
+    @staticmethod
+    def observe_header(archive):
+        # PAX records are not returned to TarFile iteration, so the visible
+        # member count alone does not account for physical headers.
         # Permit one final read for the TAR end marker.
         count = getattr(archive, "_b3_physical_header_reads", 0) + 1
         require(count <= MAX_MEMBERS + 1,
                 "archive physical tar headers outside bound")
         archive._b3_physical_header_reads = count
-        raw = archive.fileobj.getbuffer()
+        raw = archive.fileobj.getvalue()
         header_start = archive.fileobj.tell()
+        require(header_start == getattr(archive, "_b3_next_header", 0) and
+                getattr(archive, "_b3_end_header", None) is None,
+                "archive physical tar header observations are discontinuous")
         kind = bytes(raw[header_start + 156:header_start + 157])
         # Python's GNU sparse reader consumes arbitrary 512-byte extension
         # blocks without calling fromtarfile; malformed ones can raise
@@ -479,9 +495,10 @@ class BoundedTarInfo(tarfile.TarInfo):
         # Metadata pseudoheaders are supported only in the producer formats
         # independently exercised by the first-party npm and PAX/GNU tests.
         physical_header = bytes(raw[header_start:header_start + 512])
+        require(len(physical_header) == 512, "archive incomplete raw tar header")
+        if not any(physical_header):
+            archive._b3_end_header = header_start
         if any(physical_header):
-            require(len(physical_header) == 512,
-                    "archive incomplete raw tar header")
             require(not any(physical_header[500:512]),
                     "archive raw tar header reserved bytes nonzero")
             for field in (physical_header[:100], physical_header[345:500]):
@@ -490,6 +507,10 @@ class BoundedTarInfo(tarfile.TarInfo):
                         "archive raw tar member name padding nonzero")
             physical_member = tarfile.TarInfo.frombuf(
                 physical_header, archive.encoding, archive.errors)
+            require(physical_member.size >= 0, "archive invalid raw tar member size")
+            archive._b3_next_header = (
+                header_start + 512 + ((physical_member.size + 511) // 512) * 512
+            )
             physical_path = physical_member.name
             if kind in pax_types:
                 npm_pax = kind == tarfile.XHDTYPE and physical_path.startswith("PaxHeader/")
@@ -615,7 +636,6 @@ class BoundedTarInfo(tarfile.TarInfo):
                 nul = payload.find(b"\x00")
                 require(nul < 0 or not any(payload[nul + 1:]),
                         "archive GNU longname hidden bytes")
-        return super().fromtarfile(archive)
 
 
 def archive_members(data, label):
@@ -683,6 +703,8 @@ def archive_members(data, label):
             require(len(content) == member.size, label + ": truncated archive member")
             total += len(content)
             files[relative] = (content, member.mode & 0o777)
+    require(getattr(archive, "_b3_end_header", None) == archive.offset,
+            label + ": archive physical tar end header was not observed")
     require(archive.offset + 1024 <= len(tar_bytes) and
             tar_bytes[archive.offset:archive.offset + 1024] == bytes(1024),
             label + ": incomplete tar end marker")
