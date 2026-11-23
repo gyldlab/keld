@@ -742,7 +742,38 @@ fn per_user_baseline_initialization_is_provenance_last_at_every_crash_cut() {
         let error =
             initialize_windows_per_user_baseline(&support::baseline(&per_user), &source, &per_user)
                 .expect_err("interrupted or committed baseline cannot be automatically reseeded");
-        assert!(matches!(error, UpdateError::Baseline { .. }));
+        assert!(matches!(&error, UpdateError::Baseline { .. }));
+        if cut == BaselineBoundary::LockCreated {
+            // The original child has exited and released its native handles.
+            // Its unjournaled bootstrap object still exists on the correct
+            // owner-private scaffold. Valid DACL, a zero-length lock, and
+            // absence of a committed provenance record do not prove a new
+            // creator or permit cleanup of the orphan by filename.
+            let update = &per_user.installation.update_root;
+            let orphan = update.join("bootstrap.lock");
+            assert_user_file(&orphan);
+            assert!(
+                fs::read(&orphan)
+                    .expect("orphan bootstrap bytes")
+                    .is_empty(),
+                "the orphan is a real zero-length lock, not creator provenance"
+            );
+            assert!(
+                matches!(
+                    &error,
+                    UpdateError::Baseline {
+                        step: "fresh update",
+                        ..
+                    }
+                ),
+                "the next owner must reject the retained orphan before effects: {error}"
+            );
+            assert!(orphan.is_file(), "replay cannot delete the orphan by name");
+            assert!(!update.join("activation.lock").exists());
+            assert!(!update.join("current").exists());
+            assert!(!update.join("version-floor").exists());
+            assert!(!provenance.exists());
+        }
     }
 }
 

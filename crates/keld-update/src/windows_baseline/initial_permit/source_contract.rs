@@ -653,6 +653,19 @@ fn require_typed_admission_witnesses(source: &str) -> Result<(), &'static str> {
     ) {
         return Err("D-46 native issuer recheck is not bound to exact typed T-20/D-90 evidence");
     }
+    // D-43 has not commissioned an independent pre-attempt creator witness.
+    // The future native issuer must supply a real, fallible scaffold check:
+    // a trait default that returns Ok(()) would silently admit a bootstrap
+    // orphan with a valid DACL and no creator provenance.
+    if code(source)
+        .matches(
+            "fn require_bound_existing_scaffold(&mut self, roots: &Roots) -> Result<(), UpdateError>;",
+        )
+        .count()
+        != 1
+    {
+        return Err("D-46 scaffold check cannot default to a fabricated creator proof");
+    }
     for name in ["WindowsInitialInstallPermit", "CreationArmedEffectGate"] {
         let members = code(fields(source, name)?);
         for typed in [
@@ -760,6 +773,11 @@ fn unissued_ready_and_native_census_bindings_survive_exact_one_use_transition() 
 // Keep the negative controls as data rather than a long test function. Every
 // mutation has an exact source anchor and an independent refusal assertion.
 const SOURCE_MUTATIONS: &[(&str, &str, &str)] = &[
+    (
+        "unqualified orphan scaffold accepted by default issuer",
+        "fn require_bound_existing_scaffold(&mut self, roots: &Roots) -> Result<(), UpdateError>;",
+        "fn require_bound_existing_scaffold(&mut self, _roots: &Roots) -> Result<(), UpdateError> { Ok(()) }",
+    ),
     (
         "journal permit replay",
         "pub(super) fn consume_for_admission_journal(\n        self,",
