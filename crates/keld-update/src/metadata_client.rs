@@ -516,6 +516,37 @@ mod tests {
     }
 
     #[test]
+    fn oversized_root_refuses_before_downstream_role_readers_run() {
+        struct ForbiddenRead;
+
+        impl Read for ForbiddenRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("an oversized root must refuse before reading a later role");
+            }
+        }
+
+        // D-21 independently caps root at 65,536 bytes. Reading the extra
+        // byte must stop the intake; no timestamp, snapshot or targets body
+        // may be consumed after the first role is already invalid.
+        let root_bytes = vec![b'X'; 65_537];
+        let mut root = Cursor::new(root_bytes);
+        let mut timestamp = ForbiddenRead;
+        let mut snapshot = ForbiddenRead;
+        let mut targets = ForbiddenRead;
+        assert_eq!(
+            verify_ready_revision_from_readers(SignedRoleReaders {
+                root: &mut root,
+                timestamp: &mut timestamp,
+                snapshot: &mut snapshot,
+                targets: &mut targets,
+            })
+            .unwrap_err(),
+            MetadataClientRefusal::RoleExceedsCap(TufRole::Root)
+        );
+        assert_eq!(root.position(), 65_537);
+    }
+
+    #[test]
     fn stream_failure_at_or_after_last_byte_is_not_eof() {
         let one = b"X";
         for (role, eof_failure) in [
