@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+url = { workspace = true }
+percent-encoding = { workspace = true }
 keld-core = { workspace = true }
 # Cold JSON ledger parser (KEL-74). Already workspace-pinned for keld-guard /
 # keld-cli. T1 rejected a production sha2 dependency because it validates digest
