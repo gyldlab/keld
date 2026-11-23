@@ -53,7 +53,7 @@ pub(super) fn require_no_repository_pending_siblings(repository: &Dir) -> Result
         }
         if name != "current.json"
             && name
-                .trim_end_matches(|character| character == '.' || character == ' ')
+                .trim_end_matches(['.', ' '])
                 .eq_ignore_ascii_case("current.json")
         {
             return Err(error(
