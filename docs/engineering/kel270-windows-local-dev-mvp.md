@@ -24,21 +24,30 @@ Do not introduce another installer writer or signature algorithm.
 | Windows trust | Successful retained-handle verification in the isolated test user | Existing full verification |
 | Installation identity | Separate development application ID, repository ID, browser identity and protected namespace | Existing production identity |
 
-The development publisher policy uses a distinct provider and schema. Its exact bytes bind the role, leaf SPKI hash, and issuer-policy digest.
-The development issuer policy binds the exact CA certificate hash and leaf certificate hash. Pin the role SPKI independently.
+The development publisher policy uses schema `keld.dev-publisher-policy/v1`.
+Use these ordered fields: `schema`, `provider`, `role`, `leafSpkiSha256`, `issuerPolicySha256`.
+The provider is `local-development-authenticode`. The role is `app` or `recovery`.
+The development issuer policy uses schema `keld.dev-issuer-policy/v1`.
+Use these ordered fields: `schema`, `chainPolicy`, `rootCertificateSha256`, `leafIssuerSpkiSha256`, `leafCertificateSha256`.
+The chain policy is `windows-local-dev-pinned/v1`. Every digest is exactly 64 lowercase hexadecimal characters.
+Pin the leaf SPKI and issuer policy independently for each role. The issuer is the pinned CA, not another candidate certificate.
 Use the existing closed canonical JSON and bounded decoding rules. Do not assign a Microsoft profile OID to a local certificate.
-Use a separate publisher digest domain `keld.publisher.windows/dev/v2` and the 32-byte role SPKI hash.
+The proposed publisher scope is SHA-256 of ASCII `keld.publisher.windows/dev/v2`, one zero byte, and the 32-byte role SPKI hash.
 The ordinary identity names the APP signer. The recovery policy pins the distinct RECOVERY signer.
 The signed recovery image still names its intended destination application.
 
 The trusted build policy fixes the profile, application ID, repository ID, and independent trust pins before signing.
 Do not obtain those expected pins from a candidate image, mutable request, environment variable, or first-use observation.
 An independent build receipt pins the completed signed image after signing.
-The production build refuses provider 2. The development build refuses provider 1 and production state.
-Do not permit runtime switching or fallback between these profiles.
+The production build refuses provider 2. It does not embed development anchors.
+The development build refuses provider 1 and production state.
+Do not permit runtime switching or fallback through arguments, environment, registry, request files, or the legacy identity verifier.
 
-Require Windows trust success, the code-signing EKU, exact signer role, and one primary signature with no secondary signature.
-The development verifier MUST NOT require or impersonate the Microsoft Public Trust EKU.
+Require Windows trust success on the original retained image, code-signing EKU, exact signer role, and one primary signature with no secondary signature.
+The development verifier refuses the Microsoft Public Trust EKU. An authenticated operation selects the expected role independently of the image.
+Keep production timestamp and revocation checks unchanged. Do not fall back to cache-only preflight as authority.
+The native owner must determine the exact local certificate expiry and revocation policy before enabling development admission.
+If a local CA has no revocation endpoint, review a separate pinned development policy. Do not silently ignore a trust failure.
 The application and recovery leaf keys MUST differ. Reject a signer outside its exact role policy.
 Use one local test CA and two distinct leaf certificates. Retain the keys only in an authorized signing account.
 Trust the CA only in a dedicated ordinary test user's CurrentUser store, or an isolated test VM.
@@ -63,10 +72,10 @@ The loss-only recovery distribution ceremony is a separate support cell. APP sig
 
 ## Independent falsifiers
 
-- Production rejects every development image and policy. Development rejects production state and identity.
+- Production rejects every development image and policy, even when Windows trusts its root. Development rejects production state and identity.
 - Mutate the provider, signer, CA pin, app ID or repository ID independently. Refuse before protected effects.
-- Present an APP signer to RECOVERY and the reverse. Refuse even with a valid chain.
-- Supply an unsigned, modified, multi-signed or expired image. Refuse before admission.
+- Present an APP signer to RECOVERY and the reverse. Present a third leaf from the same CA. Refuse even with a valid chain.
+- Supply an unsigned, modified, multi-signed or expired image. Refuse before admission. Verify every required helper and installer role independently.
 - Replace the signed catalogue, replay old metadata, or expire a role. Refuse without advancing protected history.
 - Substitute the native worker, retained object, lease or journal attempt. Refuse before an installation effect.
 - Exercise real successful installation and cleanup on the ordinary SID. A signing probe is not this result.
