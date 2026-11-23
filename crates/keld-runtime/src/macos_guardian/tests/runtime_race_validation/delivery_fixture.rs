@@ -7,6 +7,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 
+use super::super::super::startup_phase::GuardianFailureSite;
+
 use super::control_plane::{ControlPlane, await_initial_registration};
 use super::records_and_cut_types::{
     COLLECTION, DeliveryCut, PhaseGate, RelayCommand, RelayReceipt, ReturnedLeasePreparer,
@@ -312,13 +314,13 @@ fn native_initial_guardian_phase_reaches_real_kgc1_registered_but_not_host_hello
             "genuine KGC1 initial stages missing: {}",
             fixture
                 .phase_ledger
-                .failure_report(super::super::super::GuardianFailureSite::SupervisorTerminal)
+                .failure_report(GuardianFailureSite::SupervisorTerminal)
         );
         std::thread::yield_now();
     }
     let receipt = fixture
         .phase_ledger
-        .failure_report(super::super::super::GuardianFailureSite::SupervisorTerminal);
+        .failure_report(GuardianFailureSite::SupervisorTerminal);
     assert!(receipt.contains("kgc1_prepared_ms="));
     assert!(receipt.contains("bun_factory_ms="));
     assert!(receipt.contains("bun_spawn_reported_ms="));
