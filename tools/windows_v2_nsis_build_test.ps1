@@ -236,7 +236,9 @@ try {
         throw 'KEL270_NSIS_TEST_SOURCE: builder must parse before cleanup test'
     }
     foreach ($name in @(
-        'Refuse', 'Require-LocalPath', 'Remove-OwnedPrivateCandidate', 'Require-ExactHash'
+        'Refuse', 'Require-LocalPath', 'Require-File',
+        'Remove-OwnedPrivateCandidate', 'Require-ExactHash',
+        'Require-PublishedUnsignedCandidate'
     )) {
         $functions = @($builderAst.FindAll({
             param($node)
@@ -285,6 +287,80 @@ try {
     }
     Write-Output 'KEL270_NSIS_COMPILER_PARTIAL_CLEANUP_PASS native_file_removed=true final_output_absent=true'
 
+    # Exercise the real post-rename custody helper without compiling or signing
+    # an installer. These are three-byte UNTRUSTED synthetic file fixtures, not
+    # any T81 binary, original-Host admission, or positive install acceptance.
+    $prePublication = Join-Path $compilerParent 'pre-publication'
+    $publishedOutput = Join-Path $compilerParent 'published-output'
+    $candidateName = 'keld-v2-peruserdirect-UNSIGNED.exe'
+    [IO.Directory]::CreateDirectory($prePublication) | Out-Null
+    $privateCandidate = Join-Path $prePublication $candidateName
+    [IO.File]::WriteAllBytes($privateCandidate, [byte[]](0x4d, 0x5a, 0x01))
+    $originalDigest = (Get-FileHash -LiteralPath $privateCandidate -Algorithm SHA256).Hash
+    [IO.Directory]::Move($prePublication, $publishedOutput)
+    Require-PublishedUnsignedCandidate $publishedOutput $originalDigest
+    Write-Output 'KEL270_NSIS_PUBLISHED_READBACK_PASS synthetic_custody_only=true'
+
+    $publishedCandidate = Join-Path $publishedOutput $candidateName
+    [IO.File]::WriteAllBytes($publishedCandidate, [byte[]](0x4d, 0x5a, 0x02))
+    $postmoveError = $null
+    try {
+        Require-PublishedUnsignedCandidate $publishedOutput $originalDigest
+    } catch {
+        $postmoveError = $_.ToString()
+    }
+    if ($null -eq $postmoveError -or
+        $postmoveError -notmatch 'published unsigned NSIS candidate differs from its independently pinned SHA256') {
+        throw 'KEL270_NSIS_POSTMOVE_FAULT: changed candidate bytes were admitted'
+    }
+    Write-Output 'KEL270_NSIS_POSTMOVE_BYTES_REFUSED native_file_digest=true'
+
+    # Deliberately remove only the final digest call in an in-memory copy of
+    # this exact production function. The changed-byte negative must then turn
+    # RED; no shipping source, compiler, or signer is altered.
+    $publishedHelpers = @($builderAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq 'Require-PublishedUnsignedCandidate'
+    }, $true))
+    if ($publishedHelpers.Count -ne 1) {
+        throw 'KEL270_NSIS_POSTMOVE_MUTANT: unique production helper absent'
+    }
+    $exactHashCall = '    Require-ExactHash $published $ExpectedSha256 ''published unsigned NSIS candidate'''
+    $actualHelper = $publishedHelpers[0].Extent.Text
+    if ($actualHelper.IndexOf($exactHashCall) -lt 0 -or
+        $actualHelper.IndexOf($exactHashCall) -ne $actualHelper.LastIndexOf($exactHashCall)) {
+        throw 'KEL270_NSIS_POSTMOVE_MUTANT: final digest anchor missing or duplicated'
+    }
+    $mutantHelper = $actualHelper.Replace($exactHashCall, '    $null = $published')
+    $mutantAdmittedCorruption = & {
+        . ([scriptblock]::Create($mutantHelper))
+        try { Require-PublishedUnsignedCandidate $publishedOutput $originalDigest; $true }
+        catch { $false }
+    }
+    if (-not $mutantAdmittedCorruption) {
+        throw 'KEL270_NSIS_POSTMOVE_MUTANT: removed digest did not turn the negative oracle RED'
+    }
+    Write-Output 'KEL270_NSIS_POSTMOVE_DIGEST_MUTATION_RED expected_corruption_bypass=true source_pristine=true'
+
+    # A same-byte alias through a junction must not count as direct publication.
+    $aliasTarget = Join-Path $compilerParent 'alias-target'
+    $aliasPath = Join-Path $compilerParent 'published-alias'
+    [IO.Directory]::CreateDirectory($aliasTarget) | Out-Null
+    $aliasTargetFile = Join-Path $aliasTarget $candidateName
+    [IO.File]::WriteAllBytes($aliasTargetFile, [byte[]](0x4d, 0x5a, 0x01))
+    if ((Get-FileHash -LiteralPath $aliasTargetFile -Algorithm SHA256).Hash -cne $originalDigest) {
+        throw 'KEL270_NSIS_POSTMOVE_ALIAS: independent same-byte control differs'
+    }
+    $null = New-Item -ItemType Junction -Path $aliasPath -Target $aliasTarget -ErrorAction Stop
+    $aliasError = $null
+    try { Require-PublishedUnsignedCandidate $aliasPath $originalDigest }
+    catch { $aliasError = $_.ToString() }
+    if ($null -eq $aliasError -or $aliasError -notmatch 'reparse-point ancestor') {
+        throw 'KEL270_NSIS_POSTMOVE_ALIAS: same-byte reparse parent was admitted'
+    }
+    Write-Output 'KEL270_NSIS_POSTMOVE_ALIAS_REFUSED same_sha256=true native_reparse=true'
+
     # Static source checks: no caller-chosen installation root, persistence
     # side effect, elevation or NSIS shell execution; only original Host role.
     $active = @([IO.File]::ReadAllLines($nsis) | Where-Object { $_ -notmatch '^\s*;' })
@@ -314,7 +390,7 @@ try {
         throw 'KEL270_NSIS_BUILD_SOURCE_FORBIDDEN: uncommissioned parallel native authority'
     }
     Write-Output 'KEL270_NSIS_SOURCE_PASS original_host=true user_level=true persistent_target_not_selected=true'
-    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=10 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
+    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=10 published_native_oracles=4 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
 } finally {
     $expectedFixture = '^keld270-nsis-negative-[a-f0-9]{32}$'
     if ([IO.Path]::GetDirectoryName($fixture) -cne $env:TEMP -or
@@ -327,11 +403,14 @@ try {
         'stage/bin/keld-host.exe', 'stage/bin/keld.exe',
         'stage/bin/keld-role-launcher.exe', 'stage/bin/keld-updater-helper.exe',
         'stage/recovery/keld-host.exe', 'stage/bindings/keld-mcp-stdio.json',
-        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin',
+        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin', 'mutant-builder.ps1',
         'mutant-signer/mutant-builder.ps1',
         'mutant-signer/windows_v2_nsis_installer.nsi',
         'tampered-nsis/windows_v2_nsis_build.ps1',
         'tampered-nsis/windows_v2_nsis_installer.nsi',
+        'compiler-parent/pre-publication/keld-v2-peruserdirect-UNSIGNED.exe',
+        'compiler-parent/published-output/keld-v2-peruserdirect-UNSIGNED.exe',
+        'compiler-parent/alias-target/keld-v2-peruserdirect-UNSIGNED.exe',
         'shadow-hash/Get-FileHash.ps1',
         'shadow-signer/Get-AuthenticodeSignature.ps1',
         'shadow-modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psm1'
@@ -354,10 +433,19 @@ try {
         }
         [IO.Directory]::Delete($link, $false)
     }
+    $publishedAliasLink = Join-Path $fixture 'compiler-parent/published-alias'
+    $publishedAliasItem = Get-Item -LiteralPath $publishedAliasLink -Force -ErrorAction SilentlyContinue
+    if ($null -ne $publishedAliasItem) {
+        if (($publishedAliasItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            throw 'KEL270_NSIS_TEST_CLEANUP: published alias is no longer a reparse point'
+        }
+        [IO.Directory]::Delete($publishedAliasLink, $false)
+    }
     foreach ($relative in @(
         'stage/bin', 'stage/recovery', 'stage/bindings', 'stage',
-        'compiler-parent', 'outside', 'shadow-hash', 'shadow-signer',
-        'tampered-nsis', 'mutant-signer',
+        'compiler-parent/pre-publication', 'compiler-parent/published-output',
+        'compiler-parent/alias-target', 'compiler-parent', 'outside',
+        'shadow-hash', 'shadow-signer', 'tampered-nsis', 'mutant-signer',
         'shadow-modules/Microsoft.PowerShell.Security', 'shadow-modules', ''
     )) {
         $directory = if ($relative -eq '') { $fixture } else { Join-Path $fixture $relative }

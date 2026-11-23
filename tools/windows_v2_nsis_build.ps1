@@ -196,6 +196,26 @@ function Require-SignedImage([string]$Path, [string]$Digest, [string]$Signer, [s
     Require-ExactHash $Path $Digest $What
 }
 
+# Publication of an unsigned compiler candidate is only a custody step. The
+# pre-rename hash must also match bytes reopened through the final destination;
+# a successful directory move alone cannot establish that the published object
+# is the one previously checked. This does NOT authorize signing or installing.
+function Require-PublishedUnsignedCandidate([string]$OutputDirectory, [string]$ExpectedSha256) {
+    $publishedRoot = Require-LocalPath $OutputDirectory 'published unsigned NSIS directory'
+    if (-not (Test-Path -LiteralPath $publishedRoot -PathType Container)) {
+        Refuse 'published unsigned NSIS directory is missing'
+    }
+    $candidateName = 'keld-v2-peruserdirect-UNSIGNED.exe'
+    $contents = @(Get-ChildItem -LiteralPath $publishedRoot -Force)
+    if ($contents.Count -ne 1 -or $contents[0] -isnot [IO.FileInfo] -or
+        $contents[0].Name -cne $candidateName -or
+        (($contents[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        Refuse 'published unsigned NSIS directory contains a foreign or reparse object'
+    }
+    $published = Require-File (Join-Path $publishedRoot $candidateName) 'published unsigned NSIS candidate'
+    Require-ExactHash $published $ExpectedSha256 'published unsigned NSIS candidate'
+}
+
 # A failed compiler may leave only this script's private unsigned candidate.
 # Never descend into or remove an unexpected entry; retain it for diagnosis.
 function Remove-OwnedPrivateCandidate([string]$Temporary, [string]$ExpectedParent) {
@@ -367,6 +387,10 @@ try {
     }
     [IO.Directory]::Move($temporary, $destination)
     $temporaryCreated = $false
+    # Never report an unsigned candidate from its pre-move digest alone.
+    # A failed final-path observation deliberately retains the published
+    # directory for examination, without attempting a destructive rollback.
+    Require-PublishedUnsignedCandidate $destination $candidateHash
 } catch {
     $failure = $_
     if ($temporaryCreated) {
