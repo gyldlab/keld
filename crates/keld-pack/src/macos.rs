@@ -3,6 +3,7 @@
 
 mod assemble;
 mod capture;
+mod macho;
 #[cfg(test)]
 mod tests;
 mod tool_output;
@@ -15,6 +16,7 @@ use std::path::{Path, PathBuf};
 use crate::MacosBundleMetadata;
 
 pub use capture::{FileReceipt as MacosCopiedMember, ReceiptKind as MacosCopiedMemberKind};
+pub use macho::{MacosMachoError, read_macos_macho_architectures, validate_macos_macho_target};
 
 /// The only two leaves a copied-tree graph compiler may return to Pack.
 ///
