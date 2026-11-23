@@ -1,0 +1,177 @@
+# Local development signing only. Does not provision certificates or trust,
+# authorize a Keld installation, execute an image, or qualify public release.
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$UnsignedImage,
+    [Parameter(Mandatory)][string]$ExpectedUnsignedSha256,
+    [Parameter(Mandatory)][ValidateSet('APP', 'RECOVERY')][string]$Role,
+    [Parameter(Mandatory)][string]$AppId,
+    [Parameter(Mandatory)][string]$ApplicationCertificate,
+    [Parameter(Mandatory)][string]$ExpectedApplicationCertificateSha256,
+    [Parameter(Mandatory)][string]$RecoveryCertificate,
+    [Parameter(Mandatory)][string]$ExpectedRecoveryCertificateSha256,
+    [Parameter(Mandatory)][string]$RootCertificate,
+    [Parameter(Mandatory)][string]$ExpectedRootCertificateSha256,
+    [Parameter(Mandatory)][string]$OutputDirectory
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Refuse([string]$Reason) {
+    throw "KEL270-DEV-SIGN: $Reason; no installation or production authority granted"
+}
+
+function Require-Hash([string]$Value) {
+    if ($Value -cnotmatch '^[0-9A-Fa-f]{64}$') { Refuse 'expected independent SHA256 pin' }
+    return $Value.ToUpperInvariant()
+}
+
+function Require-LocalPath([string]$Path) {
+    if ($Path -cnotmatch '^[A-Za-z]:\\' -or $Path -match '[\r\n*?\[\]"]' -or $Path.Contains('/') -or
+        $Path.Substring(2).Contains(':') -or [IO.Path]::GetFullPath($Path) -cne $Path) {
+        Refuse 'expected an absolute normalized local path'
+    }
+    $drive = New-Object IO.DriveInfo($Path.Substring(0, 1))
+    if ($drive.DriveType -ne [IO.DriveType]::Fixed) { Refuse 'expected a fixed local volume' }
+    foreach ($part in $Path.Substring(3).Split('\\')) {
+        if (!$part -or $part.EndsWith('.') -or $part.EndsWith(' ') -or
+            $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)') {
+            Refuse 'ambiguous path component'
+        }
+    }
+    $part = $Path
+    while ($part) {
+        $item = Get-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+        if ($null -ne $item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Refuse 'reparse-point path component'
+        }
+        $parent = [IO.Path]::GetDirectoryName($part)
+        if (!$parent -or $parent -ceq $part) { break }
+        $part = $parent
+    }
+    return $Path
+}
+
+function Get-Sha256([byte[]]$Bytes) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($Bytes)).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+
+function Get-FileSha256([string]$Path) {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+
+function Read-PublicCertificate([string]$Path, [string]$Expected) {
+    $path = Require-LocalPath $Path
+    $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -lt 1 -or $stream.Length -gt 65536) { Refuse 'oversized or empty certificate' }
+        $reader = New-Object IO.BinaryReader($stream)
+        $bytes = $reader.ReadBytes([int]$stream.Length)
+        if ($bytes.Length -ne $stream.Length -or (Get-Sha256 $bytes) -cne (Require-Hash $Expected)) {
+            Refuse 'certificate pin mismatch'
+        }
+    } finally { $stream.Dispose() }
+    if ([Security.Cryptography.X509Certificates.X509Certificate2]::GetCertContentType($bytes) -ne
+        [Security.Cryptography.X509Certificates.X509ContentType]::Cert) {
+        Refuse 'public DER certificate required, not PFX or key material'
+    }
+    $cert = New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (,$bytes)
+    if ($cert.HasPrivateKey -or (Get-Sha256 $cert.RawData) -cne (Require-Hash $Expected)) {
+        Refuse 'expected exact public certificate DER bytes'
+    }
+    return $cert
+}
+
+function Require-DevLeaf($Certificate, $Root) {
+    $eku = @($Certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+    if ($eku.Count -ne 1) { Refuse 'expected one explicit enhanced key usage extension' }
+    $oids = @($eku[0].EnhancedKeyUsages | ForEach-Object { $_.Value })
+    if ($oids -cnotcontains '1.3.6.1.5.5.7.3.3' -or
+        $oids -ccontains '1.3.6.1.4.1.311.97.1.0' -or
+        $Certificate.Subject -ceq $Certificate.Issuer -or $Certificate.Issuer -cne $Root.Subject) {
+        Refuse 'expected a local CA-issued code-signing leaf, not a Public Trust identity'
+    }
+    $now = Get-Date
+    if ($now -lt $Certificate.NotBefore -or $now -ge $Certificate.NotAfter -or
+        $now -lt $Root.NotBefore -or $now -ge $Root.NotAfter) { Refuse 'certificate outside validity period' }
+}
+
+if ($AppId -cnotmatch '^com\.keld\.dev\.[a-z0-9][a-z0-9.-]{0,239}$' -or
+    $AppId.Contains('..') -or $AppId.EndsWith('.')) { Refuse 'expected an explicitly development-only app ID' }
+$inputPath = Require-LocalPath $UnsignedImage
+$output = Require-LocalPath $OutputDirectory
+$sourcePin = Require-Hash $ExpectedUnsignedSha256
+if ([IO.Path]::GetExtension($inputPath) -ine '.exe' -or (Test-Path -LiteralPath $output)) {
+    Refuse 'expected an unsigned EXE and an absent output directory'
+}
+$parent = [IO.Path]::GetDirectoryName($output)
+if (!(Test-Path -LiteralPath $parent -PathType Container)) { Refuse 'output parent must exist' }
+$root = Read-PublicCertificate $RootCertificate $ExpectedRootCertificateSha256
+$app = Read-PublicCertificate $ApplicationCertificate $ExpectedApplicationCertificateSha256
+$recovery = Read-PublicCertificate $RecoveryCertificate $ExpectedRecoveryCertificateSha256
+$rootConstraints = @($root.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
+if ($root.Subject -cne $root.Issuer -or $rootConstraints.Count -ne 1 -or
+    !$rootConstraints[0].CertificateAuthority) { Refuse 'expected a local CA root certificate' }
+Require-DevLeaf $app $root
+Require-DevLeaf $recovery $root
+if ($app.Thumbprint -ceq $recovery.Thumbprint -or
+    $app.GetPublicKeyString() -ceq $recovery.GetPublicKeyString()) { Refuse 'APP and RECOVERY keys must differ' }
+$leaf = if ($Role -eq 'APP') { $app } else { $recovery }
+$owned = Get-Item -LiteralPath ('Cert:\CurrentUser\My\' + $leaf.Thumbprint) -ErrorAction SilentlyContinue
+if ($null -eq $owned -or !$owned.HasPrivateKey -or
+    (Get-Sha256 $owned.RawData) -cne (Get-Sha256 $leaf.RawData)) { Refuse 'exact role signing key unavailable in CurrentUser My' }
+
+$signTool = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
+$signToolSha = '431EE314C83988CACDA86606356FD321B75AE0093481B97E3B738E99C412F2A0'
+if ((Get-FileSha256 $signTool) -cne $signToolSha) {
+    Refuse 'reviewed SDK SignTool unavailable or changed'
+}
+
+$source = [IO.File]::Open($inputPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($sha.ComputeHash($source)).Replace('-', '') }
+    finally { $sha.Dispose() }
+    if ($actual -cne $sourcePin) { Refuse 'unsigned image differs from independent source pin' }
+    if ((Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $inputPath).Status -ne 'NotSigned') {
+        Refuse 'source image already carries a signature or cannot be inspected'
+    }
+    New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
+    $destination = Join-Path $output ('dev-' + $Role.ToLowerInvariant() + '-' + [IO.Path]::GetFileName($inputPath))
+    $copy = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $source.Position = 0; $source.CopyTo($copy); $copy.Flush($true) }
+    finally { $copy.Dispose() }
+    if ((Get-FileSha256 $destination) -cne $sourcePin) {
+        Refuse 'copy differs from reviewed source'
+    }
+    $publicRoot = Join-Path $output 'dev-root-public.cer'
+    $rootCopy = [IO.File]::Open($publicRoot, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $rootCopy.Write($root.RawData, 0, $root.RawData.Length); $rootCopy.Flush($true) }
+    finally { $rootCopy.Dispose() }
+    & $signTool sign /s My /sha1 $leaf.Thumbprint /fd SHA256 /ac $publicRoot /d ('keld.app-id/v1:' + $AppId) $destination
+    if ($LASTEXITCODE -ne 0) { Refuse 'SignTool failed' }
+    $observed = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $destination
+    if ($null -eq $observed.SignerCertificate -or
+        (Get-Sha256 $observed.SignerCertificate.RawData) -cne (Get-Sha256 $leaf.RawData) -or
+        $observed.Status -in @('NotSigned', 'HashMismatch')) { Refuse 'signed copy does not contain expected signer' }
+    $receipt = [ordered]@{
+        schema = 'keld.dev-signing-observation/v1'; scope = 'DEVELOPMENT_ONLY_NONAUTHORIZING'
+        role = $Role; appId = $AppId; unsignedSha256 = $sourcePin
+        signedSha256 = Get-FileSha256 $destination
+        leafCertificateSha256 = Get-Sha256 $leaf.RawData
+        rootCertificateSha256 = Get-Sha256 $root.RawData
+        osPathObservation = [string]$observed.Status; file = [IO.Path]::GetFileName($destination)
+    }
+    $receiptPath = Join-Path $output 'dev-signing-observation.json'
+    $record = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Compress))
+    $recordFile = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $recordFile.Write($record, 0, $record.Length); $recordFile.Flush($true) }
+    finally { $recordFile.Dispose() }
+    Write-Output 'KEL270_DEV_SIGNED_COPY_ONLY: no native trust, admission, or release qualification claimed'
+} finally { $source.Dispose() }

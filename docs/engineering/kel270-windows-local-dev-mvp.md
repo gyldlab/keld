@@ -18,8 +18,8 @@ Do not introduce another installer writer or signature algorithm.
 | Boundary | Internal development profile | Production profile |
 | --- | --- | --- |
 | Build selection | Explicit development build with independent immutable trust pins | Existing production selection |
-| D-4 provider | Proposed byte `2`, `local-development-authenticode` | Existing byte `1` and exact bytes |
-| Publisher identifier | Exact 64 lowercase hexadecimal SHA-256 of leaf SPKI in the existing length-prefixed slot | Existing canonical full profile OID |
+| D-4 provider/root policy | Proposed pair `(2, 3)`, `local-development-authenticode` | Existing pair `(1, 2)` and exact bytes |
+| Publisher identifier | Exact 64 lowercase hexadecimal SHA-256 of APP leaf SPKI in the existing lp16 slot | Existing canonical full profile OID |
 | Issuer policy | Pinned local CA certificate and exact role leaf certificate/SPKI | Existing Public Trust issuer policy |
 | Windows trust | Successful retained-handle verification in the isolated test user | Existing full verification |
 | Installation identity | Separate development application ID, repository ID, browser identity and protected namespace | Existing production identity |
@@ -32,9 +32,19 @@ Use these ordered fields: `schema`, `chainPolicy`, `rootCertificateSha256`, `lea
 The chain policy is `windows-local-dev-pinned/v1`. Every digest is exactly 64 lowercase hexadecimal characters.
 Pin the leaf SPKI and issuer policy independently for each role. The issuer is the pinned CA, not another candidate certificate.
 Use the existing closed canonical JSON and bounded decoding rules. Do not assign a Microsoft profile OID to a local certificate.
-The proposed publisher scope is SHA-256 of ASCII `keld.publisher.windows/dev/v2`, one zero byte, and the 32-byte role SPKI hash.
+The proposed publisher scope is SHA-256 of ASCII `keld.publisher.windows/dev/v2`, one zero byte, provider byte `2`, and the 32-byte APP SPKI hash.
+The typed decoder accepts only the exact provider and root-policy pair. It retains the existing v2 domain and field order.
+Production parses the lp16 field as `profileOid`. Development parses it as `appSpkiSha256`, never as an OID.
 The ordinary identity names the APP signer. The recovery policy pins the distinct RECOVERY signer.
-The signed recovery image still names its intended destination application.
+The recovery image `.keldea2` still names the destination APP SPKI. The signed `.keldrec` binds the protected recovery policy.
+
+| Signed image role | Required development signer |
+| --- | --- |
+| Application Host, CLI, role launcher, updater helper | APP |
+| Dedicated recovery Host | RECOVERY only |
+| Final NSIS installer | APP |
+
+Pin each final image independently in the authenticated build and catalogue records. Do not infer roles from filenames or a candidate certificate.
 
 The trusted build policy fixes the profile, application ID, repository ID, and independent trust pins before signing.
 Do not obtain those expected pins from a candidate image, mutable request, environment variable, or first-use observation.
@@ -50,9 +60,11 @@ The native owner must determine the exact local certificate expiry and revocatio
 If a local CA has no revocation endpoint, review a separate pinned development policy. Do not silently ignore a trust failure.
 The application and recovery leaf keys MUST differ. Reject a signer outside its exact role policy.
 Use one local test CA and two distinct leaf certificates. Retain the keys only in an authorized signing account.
-Trust the CA only in a dedicated ordinary test user's CurrentUser store, or an isolated test VM.
+Trust the CA only in a dedicated medium-integrity ordinary test user's CurrentUser store. This restriction also applies in an isolated test VM.
 Do not import a development CA into LocalMachine or another person's trust store.
 
+The proposed development root is actual OS LocalAppData / GYLDLAB / KeldDev.
+Derive `v2` and `acquisition-v1` below that root. Keep browser and provider identities separate from production.
 The development namespace must not select production install roots, repository records, browser stores or provider bindings.
 Use the existing owner APIs to derive those locations from the approved development identity and actual test SID.
 Do not use arbitrary path arguments or a parallel writer. Test real permanent CLI/provider binding within that SID.
@@ -61,13 +73,14 @@ Do not use arbitrary path arguments or a parallel writer. Test real permanent CL
 
 1. Obtain exact-version review of the development wire, identity, permission, and owner delta. Keep production vectors byte-identical.
 2. Generate and independently pin local CA/APP/RECOVERY identities for one development test cohort. Do not regenerate the keys per artifact.
-3. Use the existing TUF owner with genuinely signed metadata and a local test repository. Preserve expiry, replay and durable history checks.
-4. Complete D-42/D-45/D-90/D-46 on retained native objects. Keep the same repository lease and one-use permit through installation.
+3. Use the existing TUF owner with independently anchored signed root, timestamp, snapshot and targets. Preserve expiry, clock, replay and durable floors.
+4. Complete T82 and D-42/D-45/D-90/D-46 on retained native objects. Keep D-64/D-68 journals, lease ordering, the 120-second bound, and one-use permit.
 5. Embed identity before signing. Sign the actual Host, required helper images and NSIS installer. Verify the final image hashes.
 6. Install on the isolated ordinary SID. Verify the installed Host, Bun, WebView2, permanent CLI/provider binding and no-flag launch.
 7. Exercise all ten draw.io workflows, interruption recovery, refusal controls and cleanup.
 
-Production-only commissioning and public release evidence are separate future gates. No development result qualifies public distribution.
+Production-only commissioning and public release evidence are separate future gates. B82 trusted-base CI and native owner reviews remain required.
+No development result qualifies public distribution.
 The loss-only recovery distribution ceremony is a separate support cell. APP signing must still never grant RECOVERY authority.
 
 ## Independent falsifiers
@@ -89,6 +102,8 @@ The local certificates lack the Microsoft Public Trust EKU. Windows correctly re
 The original binaries remained unchanged. The temporary private keys were deleted.
 CurrentUser and LocalMachine Root and TrustedPublisher inventories remained unchanged.
 The observations prove signing mechanics only. They do not qualify the v2 Host, trust policy, installation, or recovery authority.
+
+The KEL-270 decision thread records the exact local receipt locations, image and certificate hashes, signer SPKI pins, and native command results.
 
 The current execution token cannot create the required ordinary test user. The owner must provision that test environment before the positive installed run.
 No purchase or Azure account is required.
