@@ -290,3 +290,12 @@ fn require_d45_issuer_profile_role(
 
 #[cfg(test)]
 mod tests;
+
+// Local development uses distinct, pinned APP/RECOVERY leaves rather than
+// production Public Trust profile OIDs. T-82 has not supplied an authenticated
+// policy or native signer producer; this pure comparator grants no authority.
+#[allow(
+    dead_code,
+    reason = "T82: development signer issuer is not commissioned"
+)]
+mod dev;
