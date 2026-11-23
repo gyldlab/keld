@@ -66,6 +66,17 @@ def pax_record(field):
         length = len(record)
 
 
+class ArchiveComparisonTest(unittest.TestCase):
+    def test_same_physical_identity_is_not_a_second_input(self):
+        payload = b"ordinary supplied sample bytes"
+        first_identity = (12, 34, len(payload), 100, 100, 0o100644, 1)
+        updated_metadata = (12, 34, len(payload), 200, 200, 0o100644, 1)
+        with self.assertRaisesRegex(ValueError, "same physical file"):
+            verifier.require_supplied_archive_match(
+                payload, first_identity, payload, updated_metadata, "sample",
+            )
+
+
 class ArchiveBudgetTest(unittest.TestCase):
     def test_invisible_pax_headers_count_toward_physical_tar_limit(self):
         def make_archive(pax_count, visible_count):
@@ -1155,8 +1166,9 @@ sys.exit(git.returncode)
             self.assertEqual(receipt[field], hashlib.sha256(immutable).hexdigest())
 
     def test_healthy_sealed_candidate(self):
-        result = self.check(True)
-        self.assertIn("UNQUALIFIED_SOURCE_ONLY", result.stdout)
+        result = json.loads(self.check(True).stdout)
+        self.assertEqual(result["status"], "UNQUALIFIED_SOURCE_ONLY")
+        self.assertEqual(result["archiveComparison"], "SUPPLIED_BYTE_EQUIVALENCE_ONLY")
 
     def test_core_provider_fingerprint_matches_pinned_two_file_vector(self):
         # Reference vector from the Core graph contract: SHA256 of each
@@ -1246,10 +1258,10 @@ sys.exit(git.returncode)
         self._write_lock()
         self.check(False, "unsafe archive")
 
-    def test_rejects_cross_cwd_archive_difference(self):
+    def test_rejects_different_supplied_archive_bytes(self):
         path = self.repro / "keld-electron-0.0.1.tgz"
         path.write_bytes(path.read_bytes() + b"X")
-        self.check(False, "reproduc")
+        self.check(False, "supplied archive bytes differ")
 
     def test_rejects_alias_redirection(self):
         manifest = json.loads((self.project / "package.json").read_text())

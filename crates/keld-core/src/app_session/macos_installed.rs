@@ -950,7 +950,7 @@ fn reject_ambient_node_modules(directory: &File) -> Result<(), HostAppError> {
         Err(nix::errno::Errno::ENOENT) => Ok(()),
         Ok(_) => Err(admission_error(
             "installed module resolution",
-            "an ancestor node_modules exists outside the sealed application graph; relocate the app to a parent without ambient packages",
+            "an ancestor node_modules exists outside the sealed application graph; if it is inside the sealed .app, rebuild and reinstall the intact app; if it is outside the bundle, relocate the app to a parent without ambient packages",
         )),
         Err(error) => Err(admission_error(
             "installed module resolution",

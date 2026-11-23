@@ -4,6 +4,7 @@
 This reviewer check does not select qualified Host/Bun/provider inputs, compute
 the shipping graph hash, or authorize release. It requires a source-preserving
 candidate lock and an actual offline-installed tree prepared outside the repo.
+It checks supplied archive bytes, not independent producer executions.
 """
 
 import argparse
@@ -735,6 +736,14 @@ def _compare_installed(candidate, location, files, archive_directories, label):
     return witness, core_fingerprint.hexdigest()
 
 
+def require_supplied_archive_match(packed, packed_identity, comparison, comparison_identity, name):
+    # The reader returns device and inode first. Other metadata can change
+    # and must not make one physical file count as two inputs.
+    require(packed_identity[:2] != comparison_identity[:2],
+            name + ": candidate and comparison archives are the same physical file")
+    require(packed == comparison, name + ": supplied archive bytes differ")
+
+
 def validate(source, selected, candidate, repro):
     # Root admission precedes Git and any physical input access. Keep these
     # directory chains live through all selected bytes, lock/SRI and receipts.
@@ -837,12 +846,15 @@ def _validate_owned(source, selected, candidate, repro):
                 name + ": lock contains unqualified install script metadata")
         require(row.get("resolved") == "file:vendor/" + filename,
                 name + ": resolved path must select the exact local archive")
-        packed, _, _ = read_owned_file(
+        packed, packed_identity, _ = read_owned_file(
             candidate, "vendor/" + filename, name + " archive",
         )
-        reproduced, _, _ = read_owned_file(repro, filename, name + " reproduced archive")
-        require(packed == reproduced,
-                name + ": cross-CWD archive reproducibility mismatch")
+        comparison, comparison_identity, _ = read_owned_file(
+            repro, filename, name + " supplied comparison archive",
+        )
+        require_supplied_archive_match(
+            packed, packed_identity, comparison, comparison_identity, name,
+        )
         sri = "sha512-" + base64.b64encode(sha512(packed).digest()).decode("ascii")
         require(row.get("integrity") == sri,
                 name + ": lock integrity does not match actual archive")
@@ -893,8 +905,10 @@ def _validate_owned(source, selected, candidate, repro):
         "selectedManifestSha256": sha256(selected_package).hexdigest(),
         "candidateLockSha256": sha256(lock_content).hexdigest(),
         "allFivePinsRemainUnqualified": True,
+        "archiveComparison": "SUPPLIED_BYTE_EQUIVALENCE_ONLY",
         "note": "Core-format provider digests are derived from unqualified physical input bytes; "
-                "independent source-owner selection, signed Host/Pack/Guard and installed "
+                "independent producer runs are not verified; independent source-owner "
+                "selection, signed Host/Pack/Guard and installed "
                 "graph admission remain unproved.",
         "packages": receipts,
     }
@@ -905,7 +919,10 @@ def main():
     parser.add_argument("--source-root", required=True, type=Path)
     parser.add_argument("--selected-revision", required=True)
     parser.add_argument("--candidate-root", required=True, type=Path)
-    parser.add_argument("--repro-dir", required=True, type=Path)
+    parser.add_argument(
+        "--repro-dir", required=True, type=Path,
+        help="directory of separately supplied comparison archives; not producer-run attestations",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:

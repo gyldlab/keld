@@ -94,9 +94,9 @@ impl MacosBundleMetadata {
         {
             return Err(invalid("invalid application name or bundle identifier"));
         }
-        // Apple's version readers normalize numeric components. Require a
-        // unique bounded spelling so a signed/receipted build never gains a
-        // different effective version through leading zeroes or overflow.
+        // Each version component has bounded decimal spelling: no leading
+        // zeroes and no overflow. Component counts remain field-specific;
+        // this does not normalize equivalent versions of different lengths.
         if !numeric_version(&self.version, 3, 3)
             || !numeric_version(&self.bundle_version, 1, 3)
             || !numeric_version(&self.minimum_system_version, 1, 3)

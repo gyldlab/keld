@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -30,6 +31,13 @@ const producer = join(repo, "packages/@keld/kipc/scripts/package-artifacts.ts");
 const originalSource = join(api, "src");
 const apiArchiveName = "keld-api-0.0.1.tgz";
 const kipcArchiveName = "keld-kipc-0.0.1.tgz";
+// Manifests read by the API/KIPC producer and the two project configs it
+// selects (including their local extends targets). This is not a dependency census.
+const buildMetadataPaths = ["api", "kipc"].flatMap((name) =>
+  ["package.json", "tsconfig.build.json", "tsconfig.json"].map(
+    (file) => `packages/@keld/${name}/${file}`,
+  ),
+);
 const expectedFiles = new Map(
   receipt.api.files.map((file) => [file.path, file]),
 );
@@ -78,7 +86,7 @@ function isExpectedGitRoot(
   }
 }
 
-function run(argv: string[], cwd = repo): string {
+function run(argv: string[], cwd = repo, input?: Buffer): string {
   const env = gitSafeEnvironment();
   if (argv[0] === "git" && argv[1] !== "init") {
     expect(isExpectedGitRoot(cwd, env), `unexpected Git root for ${cwd}`).toBe(
@@ -91,6 +99,7 @@ function run(argv: string[], cwd = repo): string {
     stdout: "pipe",
     stderr: "pipe",
     timeout: 60_000,
+    ...(input === undefined ? {} : { stdin: input }),
     env: {
       ...env,
       PATH: dirname(process.execPath) + delimiter + (env.PATH ?? ""),
@@ -165,6 +174,24 @@ function emittedSourceFacts(root: string): string[] {
   return problems;
 }
 
+function buildMetadataProblems(selectedCommit: string, root = repo): string[] {
+  const problems: string[] = [];
+  for (const path of buildMetadataPaths) {
+    const selected = run(["git", "rev-parse", `${selectedCommit}:${path}`], root);
+    const head = run(["git", "rev-parse", `HEAD:${path}`], root);
+    if (head !== selected) problems.push("build-metadata-head:" + path);
+    const source = join(root, path);
+    if (
+      !lstatSync(source).isFile() ||
+      run(["git", "hash-object", "--stdin"], root, readFileSync(source)) !==
+        selected
+    ) {
+      problems.push("build-metadata-worktree:" + path);
+    }
+  }
+  return problems;
+}
+
 function inspectFiles(extractedRoot: string): string[] {
   const problems: string[] = [];
   const found: string[] = [];
@@ -217,7 +244,12 @@ function validateArchive(archive: string, extractedRoot: string): string[] {
     problems.push("archive-sha256");
   }
   if (sri(bytes) !== receipt.api.sri) problems.push("archive-sri");
-  const names = run(["tar", "-tzf", archive]).split("\n").filter(Boolean);
+  if (problems.length > 0) return problems;
+
+  // Feed both operations the verified bytes, not a reopened archive path.
+  const names = run(["tar", "-tzf", "-"], repo, bytes)
+    .split("\n")
+    .filter(Boolean);
   if (
     names.length !== expectedFiles.size ||
     new Set(names).size !== names.length ||
@@ -227,9 +259,26 @@ function validateArchive(archive: string, extractedRoot: string): string[] {
     return problems;
   }
   mkdirSync(dirname(extractedRoot), { recursive: true });
-  run(["tar", "-xzf", archive, "-C", dirname(extractedRoot)]);
-  return [...problems, ...inspectFiles(extractedRoot)];
+  run(["tar", "-xzf", "-", "-C", dirname(extractedRoot)], repo, bytes);
+  return inspectFiles(extractedRoot);
 }
+
+test("unverified archive bytes are refused before tar and extraction", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-row6-archive-negative-"));
+  try {
+    const archive = join(scratch, apiArchiveName);
+    const extraction = join(scratch, "extracted");
+    // A digest rejection is returned even when these inert bytes are not a tar.
+    writeFileSync(archive, "not an archive");
+    expect(validateArchive(archive, join(extraction, "package"))).toEqual([
+      "archive-sha256",
+      "archive-sri",
+    ]);
+    expect(existsSync(extraction)).toBe(false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 test("selected source and canonical compiler/producer yield identical API bytes, modes and lock SRI", () => {
   expect(receipt.schema).toBe("keld.api.gh1404-source-built/v1");
@@ -255,6 +304,7 @@ test("selected source and canonical compiler/producer yield identical API bytes,
     run(["git", "diff", "--name-only", "HEAD", "--", "packages/@keld/api/src"]),
   ).toBe("");
   expect(emittedSourceFacts(repo)).toEqual([]);
+  expect(buildMetadataProblems(receipt.selectedSourceCommit)).toEqual([]);
 
   const scratch = mkdtempSync(join(tmpdir(), "keld-gh1404-row6-"));
   try {
@@ -373,7 +423,11 @@ test("a different committed Git source HEAD cannot reuse the unchanged selected 
     expect(
       run(["git", "config", "--local", "--get", "maintenance.auto"], scratch),
     ).toBe("false");
-    run(["git", "add", "packages/@keld/api/src"], scratch);
+    for (const path of buildMetadataPaths) {
+      mkdirSync(dirname(join(scratch, path)), { recursive: true });
+      cpSync(join(repo, path), join(scratch, path));
+    }
+    run(["git", "add", "packages/@keld/api/src", ...buildMetadataPaths], scratch);
     run(
       [
         "git",
@@ -391,6 +445,17 @@ test("a different committed Git source HEAD cannot reuse the unchanged selected 
     );
     const healthyHead = run(["git", "rev-parse", "HEAD"], scratch);
     expect(emittedSourceFacts(scratch)).toEqual([]);
+
+    expect(buildMetadataProblems(healthyHead, scratch)).toEqual([]);
+    const metadataPath = "packages/@keld/kipc/tsconfig.json";
+    const metadata = join(scratch, metadataPath);
+    const metadataBytes = readFileSync(metadata);
+    // Whitespace alone changes source identity while preserving JSON meaning.
+    writeFileSync(metadata, Buffer.concat([metadataBytes, Buffer.from("\n")]));
+    expect(buildMetadataProblems(healthyHead, scratch)).toEqual([
+      "build-metadata-worktree:" + metadataPath,
+    ]);
+    writeFileSync(metadata, metadataBytes);
 
     const unchangedArchive = receipt.api.sha256;
     const appPath = join(copiedSource, "app.ts");
