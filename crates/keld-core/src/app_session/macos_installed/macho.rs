@@ -121,11 +121,16 @@ mod tests {
                 write_u32(&mut bytes, start + 24, 4, little);
                 write_u32(&mut bytes, start + 28, 0, little);
             } else {
-                write_u32(&mut bytes, start + 8, slice_offset as u32, little);
+                write_u32(
+                    &mut bytes,
+                    start + 8,
+                    u32::try_from(slice_offset).expect("fixture FAT32 slice offset"),
+                    little,
+                );
                 write_u32(&mut bytes, start + 12, 64, little);
                 write_u32(&mut bytes, start + 16, 4, little);
             }
-            let offset = slice_offset as usize;
+            let offset = usize::try_from(slice_offset).expect("fixture slice offset");
             bytes[offset..offset + 64].copy_from_slice(&thin(cpu, subtype));
         }
         bytes
