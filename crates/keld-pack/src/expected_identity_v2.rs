@@ -12,10 +12,37 @@ const DOMAIN: &[u8] = b"keld.expected-app-identity/v2\0";
 pub(super) const MIN_PAYLOAD_BYTES: usize = 206;
 pub(super) const MAX_PAYLOAD_BYTES: usize = 790;
 const PROVIDER_PUBLIC_TRUST: u8 = 1;
+const PROVIDER_LOCAL_DEVELOPMENT: u8 = 2;
 const OWNER_DIRECT: u8 = 1;
 const MODE_PER_USER_DIRECT: u8 = 1;
 const PRINCIPAL_STRICT: u8 = 1;
 const ROOT_V2: u8 = 2;
+const ROOT_LOCAL_DEVELOPMENT_V2: u8 = 3;
+
+/// The provider determines the grammar of the existing D-4 lp16 field.
+/// Neither variant authenticates the signer or commissions a trust policy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum V2SigningProfile<'a> {
+    PublicTrustOid(&'a str),
+    LocalDevelopmentAppSpkiSha256(&'a str),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum V2SigningProfileValue {
+    PublicTrustOid(Box<str>),
+    LocalDevelopmentAppSpkiSha256(Box<str>),
+}
+
+impl V2SigningProfileValue {
+    fn wire_fields(&self) -> (u8, u8, &str) {
+        match self {
+            Self::PublicTrustOid(value) => (PROVIDER_PUBLIC_TRUST, ROOT_V2, value),
+            Self::LocalDevelopmentAppSpkiSha256(value) => {
+                (PROVIDER_LOCAL_DEVELOPMENT, ROOT_LOCAL_DEVELOPMENT_V2, value)
+            }
+        }
+    }
+}
 
 /// Constructor inputs. These are observations, never a permit or signer policy.
 #[derive(Debug, Clone, Copy)]
@@ -24,7 +51,7 @@ pub(crate) struct V2IdentityFields<'a> {
     pub(crate) channel: &'a str,
     pub(crate) target: &'a str,
     pub(crate) update_public_key: [u8; 32],
-    pub(crate) profile_oid: &'a str,
+    pub(crate) signing_profile: V2SigningProfile<'a>,
     pub(crate) issuer_policy_sha256: [u8; 32],
     pub(crate) repository_id: [u8; 32],
     pub(crate) repository_policy_sha256: [u8; 32],
@@ -37,7 +64,7 @@ pub(crate) struct V2IdentityFields<'a> {
 pub(crate) struct ExpectedAppIdentityV2 {
     app_id: Box<str>,
     channel: &'static str,
-    profile_oid: Box<str>,
+    signing_profile: V2SigningProfileValue,
     update_public_key: [u8; 32],
     issuer_policy_sha256: [u8; 32],
     repository_id: [u8; 32],
@@ -61,13 +88,24 @@ impl ExpectedAppIdentityV2 {
         if fields.target != "windows-x64" {
             return Err(invalid("v2 target"));
         }
-        if !canonical_profile_oid(fields.profile_oid) {
-            return Err(invalid("v2 profile OID"));
-        }
+        let signing_profile = match fields.signing_profile {
+            V2SigningProfile::PublicTrustOid(oid) if canonical_profile_oid(oid) => {
+                V2SigningProfileValue::PublicTrustOid(oid.into())
+            }
+            V2SigningProfile::LocalDevelopmentAppSpkiSha256(hash)
+                if canonical_app_spki_sha256(hash) =>
+            {
+                V2SigningProfileValue::LocalDevelopmentAppSpkiSha256(hash.into())
+            }
+            V2SigningProfile::PublicTrustOid(_) => return Err(invalid("v2 profile OID")),
+            V2SigningProfile::LocalDevelopmentAppSpkiSha256(_) => {
+                return Err(invalid("v2 APP SPKI SHA256"));
+            }
+        };
         Ok(Self {
             app_id: fields.app_id.into(),
             channel,
-            profile_oid: fields.profile_oid.into(),
+            signing_profile,
             update_public_key: fields.update_public_key,
             issuer_policy_sha256: fields.issuer_policy_sha256,
             repository_id: fields.repository_id,
@@ -78,6 +116,7 @@ impl ExpectedAppIdentityV2 {
 
     /// Serializes only the closed D-4 v2 field order. This output is not signed.
     pub(crate) fn encode(&self) -> Result<Vec<u8>, PackError> {
+        let (provider, root_policy, signer_identifier) = self.signing_profile.wire_fields();
         let mut out = Vec::with_capacity(
             DOMAIN.len()
                 + 3
@@ -87,7 +126,7 @@ impl ExpectedAppIdentityV2 {
                 + 32
                 + 1
                 + 2
-                + self.profile_oid.len()
+                + signer_identifier.len()
                 + 4 * 32
                 + 4,
         );
@@ -96,8 +135,8 @@ impl ExpectedAppIdentityV2 {
         put_lp8(&mut out, self.channel.as_bytes())?;
         put_lp8(&mut out, b"windows-x64")?;
         out.extend_from_slice(&self.update_public_key);
-        out.push(PROVIDER_PUBLIC_TRUST);
-        put_lp16(&mut out, self.profile_oid.as_bytes())?;
+        out.push(provider);
+        put_lp16(&mut out, signer_identifier.as_bytes())?;
         out.extend_from_slice(&self.issuer_policy_sha256);
         out.extend_from_slice(&self.repository_id);
         out.extend_from_slice(&self.repository_policy_sha256);
@@ -106,7 +145,7 @@ impl ExpectedAppIdentityV2 {
             OWNER_DIRECT,
             MODE_PER_USER_DIRECT,
             PRINCIPAL_STRICT,
-            ROOT_V2,
+            root_policy,
         ]);
         if !(MIN_PAYLOAD_BYTES..=MAX_PAYLOAD_BYTES).contains(&out.len()) {
             return Err(invalid("v2 payload size"));
@@ -114,9 +153,20 @@ impl ExpectedAppIdentityV2 {
         Ok(out)
     }
 
-    /// Parses one complete v2 payload. No fallback to the v1 domain or
-    /// other channel, role, root, or provider enum is permitted.
+    /// Production D-4 byte reader. It still refuses local-development bytes.
+    /// No fallback to any other provider or legacy identity is permitted.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, PackError> {
+        Self::decode_for_provider(bytes, PROVIDER_PUBLIC_TRUST)
+    }
+
+    /// Private, nonauthorizing local-development byte observer. No Host,
+    /// WinTrust, issuer-policy or installation-permit owner consumes its output.
+    /// Production PE readers continue to call `decode` only.
+    pub(crate) fn decode_local_development(bytes: &[u8]) -> Result<Self, PackError> {
+        Self::decode_for_provider(bytes, PROVIDER_LOCAL_DEVELOPMENT)
+    }
+
+    fn decode_for_provider(bytes: &[u8], expected_provider: u8) -> Result<Self, PackError> {
         if !(MIN_PAYLOAD_BYTES..=MAX_PAYLOAD_BYTES).contains(&bytes.len()) {
             return Err(invalid("v2 payload size"));
         }
@@ -127,10 +177,17 @@ impl ExpectedAppIdentityV2 {
         let channel = take_lp8(&mut rest, "v2 channel")?;
         let target = take_lp8(&mut rest, "v2 target")?;
         let update_public_key = take_32(&mut rest, "v2 update key")?;
-        if take_byte(&mut rest, "v2 provider")? != PROVIDER_PUBLIC_TRUST {
+        if take_byte(&mut rest, "v2 provider")? != expected_provider {
             return Err(invalid("v2 provider"));
         }
-        let profile_oid = take_lp16(&mut rest, "v2 profile OID")?;
+        let signing_profile = if expected_provider == PROVIDER_PUBLIC_TRUST {
+            V2SigningProfile::PublicTrustOid(take_lp16(&mut rest, "v2 profile OID")?)
+        } else {
+            V2SigningProfile::LocalDevelopmentAppSpkiSha256(take_lp16(
+                &mut rest,
+                "v2 APP SPKI SHA256",
+            )?)
+        };
         let issuer_policy_sha256 = take_32(&mut rest, "v2 issuer policy")?;
         let repository_id = take_32(&mut rest, "v2 repository id")?;
         let repository_policy_sha256 = take_32(&mut rest, "v2 repository policy")?;
@@ -139,11 +196,18 @@ impl ExpectedAppIdentityV2 {
             (OWNER_DIRECT, "v2 owner"),
             (MODE_PER_USER_DIRECT, "v2 installation mode"),
             (PRINCIPAL_STRICT, "v2 principal model"),
-            (ROOT_V2, "v2 root policy"),
         ] {
             if take_byte(&mut rest, name)? != expected {
                 return Err(invalid(name));
             }
+        }
+        let expected_root = if expected_provider == PROVIDER_PUBLIC_TRUST {
+            ROOT_V2
+        } else {
+            ROOT_LOCAL_DEVELOPMENT_V2
+        };
+        if take_byte(&mut rest, "v2 root policy")? != expected_root {
+            return Err(invalid("v2 root policy"));
         }
         if !rest.is_empty() {
             return Err(invalid("v2 trailing bytes"));
@@ -153,7 +217,7 @@ impl ExpectedAppIdentityV2 {
             channel,
             target,
             update_public_key,
-            profile_oid,
+            signing_profile,
             issuer_policy_sha256,
             repository_id,
             repository_policy_sha256,
@@ -165,6 +229,15 @@ impl ExpectedAppIdentityV2 {
         }
         Ok(payload)
     }
+}
+
+/// The DEV lp16 field is an APP leaf SPKI SHA-256 identifier, not an OID or
+/// an Authenticode/issuer-policy verification result.
+fn canonical_app_spki_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn take_byte(rest: &mut &[u8], name: &'static str) -> Result<u8, PackError> {

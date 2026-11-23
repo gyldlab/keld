@@ -1,11 +1,13 @@
 //! D-4 private v2 wire tests. Bytes below are independent literal spec vectors.
 //! A successful test does not verify Ed25519, `WinTrust`, or commissioned signing.
 
-use super::{DOMAIN, ExpectedAppIdentityV2, V2IdentityFields};
+use super::{DOMAIN, ExpectedAppIdentityV2, V2IdentityFields, V2SigningProfile};
 use crate::{ExpectedAppIdentityPayload, PackError};
 
 const APP: &str = "com.example.app";
 const OID: &str = "1.2.840.113556.1.8000.2554";
+const DEV_APP_SPKI_SHA256: &str =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const LITERAL_PREFIX: &[u8] = b"keld.expected-app-identity/v2\0\
     \x0fcom.example.app\
     \x06stable\
@@ -22,11 +24,18 @@ fn fields<'a>(
         channel,
         target,
         update_public_key: [0x11; 32],
-        profile_oid,
+        signing_profile: V2SigningProfile::PublicTrustOid(profile_oid),
         issuer_policy_sha256: [0x22; 32],
         repository_id: [0x33; 32],
         repository_policy_sha256: [0x44; 32],
         discovery_policy_sha256: [0x55; 32],
+    }
+}
+
+fn dev_fields<'a>(app_spki_sha256: &'a str) -> V2IdentityFields<'a> {
+    V2IdentityFields {
+        signing_profile: V2SigningProfile::LocalDevelopmentAppSpkiSha256(app_spki_sha256),
+        ..fields(APP, "stable", "windows-x64", OID)
     }
 }
 
@@ -42,6 +51,22 @@ fn golden() -> Vec<u8> {
     out.extend_from_slice(&[0x55; 32]); // discovery policy SHA-256
     out.extend_from_slice(&[1, 1, 1, 2]); // direct, PerUserDirect, strict, root-v2
     assert_eq!(out.len(), 258, "independent D-4 fixed vector");
+    out
+}
+
+fn dev_golden() -> Vec<u8> {
+    // Independent D-4 DEV byte vector; this is synthetic data, never a signed image.
+    let mut out = LITERAL_PREFIX.to_vec();
+    out.extend_from_slice(&[0x11; 32]);
+    out.push(0x02); // Local-development Authenticode provider.
+    out.extend_from_slice(b"\x00\x40");
+    out.extend_from_slice(DEV_APP_SPKI_SHA256.as_bytes());
+    out.extend_from_slice(&[0x22; 32]);
+    out.extend_from_slice(&[0x33; 32]);
+    out.extend_from_slice(&[0x44; 32]);
+    out.extend_from_slice(&[0x55; 32]);
+    out.extend_from_slice(&[1, 1, 1, 3]); // DEV root policy is 3, not production 2.
+    assert_eq!(out.len(), 296, "independent DEV fixed vector");
     out
 }
 
@@ -63,6 +88,140 @@ fn literal_d4_golden_and_roundtrip_are_byte_exact() {
         ExpectedAppIdentityV2::decode(&expected).expect("decode"),
         typed
     );
+}
+
+#[test]
+fn local_development_spki_wire_is_typed_and_never_admitted_by_production() {
+    let expected = dev_golden();
+    let typed = ExpectedAppIdentityV2::new(dev_fields(DEV_APP_SPKI_SHA256))
+        .expect("canonical DEV APP SPKI bytes");
+    assert_eq!(typed.encode().expect("DEV wire encoding"), expected);
+    assert_eq!(
+        ExpectedAppIdentityV2::decode_local_development(&expected).expect("DEV byte observation"),
+        typed
+    );
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode(&expected)),
+        "v2 provider",
+        "existing production decoder must refuse DEV"
+    );
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode_local_development(&golden())),
+        "v2 provider",
+        "DEV decoder must refuse production"
+    );
+    assert!(
+        ExpectedAppIdentityPayload::decode(&expected).is_err(),
+        "legacy v1 may not accept DEV v2"
+    );
+}
+
+#[test]
+fn local_development_app_spki_is_exactly_64_lowercase_hex_ascii() {
+    let too_short = "a".repeat(63);
+    let too_long = "a".repeat(65);
+    let uppercase = DEV_APP_SPKI_SHA256.to_ascii_uppercase();
+    let nonhex = "g".repeat(64);
+    let nonascii = format!("{}é", "a".repeat(62));
+    for invalid_spki in [
+        "",
+        OID,
+        too_short.as_str(),
+        too_long.as_str(),
+        uppercase.as_str(),
+        nonhex.as_str(),
+        nonascii.as_str(),
+    ] {
+        assert_eq!(
+            detail(ExpectedAppIdentityV2::new(dev_fields(invalid_spki))),
+            "v2 APP SPKI SHA256",
+            "{invalid_spki:?}"
+        );
+    }
+    for bad_byte in [b'A', b'G', b'_', 0, 0xff] {
+        let mut changed = dev_golden();
+        changed[100] = bad_byte; // First byte of the DEV APP SPKI lp16 payload.
+        assert_eq!(
+            detail(ExpectedAppIdentityV2::decode_local_development(&changed)),
+            "v2 APP SPKI SHA256"
+        );
+    }
+}
+
+#[test]
+fn provider_and_root_pairs_refuse_cross_mode_and_unknown_discriminants() {
+    let mut dev_with_prod_root = dev_golden();
+    *dev_with_prod_root.last_mut().expect("root byte") = 2;
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode_local_development(
+            &dev_with_prod_root
+        )),
+        "v2 root policy"
+    );
+    let mut prod_with_dev_root = golden();
+    *prod_with_dev_root.last_mut().expect("root byte") = 3;
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode(&prod_with_dev_root)),
+        "v2 root policy"
+    );
+    let mut prod_mislabelled_dev = golden();
+    prod_mislabelled_dev[97] = 2;
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode_local_development(
+            &prod_mislabelled_dev
+        )),
+        "v2 root policy",
+        "the root policy must refuse even a syntactically invalid mixed payload"
+    );
+    let mut dev_mislabelled_prod = dev_golden();
+    dev_mislabelled_prod[97] = 1;
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode(&dev_mislabelled_prod)),
+        "v2 root policy"
+    );
+    let mut unknown_provider = dev_golden();
+    unknown_provider[97] = 3;
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode(&unknown_provider)),
+        "v2 provider"
+    );
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode_local_development(
+            &unknown_provider
+        )),
+        "v2 provider"
+    );
+}
+
+#[test]
+fn development_decoder_refuses_truncation_trailing_and_fixed_field_mutations() {
+    let encoded = dev_golden();
+    for len in 0..encoded.len() {
+        assert!(
+            ExpectedAppIdentityV2::decode_local_development(&encoded[..len]).is_err(),
+            "DEV truncation at {len}"
+        );
+    }
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert_eq!(
+        detail(ExpectedAppIdentityV2::decode_local_development(&trailing)),
+        "v2 trailing bytes"
+    );
+    for (offset_from_end, expected) in [
+        (4, "v2 owner"),
+        (3, "v2 installation mode"),
+        (2, "v2 principal model"),
+        (1, "v2 root policy"),
+    ] {
+        let mut mutated = encoded.clone();
+        let index = mutated.len() - offset_from_end;
+        mutated[index] ^= 1;
+        assert_eq!(
+            detail(ExpectedAppIdentityV2::decode_local_development(&mutated)),
+            expected
+        );
+    }
 }
 
 #[test]

@@ -6,7 +6,7 @@ use super::fixture::{
     container_section, data, get_u32, header_at, optional_of, put_u32, text, two_section_spec,
     two_sections,
 };
-use crate::expected_identity_v2::{ExpectedAppIdentityV2, V2IdentityFields};
+use crate::expected_identity_v2::{ExpectedAppIdentityV2, V2IdentityFields, V2SigningProfile};
 use crate::host_identity::v2::{embed_ordinary_v2, read_ordinary_v2_bytes};
 use crate::{ExpectedAppIdentityPayload, PackError, embed_host_identity, read_host_identity_bytes};
 
@@ -16,13 +16,40 @@ fn payload() -> ExpectedAppIdentityV2 {
         channel: "stable",
         target: "windows-x64",
         update_public_key: [0x11; 32],
-        profile_oid: "1.2.840.113556.1.8000.2554",
+        signing_profile: V2SigningProfile::PublicTrustOid("1.2.840.113556.1.8000.2554"),
         issuer_policy_sha256: [0x22; 32],
         repository_id: [0x33; 32],
         repository_policy_sha256: [0x44; 32],
         discovery_policy_sha256: [0x55; 32],
     })
     .expect("independent synthetic v2 bytes")
+}
+
+#[test]
+fn ordinary_production_pe_reader_refuses_development_provider() {
+    let dev = ExpectedAppIdentityV2::new(V2IdentityFields {
+        app_id: "com.example.app",
+        channel: "stable",
+        target: "windows-x64",
+        update_public_key: [0x11; 32],
+        signing_profile: V2SigningProfile::LocalDevelopmentAppSpkiSha256(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        issuer_policy_sha256: [0x22; 32],
+        repository_id: [0x33; 32],
+        repository_policy_sha256: [0x44; 32],
+        discovery_policy_sha256: [0x55; 32],
+    })
+    .expect("DEV byte grammar only");
+    let image = embed_ordinary_v2(&two_sections(), &dev)
+        .expect("synthetic unsigned DEV section fits the existing PE writer");
+    assert!(matches!(
+        read_ordinary_v2_bytes(&image),
+        Err(PackError::ExpectedIdentityInvalid {
+            detail: "v2 provider"
+        })
+    ));
+    assert!(read_host_identity_bytes(&image).is_err());
 }
 
 fn canonical() -> Vec<u8> {
