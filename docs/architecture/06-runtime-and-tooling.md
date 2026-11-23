@@ -2,6 +2,10 @@
 
 ## 1. keld-runtime: Bun as a supervised component
 
+The [KEL-78 boot profile contract](../specs/kel78-explicit-legacy-profile/design.md#44-boot-version-compatibility-and-downgrade-prevention)
+owns profile schema compatibility and refusal. An unsupported combination does
+not fall back to Legacy.
+
 - **Contract, not embedding.** Bun has no stable embedding C API (oven-sh/bun#12017 /
   #14252 remain unshipped; bun:ffi is explicitly experimental). Keld therefore treats
   the runtime as a *versioned process contract*. The live bootstrap contract is exactly

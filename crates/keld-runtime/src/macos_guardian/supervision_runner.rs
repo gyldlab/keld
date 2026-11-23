@@ -14,8 +14,8 @@ use super::{
 };
 #[cfg(test)]
 use super::{
-    CommandExt, GuardianReport, Stdio, await_host_death, terminate_registered_group,
-    validate_group_pid,
+    CommandExt, GuardianPhase, GuardianPhaseLedger, GuardianReport, Stdio, await_host_death,
+    terminate_registered_group, validate_group_pid,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -320,7 +320,11 @@ where
     // ordering treated a legitimate early Q/S as malformed bootstrap data
     // and could turn concurrent startup/shutdown into a spurious failure.
     validate_liveness_bootstrap(&mut liveness)?;
+    #[cfg(test)]
+    let phase_ledger = Arc::new(GuardianPhaseLedger::new());
     let control = connect_guardian_registration()?;
+    #[cfg(test)]
+    phase_ledger.record(GuardianPhase::Kgr1Authenticated);
     #[cfg(test)]
     super::tests::bootstrap_shutdown_race::hold_guardian_after_authenticated_control()?;
     control
@@ -349,6 +353,8 @@ where
                 stream: control,
                 reader: GenerationControlReader::new(),
             })),
+            #[cfg(test)]
+            phase_ledger: Arc::clone(&phase_ledger),
             host_unavailable: Arc::clone(&host_unavailable),
             preparation_cancelled: Arc::clone(&preparation_cancelled),
             initial_prepared: Arc::clone(&initial_prepared),

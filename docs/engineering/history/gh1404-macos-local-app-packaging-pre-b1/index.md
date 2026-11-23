@@ -1,8 +1,9 @@
 # Historical GH-1404 macOS packaging specification parts
 
 **Status: archived, non-normative.** These four files are retained byte-for-byte
-as `.md.txt` historical snapshots, for the pre-B-1 implementation record that was
-merged from PR #1510 at `beff4c720efeb8a6e9aed06a932de2cf088b1eef`.
+as `.md.txt` historical snapshots. The integration branch locally merged the
+pre-B-1 record from PR #1510 at `beff4c720efeb8a6e9aed06a932de2cf088b1eef`.
+That local merge does not establish an upstream merge of PR #1510.
 They have historical task and blocker names, including an outdated use of
 `B-1` for native acceptance. They do not grant specification approval,
 implementation authority, or an installed-app acceptance result.
