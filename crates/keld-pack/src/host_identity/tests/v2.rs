@@ -27,22 +27,42 @@ fn payload() -> ExpectedAppIdentityV2 {
 
 #[test]
 fn ordinary_production_pe_reader_refuses_development_provider() {
-    let dev = ExpectedAppIdentityV2::new(V2IdentityFields {
-        app_id: "com.example.app",
-        channel: "stable",
-        target: "windows-x64",
-        update_public_key: [0x11; 32],
-        signing_profile: V2SigningProfile::LocalDevelopmentAppSpkiSha256(
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        ),
-        issuer_policy_sha256: [0x22; 32],
-        repository_id: [0x33; 32],
-        repository_policy_sha256: [0x44; 32],
-        discovery_policy_sha256: [0x55; 32],
-    })
-    .expect("DEV byte grammar only");
-    let image = embed_ordinary_v2(&two_sections(), &dev)
-        .expect("synthetic unsigned DEV section fits the existing PE writer");
+    // Build a real provider-2 section from independent literal D-4 wire bytes.
+    // The production writer must refuse DEV on its own readback and cannot
+    // construct this negative fixture; it is deliberately not used here.
+    let mut dev_bytes = b"keld.expected-app-identity/v2\0\
+        \x0fcom.example.app\
+        \x06stable\
+        \x0bwindows-x64"
+        .to_vec();
+    dev_bytes.extend_from_slice(&[0x11; 32]);
+    dev_bytes.push(0x02); // DEV provider, not Public Trust.
+    dev_bytes.extend_from_slice(b"\x00\x40");
+    dev_bytes
+        .extend_from_slice(b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    dev_bytes.extend_from_slice(&[0x22; 32]); // Issuer policy.
+    dev_bytes.extend_from_slice(&[0x33; 32]); // Repository identity.
+    dev_bytes.extend_from_slice(&[0x44; 32]); // Repository policy.
+    dev_bytes.extend_from_slice(&[0x55; 32]); // Discovery policy.
+    dev_bytes.extend_from_slice(&[1, 1, 1, 3]); // Direct, per-user, strict, DEV root.
+    assert_eq!(dev_bytes.len(), 296, "independent D-4 DEV fixture");
+    let image = build(&fixture::Spec {
+        sections: vec![
+            text(),
+            data(),
+            fixture::Section {
+                name: *b".keldea2",
+                virtual_size: 296,
+                virtual_address: 0x3000,
+                raw_size: 0x200,
+                raw_pointer: 0x600,
+                characteristics: 0x4000_0040,
+                content: dev_bytes,
+            },
+        ],
+        ..two_section_spec()
+    });
+    valid_pe_fixture(&image);
     assert!(matches!(
         read_ordinary_v2_bytes(&image),
         Err(PackError::ExpectedIdentityInvalid {
