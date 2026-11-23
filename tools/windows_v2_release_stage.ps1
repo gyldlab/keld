@@ -41,6 +41,49 @@ function Require-Hash([string]$Value, [string]$Where, [int]$Length) {
     return $Value.ToUpperInvariant()
 }
 
+# Hash the file using an explicit .NET stream and SHA256 implementation. Ambient
+# PATH scripts, functions and PSModulePath exports must not choose digest bytes.
+function Get-TrustedFileSha256([string]$Path) {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::Open(
+            $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+        )
+        try {
+            return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+# Use the actual PSHOME module manifest and its exported binary CmdletInfo,
+# independent of command discovery through PATH, aliases or PSModulePath.
+function Get-TrustedAuthenticodeSignature([string]$Path) {
+    $manifest = [IO.Path]::Combine(
+        $PSHOME, 'Modules', 'Microsoft.PowerShell.Security',
+        'Microsoft.PowerShell.Security.psd1'
+    )
+    if (-not [IO.File]::Exists($manifest)) {
+        Refuse 'built-in Windows PowerShell Security module is absent'
+    }
+    $modules = @(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -ErrorAction Stop)
+    if ($modules.Count -ne 1 -or
+        -not [string]::Equals($modules[0].Path, $manifest,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Refuse 'built-in Windows PowerShell Security module was not loaded from its OS path'
+    }
+    $cmdlet = $modules[0].ExportedCommands['Get-AuthenticodeSignature']
+    if ($cmdlet -isnot [System.Management.Automation.CmdletInfo] -or
+        $cmdlet.ImplementingType.FullName -cne
+            'Microsoft.PowerShell.Commands.GetAuthenticodeSignatureCommand') {
+        Refuse 'built-in Authenticode verification cmdlet is unavailable'
+    }
+    return & $cmdlet -LiteralPath $Path
+}
+
 # IsPathRooted also accepts drive-relative "C:foo" and root-relative "\foo".
 # Allow only canonical local fixed-drive paths with no reparse ancestors.
 # No release-owner staging root is commissioned here: the caller-selected
@@ -121,19 +164,19 @@ function Read-PinnedImage($Entry, [string]$Role, [string]$Target) {
         (($original.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         Refuse "image $Role must be a regular non-reparse .exe"
     }
-    $before = (Get-FileHash -LiteralPath $original.FullName -Algorithm SHA256).Hash
+    $before = Get-TrustedFileSha256 $original.FullName
     if ($before -cne $digest) {
         Refuse "image $Role differs from independently pinned SHA256"
     }
     Require-Amd64Pe $original.FullName $Role
-    $authenticode = Get-AuthenticodeSignature -LiteralPath $original.FullName
+    $authenticode = Get-TrustedAuthenticodeSignature $original.FullName
     if ($authenticode.Status.ToString() -cne 'Valid' -or
         $authenticode.SignatureType.ToString() -cne 'Authenticode' -or
         $null -eq $authenticode.SignerCertificate -or
         $authenticode.SignerCertificate.Thumbprint.ToUpperInvariant() -cne $thumbprint) {
         Refuse "image $Role lacks its independently pinned valid embedded signature"
     }
-    if ((Get-FileHash -LiteralPath $original.FullName -Algorithm SHA256).Hash -cne $digest) {
+    if ((Get-TrustedFileSha256 $original.FullName) -cne $digest) {
         Refuse "image $Role changed during read-only staging preflight"
     }
     return [pscustomobject]@{
@@ -260,7 +303,7 @@ foreach ($relative in @('bin', 'recovery', 'bindings')) {
 foreach ($entry in $images) {
     $target = Join-Path $temporary $entry.destination
     [IO.File]::Copy($entry.source, $target, $false)
-    if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -cne $entry.sha256 -or
+    if ((Get-TrustedFileSha256 $target) -cne $entry.sha256 -or
         (Get-Item -LiteralPath $target).Length -ne $entry.length) {
         Refuse "staged $($entry.role) differs from the independently pinned source"
     }
@@ -275,7 +318,7 @@ $provider = [ordered]@{
 }
 $recipePath = Join-Path $temporary 'bindings/keld-mcp-stdio.json'
 [IO.File]::WriteAllText($recipePath, ($provider | ConvertTo-Json -Depth 4) + "`n", $utf8)
-$recipeDigest = (Get-FileHash -LiteralPath $recipePath -Algorithm SHA256).Hash
+$recipeDigest = Get-TrustedFileSha256 $recipePath
 $manifestImages = @($images | ForEach-Object {
     [ordered]@{
         role = $_.role
@@ -297,14 +340,14 @@ $manifest = [ordered]@{
 $manifestPath = Join-Path $temporary 'manifest.json'
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8) + "`n", $utf8)
 foreach ($entry in $images) {
-    if ((Get-FileHash -LiteralPath (Join-Path $temporary $entry.destination) -Algorithm SHA256).Hash -cne $entry.sha256) {
+    if ((Get-TrustedFileSha256 (Join-Path $temporary $entry.destination)) -cne $entry.sha256) {
         Refuse "staged $($entry.role) changed before manifest closeout"
     }
 }
-if ((Get-FileHash -LiteralPath $recipePath -Algorithm SHA256).Hash -cne $recipeDigest) {
+if ((Get-TrustedFileSha256 $recipePath) -cne $recipeDigest) {
     Refuse 'CLI/provider recipe changed before manifest closeout'
 }
-$manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
+$manifestSha256 = Get-TrustedFileSha256 $manifestPath
 $null = Require-CanonicalLocalPath $parent 'destination parent'
 $null = Require-CanonicalLocalPath $temporary 'temporary stage'
 if (Test-Path -LiteralPath $OutputDirectory) {
@@ -323,12 +366,12 @@ $publishedManifest = Join-Path $OutputDirectory 'manifest.json'
 $null = Require-CanonicalLocalPath $publishedManifest 'published manifest'
 $publishedManifestItem = Get-Item -LiteralPath $publishedManifest -ErrorAction Stop
 if ($publishedManifestItem -isnot [IO.FileInfo] -or
-    (Get-FileHash -LiteralPath $publishedManifest -Algorithm SHA256).Hash -cne $manifestSha256) {
+    (Get-TrustedFileSha256 $publishedManifest) -cne $manifestSha256) {
     Refuse 'published manifest changed after atomic rename'
 }
 $publishedRecipe = Join-Path $OutputDirectory 'bindings/keld-mcp-stdio.json'
 $null = Require-CanonicalLocalPath $publishedRecipe 'published provider recipe'
-if ((Get-FileHash -LiteralPath $publishedRecipe -Algorithm SHA256).Hash -cne $recipeDigest) {
+if ((Get-TrustedFileSha256 $publishedRecipe) -cne $recipeDigest) {
     Refuse 'published provider recipe changed after atomic rename'
 }
 foreach ($entry in $images) {
@@ -337,7 +380,7 @@ foreach ($entry in $images) {
     $publishedItem = Get-Item -LiteralPath $publishedImage -ErrorAction Stop
     if ($publishedItem -isnot [IO.FileInfo] -or
         $publishedItem.Length -ne $entry.length -or
-        (Get-FileHash -LiteralPath $publishedImage -Algorithm SHA256).Hash -cne $entry.sha256) {
+        (Get-TrustedFileSha256 $publishedImage) -cne $entry.sha256) {
         Refuse "published image $($entry.role) changed after atomic rename"
     }
 }

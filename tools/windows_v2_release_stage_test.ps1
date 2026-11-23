@@ -110,6 +110,81 @@ try {
     }
     Require-Refusal 'unsigned-valid-PE-requires-signature' $unsignedPins 'lacks its independently pinned valid embedded signature'
 
+    # Each fresh child has a hostile command lookup surface. A proper signer
+    # path must still inspect the real unsigned PE and reject its signature.
+    $shadowDigestDir = Join-Path $fixture 'shadow-digest'
+    [IO.Directory]::CreateDirectory($shadowDigestDir) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $shadowDigestDir 'Get-FileHash.ps1'),
+        "throw 'KEL270_STAGE_SHADOW_DIGEST_CALLED'")
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = $shadowDigestDir + ';' + $savedPath
+        Require-Refusal 'path-shadowed-digest' $unsignedPins 'lacks its independently pinned valid embedded signature'
+    } finally { $env:PATH = $savedPath }
+
+    $shadowSignerDir = Join-Path $fixture 'shadow-signer'
+    [IO.Directory]::CreateDirectory($shadowSignerDir) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $shadowSignerDir 'Get-AuthenticodeSignature.ps1'),
+        "throw 'KEL270_STAGE_SHADOW_SIGNER_CALLED'")
+    try {
+        $env:PATH = $shadowSignerDir + ';' + $savedPath
+        Require-Refusal 'path-shadowed-signer' $unsignedPins 'lacks its independently pinned valid embedded signature'
+    } finally { $env:PATH = $savedPath }
+
+    $shadowModuleRoot = Join-Path $fixture 'shadow-modules'
+    $shadowModule = Join-Path $shadowModuleRoot 'Microsoft.PowerShell.Security'
+    [IO.Directory]::CreateDirectory($shadowModule) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $shadowModule 'Microsoft.PowerShell.Security.psm1'),
+        "function Get-AuthenticodeSignature { throw 'KEL270_STAGE_SHADOW_MODULE_CALLED' }; Export-ModuleMember -Function Get-AuthenticodeSignature")
+    $savedModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = $shadowModuleRoot + ';' + $savedModulePath
+        Require-Refusal 'module-shadowed-signer' $unsignedPins 'lacks its independently pinned valid embedded signature'
+    } finally { $env:PSModulePath = $savedModulePath }
+
+    # Runtime fault injection proves the trusted signer helper is called on
+    # the actual preflight path. This private source copy can never qualify a
+    # signed release or reach any successful stage output.
+    $signerSource = [IO.File]::ReadAllText($stageTool)
+    $signerAnchor = '    $authenticode = Get-TrustedAuthenticodeSignature $original.FullName'
+    if ($signerSource.IndexOf($signerAnchor) -lt 0 -or
+        $signerSource.IndexOf($signerAnchor) -ne $signerSource.LastIndexOf($signerAnchor)) {
+        throw 'KEL270_STAGE_NEGATIVE_FAILURE signer helper call anchor missing/ambiguous'
+    }
+    $signerProbe = $signerSource.Replace($signerAnchor,
+        $signerAnchor.Replace('Get-TrustedAuthenticodeSignature $original.FullName',
+            "(& { throw 'INJECTED_TRUSTED_SIGNER_HELPER_CALLED' })"))
+    $signerProbeScript = Join-Path $fixture 'trusted-signer-probe.ps1'
+    [IO.File]::WriteAllText($signerProbeScript, $signerProbe,
+        (New-Object System.Text.UTF8Encoding($false)))
+    $originalTool = $stageTool
+    try {
+        $stageTool = $signerProbeScript
+        Require-Refusal 'trusted-signer-helper-executed' $unsignedPins 'INJECTED_TRUSTED_SIGNER_HELPER_CALLED'
+    } finally { $stageTool = $originalTool }
+
+    # Import the production SHA helper in a test-only scope. A known digest
+    # from Windows PowerShell's independent SHA256 cmdlet is the oracle, and a
+    # hostile same-scope function must not alter the helper's result.
+    $stageAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $stageTool, [ref]$null, [ref]$null)
+    $shaHelpers = @($stageAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq 'Get-TrustedFileSha256'
+    }, $true))
+    if ($shaHelpers.Count -ne 1) {
+        throw 'KEL270_STAGE_NEGATIVE_FAILURE unique SHA256 helper missing'
+    }
+    . ([scriptblock]::Create($shaHelpers[0].Extent.Text))
+    & {
+        function Get-FileHash { throw 'KEL270_STAGE_SHADOW_FUNCTION_CALLED' }
+        if ((Get-TrustedFileSha256 $fake) -cne $hash) {
+            throw 'KEL270_STAGE_NEGATIVE_FAILURE SHA256 helper disagrees with direct oracle'
+        }
+    }
+    Write-Output 'KEL270_STAGE_SHA256_SHADOW_RESISTANCE_PASS real_file_bytes_verified=true'
+
     $validPinsFile = Join-Path $fixture 'pins.json'
     Require-PathRefusal 'drive-relative-output' $validPinsFile 'C:relative-stage' 'requires a fully qualified local drive path'
     Require-PathRefusal 'root-relative-output' $validPinsFile '\relative-stage' 'requires a fully qualified local drive path'
@@ -121,8 +196,8 @@ try {
     # the script with signer validation removed ONLY to reach the cut with
     # unsigned structural inputs; it cannot qualify any Keld release.
     $stageSource = [IO.File]::ReadAllText($stageTool)
-    $authStart = $stageSource.IndexOf('    $authenticode = Get-AuthenticodeSignature -LiteralPath $original.FullName')
-    $authEnd = $stageSource.IndexOf('    if ((Get-FileHash -LiteralPath $original.FullName -Algorithm SHA256).Hash -cne $digest)', $authStart)
+    $authStart = $stageSource.IndexOf('    $authenticode = Get-TrustedAuthenticodeSignature $original.FullName')
+    $authEnd = $stageSource.IndexOf('    if ((Get-TrustedFileSha256 $original.FullName) -cne $digest)', $authStart)
     if ($authStart -lt 0 -or $authEnd -le $authStart) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE signer mutation anchors missing'
     }
@@ -276,7 +351,7 @@ try {
     if ((Get-FileHash -LiteralPath $fake -Algorithm SHA256).Hash -cne $hash) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE: source changed during refusals'
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=13 source_unchanged=true positive_signed_release=NOT_RUN'
+    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=18 source_unchanged=true positive_signed_release=NOT_RUN'
 } finally {
     # Only this invocation's newly allocated disposable negative fixture.
     Remove-Item -LiteralPath $fixture -Recurse -Force
