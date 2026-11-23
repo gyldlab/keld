@@ -1,0 +1,47 @@
+--- a/crates/keld-core/src/app_session/window_router/tests.rs
++++ b/crates/keld-core/src/app_session/window_router/tests.rs
+@@ -1332,0 +1333,44 @@
++
++// Audit-only probe. Measures retained commands, not native UI acceptance.
++#[test]
++fn resource_audit_stalled_window_consumer_retains_all_acknowledged_setters() -> TestResult {
++    let mut fixture = Fixture::new(Some(true))?;
++    fixture.subscribe()?;
++    fixture.ready()?;
++    let window = fixture.build(21, 7)?;
++    const COUNT: u32 = 4096;
++    for n in 0..COUNT {
++        fixture.call(&WindowRequest::SetMaximized { window, maximized: n % 2 == 0 }, n + 100)?;
++        let (header, bytes) = read_frame(&mut fixture.peer)?;
++        assert_eq!(header.corr, CorrelationId(n + 100));
++        assert_eq!(decode::<WindowResponse>(&bytes)?, WindowResponse::Accepted);
++    }
++    let mut queued = 0_u32;
++    while let Ok(command) = fixture.commands.try_recv() {
++        assert_eq!(command, AppWindowCommand::SetMaximized { view: WebviewId(7), maximized: queued % 2 == 0 });
++        queued += 1;
++    }
++    assert_eq!(queued, COUNT);
++    println!("AUDIT_SETTERS accepted={} retained_commands={} windows=1 consumer_progress=0", COUNT, queued);
++    Ok(())
++}
++
++#[test]
++fn resource_audit_auth_decode_amplifies_empty_scope_metadata() -> TestResult {
++    let count = 262_144_usize;
++    // Literal postcard Begin: provider empty, Some(scopes), u32 length,
++    // count empty String values, None login_hint. Decoder is production.
++    let mut wire = vec![0_u8, 0, 1, 0x80, 0x80, 0x10];
++    wire.resize(wire.len() + count, 0);
++    wire.push(0);
++    let request: keld_native::auth::AuthRequest = decode(&wire)?;
++    let keld_native::auth::AuthRequest::Begin { scopes: Some(scopes), .. } = request else {
++        panic!("Begin scopes required");
++    };
++    assert_eq!(scopes.len(), count);
++    assert!(scopes.iter().all(String::is_empty));
++    let retained_slots = scopes.capacity() * std::mem::size_of::<String>();
++    assert!(retained_slots > 20 * wire.len());
++    println!("AUDIT_DECODE wire_bytes={} scope_count={} vec_capacity={} string_size={} retained_vec_bytes={}", wire.len(), count, scopes.capacity(), std::mem::size_of::<String>(), retained_slots);
++    Ok(())
++}

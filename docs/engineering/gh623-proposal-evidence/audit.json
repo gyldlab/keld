@@ -1,0 +1,3085 @@
+{
+  "title": "KIPC Resource Audit",
+  "subtitle": "Boundedness, ownership, synchronization and adversarial qualification",
+  "date": "23 November 2026",
+  "source_pin": "269d51528137faf574cfd3548586ee3ada1acfda",
+  "proposal_pin": "870d1c693214e5b20bc8cdc900afa3ded67e2823",
+  "status": "Audit and proposed correction; production implementation not changed",
+  "defects": [
+    {
+      "id": "D01",
+      "priority": "P1",
+      "title": "Outbound mailbox and writer retention",
+      "evidence": "Executed + source",
+      "finding": "WorkerLink posts without admission; WriteQueue retains payload closures without byte or message caps. A no-read synthetic peer accepted 512 x 64 KiB. An injected stalled writer retained 2,048 payloads / 128 MiB. The active-write timeout begins at service, so it cannot cap producer bursts or queue age.",
+      "sources": "S02 S03 S05",
+      "correction": "One ledger before the first retention; finite bytes, records and residence time; no admission waiters."
+    },
+    {
+      "id": "D02",
+      "priority": "P1",
+      "title": "Pre-Ready work escapes a Worker-only limit",
+      "evidence": "Source + encoder probe",
+      "finding": "FS encodes before its first await; invokeFs/invokeAuth then await whenReady. Each whenReady can add a promise/waiter. A healthy link that never sends Ready can retain any number of encoded requests. Moving admission only into WorkerLink leaves this path untouched.",
+      "sources": "S07 S08 S09 S10",
+      "correction": "Reserve at the public adapter before encoding or readiness retention. Preserve direct whenReady semantics; refuse excess operation records locally."
+    },
+    {
+      "id": "D03",
+      "priority": "P1",
+      "title": "Active CALL state has no aggregate bound",
+      "evidence": "Source",
+      "finding": "Main creates a timer, Promise and Map record per call. Worker creates its own pending record. The 256-abandoned cap acts only after timeouts are processed; it does not bound active calls or a burst before that point. A peer can drain writes and withhold replies while byte use stays low.",
+      "sources": "S03 S05",
+      "correction": "Keep one operation record until caller settlement AND Worker pending/tombstone retirement AND terminal delivery. Bound tombstone retirement separately."
+    },
+    {
+      "id": "D04",
+      "priority": "P1",
+      "title": "Inbound ring drains into unbounded handlers",
+      "evidence": "Executed + source",
+      "finding": "The ring releases a CALL before startCallHandler. A real socket probe with eight ring slots started 512 unresolved handlers. After close, all 512 continuations resumed when their barrier opened; late answers were suppressed. Closing a transport does not cancel arbitrary application promises.",
+      "sources": "S04",
+      "correction": "Reserve handler count, input retention and maximum answer bytes before invoking application code; prevent further invocation on exhaustion."
+    },
+    {
+      "id": "D05",
+      "priority": "P1",
+      "title": "Host acknowledges an unbounded UI backlog",
+      "evidence": "Executed component + source",
+      "finding": "One window produced 4,096 Accepted replies while 4,096 setter commands remained unconsumed. The registry window/destroy limits are different resources. The wake bridge forwards into Tao, so bounding only the mpsc channel would move retention downstream.",
+      "sources": "S11 S12 S13 S25",
+      "correction": "Reserve before enqueue and before Accepted. Transfer the same permit through Tao; release on physical UI consumption or proven discard."
+    },
+    {
+      "id": "D06",
+      "priority": "P1",
+      "title": "Native facts accumulate before filtering",
+      "evidence": "Source",
+      "finding": "UI observations enqueue four state facts through unbounded mpsc. Changed-only filtering occurs later in Core. The coordinator can wait on the shared writer while native observations continue. Duplicate filtering after the queue cannot bound that queue.",
+      "sources": "S11 S14 S25 S30",
+      "correction": "A bounded native-to-Core mailbox with reserved lifecycle capacity. UI must not block. Coalescing requires explicit state-event semantics."
+    },
+    {
+      "id": "D07",
+      "priority": "P1",
+      "title": "Backing storage and shared-input ownership are unpriced",
+      "evidence": "Executed runtime + source",
+      "finding": "A one-byte Uint8Array view cloned an 8 MiB backing buffer on Bun 1.4.4. SharedArrayBuffer stayed shared and a post-send mutation was visible to the receiver. Direct WriteQueue also sent a later mutation. The low-level immutable-snapshot promise is currently unclear; the alias is demonstrated, not an invented existing API guarantee.",
+      "sources": "S02 S03 S28",
+      "correction": "Compact ordinary input after admission; charge copy overlap. Reject shared-backed input or specify a synchronization protocol. Copying an unsynchronized SAB is not a coherent snapshot proof."
+    },
+    {
+      "id": "D08",
+      "priority": "P1",
+      "title": "Codec and reader allocation differ from wire bytes",
+      "evidence": "Executed + source",
+      "finding": "262,151 AuthRequest wire bytes decoded into 262,144 empty strings; vector capacity alone was 8,388,480 bytes. The 32-call auth limit is a record bound. FS encoded an over-limit string before rejecting it. FrameReader accounts received fill bytes rather than the allocated fill capacity and copies callbacks before its aggregate check. These are amplification/transient proof gaps, not infinite single-frame allocation claims.",
+      "sources": "S06 S07 S16 S17 S18 S27",
+      "correction": "Schema-owned cardinality and decoded-storage limits before allocation; bounded encoder scratch; separately price callback, active fill, owned chunks and decode overlap."
+    },
+    {
+      "id": "D09",
+      "priority": "P1",
+      "title": "Legal FS result cannot fit the default async ring",
+      "evidence": "Executed transport + source",
+      "finding": "Native FS permits 8 MiB. Default WorkerLink ring is 1 MiB. An independently encoded valid response for a 2 MiB file had a 2,097,173-byte envelope and failed with KELD-IPC-026 in an otherwise empty default ring. The probe exercised real WorkerLink/UDS, not a real filesystem Host call.",
+      "sources": "S07 S19 S24 S29",
+      "correction": "For the API role, provision a ring large enough for its largest legal encoded response, counted globally. With power-of-two rings, an 8 MiB result needs a 16 MiB ring. An alternate reply lane is a larger design."
+    },
+    {
+      "id": "D10",
+      "priority": "P1",
+      "title": "Rust active write lacks an absolute frame clock",
+      "evidence": "Source + official contract",
+      "finding": "write_frame uses write_all(header), write_all(payload), then flush. OS write timeouts constrain individual waits. Repeated successful short writes can outlast the intended frame budget while shared generation/transition locks remain held. A no-read peer does time out. A finite frame is not claimed to make positive progress literally forever.",
+      "sources": "S15 S30 S35 S36",
+      "correction": "One absolute header+payload+flush deadline; remaining-time waits; poison after a partial failure. Cancellation/close must not need the lock held by blocked I/O."
+    },
+    {
+      "id": "D11",
+      "priority": "P2",
+      "title": "Queue residence and control fairness have no bound",
+      "evidence": "Source",
+      "finding": "The writer is FIFO and its five-second clock starts only when a frame becomes active. Control, answers, abandon and close can sit behind admitted data. Reserved admission credit cannot make them overtake existing FIFO work. Strict ordering supplies no independent per-channel latency guarantee.",
+      "sources": "S02 S05 S28",
+      "correction": "Preserve FIFO. Add admission-to-service and close deadlines plus bounded admission shares. Do not add a priority queue that changes accepted order."
+    },
+    {
+      "id": "D12",
+      "priority": "P2",
+      "title": "One renderer response can wait without end",
+      "evidence": "Source",
+      "finding": "The renderer bridge repeats recv_timeout(APP_LINK_READER_POLL) until reply, disconnect or stop. There is no overall response deadline. One pending slot bounds memory but can hold the renderer dispatcher indefinitely while a live Bun handler never answers.",
+      "sources": "S21",
+      "correction": "Give the caller an absolute response deadline and bounded late-reply ownership; do not replay an unknown effect."
+    },
+    {
+      "id": "D13",
+      "priority": "P2",
+      "title": "Retired reader metadata grows with session history",
+      "evidence": "Source",
+      "finding": "Each generation appends a stop Arc and retains its JoinHandle. Retirement defers joins to terminal shutdown to avoid a real guardian acknowledgement deadlock. Spaced restarts can outlive the sliding crash window and grow retained history. This is metadata/result retention, not demonstrated live-thread leakage.",
+      "sources": "S20 S37 S38 S39",
+      "correction": "Reap completed retired readers asynchronously outside the dependency cycle. Bound the reaper backlog and stop registrations before admitting more generations."
+    },
+    {
+      "id": "D14",
+      "priority": "P1 contract",
+      "title": "Architecture text can permit unsafe reasoning",
+      "evidence": "Source contradiction",
+      "finding": "Architecture02 equates pending post-Quit 022 with 024, while approved GH527 says 022 means effect unknown and only host 024 proves nonexecution. It also presents remote cancellation and allocation-free calls without accurate Current/Target status. Live timeout merely abandons correlation; it does not cancel queued or remote work.",
+      "sources": "S01 S03 S05 S23",
+      "correction": "Correct the exact architecture text, retain typed failure distinctions, and prohibit automatic replay of unanswered calls."
+    }
+  ],
+  "stages": [
+    {
+      "stage": "1. Public producer, generated encoder and readiness",
+      "Ownership": "Application owns inputs until the adapter snapshots them. Generated FS/auth codecs own serialized payloads. app.ts owns Ready waiters and the singleton link attempt.",
+      "Bytes and messages": "No aggregate pre-Ready operation/byte cap. Frame limit is 16 MiB after several encoders have allocated. Direct whenReady waiters have no count bound.",
+      "Allocation": "String UTF-8 buffers, byte snapshots, joined payload, Promise continuations and per-call Ready waiters. Auth vectors create per-element objects/arrays.",
+      "Copy count": "FS Write normally copies content into encodeBytes, then into joinPayload: two source-visible content copies before posting. UTF-8 encoding is a representation allocation, counted separately.",
+      "Backpressure": "No feedback from socket or UI consumption reaches this retained pre-Ready work. A singleton connection attempt does not bound its subscribers.",
+      "Failure": "Local codec errors reject async APIs. Link failure rejects readiness waiters. An authenticated but never-Ready link is a distinct indefinite wait.",
+      "Cancellation": "No public operation cancellation here. Waiting time before transport call is outside its later call deadline.",
+      "Ordering": "Snapshot occurs before readiness yields. FIFO guarantees begin at post order, not arbitrary concurrent API invocation order.",
+      "Fairness": "No producer quota or bounded admission arbitration. Application scheduling determines call order.",
+      "Slow peer": "Withheld Ready retains requests without requiring a blocked socket. High-rate producers can grow this graph indefinitely.",
+      "Crash/restart cleanup": "A failed singleton is not reset for reconnect. Failure rejects waiters, but only actual reference retirement and GC reclaim objects.",
+      "Evidence": "S07-S10, S27; executed oversized-string allocation probe."
+    },
+    {
+      "stage": "2. Main-to-Worker postMessage boundary",
+      "Ownership": "WorkerLink owns a private MessagePort; Bun owns serialized/in-transit message storage. One FIFO carries data and control.",
+      "Bytes and messages": "No configured cap. sendEvent posts after per-frame validation. CALLs add main pending state before posting.",
+      "Allocation": "Message envelope, runtime clone storage, and closure/control metadata. A tiny view can clone a much larger backing store.",
+      "Copy count": "Ordinary ArrayBuffer input is cloned at this boundary in the executed Bun probe. Exact transient overlap/native storage is not proven. Shared backing aliases rather than snapshots.",
+      "Backpressure": "postMessage returns void. It does not wait for Worker service or socket drain.",
+      "Failure": "Synchronous clone/post failure must roll back every reservation and pending record in the future design. Current code has no aggregate capacity failure.",
+      "Cancellation": "Abandon and close are messages behind earlier posts; they do not remove messages already posted.",
+      "Ordering": "The captured native port method preserves the existing single outbound FIFO. A second independent queue would create another ordering owner.",
+      "Fairness": "Data can consume all available runtime queue storage before terminal metadata is serviced. FIFO alone gives no channel share.",
+      "Slow peer": "Worker can drain the port faster than the socket by moving work into WriteQueue. Neither local queue is bounded.",
+      "Crash/restart cleanup": "Terminal STATE stops new public work; Worker exit/termination handles transport lifetime. Physical mailbox reclamation must be qualified independently.",
+      "Evidence": "S03, S05, S28, S34; native UDS flood and backing-store probes."
+    },
+    {
+      "stage": "3. Worker operation records and local producers",
+      "Ownership": "TransportWorker owns pending CALL records, abandoned correlations, PING output, HELLO and the socket writer.",
+      "Bytes and messages": "Active pending map has no application capacity. Abandoned unanswered count is capped at 256, with terminal transition on crossing. Heartbeat and one-shot open/kick metadata are different resources.",
+      "Allocation": "One pending entry per CALL, write Promise/catch continuations, payload clone references and control-message records.",
+      "Copy count": "Receiving the cloned view is not another explicit copy. Passing it to WriteQueue retains it until serialization/settlement.",
+      "Backpressure": "No count admission before pending insertion. Writes queue independently of map growth.",
+      "Failure": "Duplicate pending correlation fails closed. Write failure records terminal state. More than 256 processed abandons closes with 027.",
+      "Cancellation": "Abandon marks a record; it does not remove an unstarted wire CALL. A late reply retires the abandoned entry without delivering it.",
+      "Ordering": "CALL, EVENT and answer writes enter one writer. PING output must use the same authority.",
+      "Fairness": "No admission share between ordinary data and Worker-local control producers.",
+      "Slow peer": "Reading-but-never-replying peers permit unbounded active CALL state before caller timeouts. Healthy heartbeats do not prove application progress.",
+      "Crash/restart cleanup": "Worker end closes admission and arranges socket close; main has a five-second termination fallback after retained-ring drain. Credits must not be declared physically free just because STATE changed.",
+      "Evidence": "S05, S24; existing abandoned cap must remain distinct from proposed active-operation cap."
+    },
+    {
+      "stage": "4. WriteQueue and active frame serialization",
+      "Ownership": "One WriteQueue per socket owns FIFO serialization and poison state. Promise closures retain caller payload references until their turn.",
+      "Bytes and messages": "No aggregate queue cap. Each payload is <=16 MiB. One active writer limits concurrent writes, not queued payloads.",
+      "Allocation": "Promise chain/catch records per frame. Active write allocates a 16-byte header and one complete contiguous envelope.",
+      "Copy count": "One full payload copy into the active envelope. Direct callers are not snapshotted at admission; a mutated queued payload changes later bytes.",
+      "Backpressure": "write returns a Promise; Worker does not await admission before taking more messages. DrainSignal wakes active write waits only.",
+      "Failure": "Oversize refusal emits no bytes and preserves the queue. A write-chain failure poisons later writes because the stream may contain a prefix.",
+      "Cancellation": "Caller timeout does not withdraw the closure or free retained payloads. A new bound must not release their credit at caller settlement.",
+      "Ordering": "Complete frames are serialized in enqueue order. This is a sound guard against byte interleaving.",
+      "Fairness": "Strict global FIFO; a large frame blocks all later frames. There is no per-channel scheduling guarantee.",
+      "Slow peer": "Zero progress reaches the five-second active deadline. A legal slow drain can keep servicing frames while the unbounded waiting tail grows.",
+      "Crash/restart cleanup": "Poison makes subsequent chain work fail rather than write. A terminal chain still contains existing callbacks until settlement/Worker teardown.",
+      "Evidence": "S02; 2,048 x 64 KiB payloads retained under an injected zero-progress writer, then all completed after release."
+    },
+    {
+      "stage": "5. Socket and OS buffers",
+      "Ownership": "Bun Worker owns the client socket. Host owns the accepted server stream. OS owns kernel send/receive buffers and named-pipe I/O state.",
+      "Bytes and messages": "Kernel capacity is finite per endpoint but platform/configuration-dependent; no universal KELD process-wide total is declared. Stream buffers count bytes, not KIPC records.",
+      "Allocation": "Kernel buffers and any runtime staging are separate from JS/Rust owned payloads. UDS, diagnostic TCP and Windows named pipes need separate receipts.",
+      "Copy count": "User-to-kernel and kernel-to-user transfers must be reported separately. Source code alone does not establish physical memcpy count or zero-copy behavior.",
+      "Backpressure": "Bun raw write returns accepted bytes; partial/zero writes need drain handling. Host blocking writes stop their caller. No pressure reaches an unbounded upstream mailbox automatically.",
+      "Failure": "EOF, negative writes, OS timeout and partial-frame errors close/poison according to transport contract. Successful write proves local acceptance, not peer execution.",
+      "Cancellation": "Socket shutdown and reader polling are platform-sensitive. Retire only after real endpoint/worker completion.",
+      "Ordering": "One stream orders bytes. The writer must prevent interleaving at every shared use.",
+      "Fairness": "Kernel scheduling does not provide application channel fairness. Writer locks are not a fair queue contract.",
+      "Slow peer": "A no-read peer eventually blocks writes; a drip-reading peer tests absolute clocks, not only per-syscall timeouts.",
+      "Crash/restart cleanup": "Close descriptors/handles and revoke old generation before successor use. Do not treat flush or termination request as an acknowledgement.",
+      "Evidence": "S02, S15, S33, S35-S36. Actual probes in this audit used Unix sockets on macOS only."
+    },
+    {
+      "stage": "6. Rust host reader and validation",
+      "Ownership": "keld-ipc link state machine and one generation-bound reader own the header/payload. Trusted context selects ReceivePolicy.",
+      "Bytes and messages": "One 16-byte header and one payload <=16 MiB per executing reader. Multiply by active/retiring readers; the reader cap is not a global process cap.",
+      "Allocation": "Payload Vec is allocated after length and semantic header validation. A new payload allocation occurs per frame.",
+      "Copy count": "Read fills the payload storage. Owned deserialization can add separate String/Vec storage later; that belongs to the decoder stage.",
+      "Backpressure": "Serial read/dispatch naturally stops reading during inline work or a blocking reply. Bounded worker admission may reject before decode.",
+      "Failure": "Malformed shape fails before payload allocation. A started frame has an absolute first-byte deadline. Idle polls intentionally do not time out a healthy quiet session.",
+      "Cancellation": "Short read polling checks stop/generation state. First-byte deadline cannot be renewed by fragments.",
+      "Ordering": "Wire frames read in stream order, with trusted generation validation before effects.",
+      "Fairness": "One reader per stream and sequential dispatch. No cross-channel fairness guarantee during a blocking handler/write.",
+      "Slow peer": "Trickled header/payload hits the absolute deadline, with documented poll or OS-timeout overshoot. No-reply application waits are separate.",
+      "Crash/restart cleanup": "Stale readers are made inert. Completed reader handles and stop registrations remain until session end today; D13 covers that metadata history.",
+      "Evidence": "S26, S20. Existing validation/deadline protections are preserved, not reported as missing."
+    },
+    {
+      "stage": "7. Decoder, schema and Rust handler admission",
+      "Ownership": "keld-ipc owns generic Postcard coding; schema owners own structural limits; Core owns FS/Auth scheduling; Native owns policy/effects.",
+      "Bytes and messages": "FS allows one outstanding native request with sync_channel(1). Auth has 32 tickets spanning queued/physical work and sync_channel(32). No common decoded-byte bound prices their graphs.",
+      "Allocation": "DeserializeOwned allocates nested Strings/Vecs. Wire frame and decoded graph coexist. encode uses to_allocvec; encode_into already exists for caller-owned storage.",
+      "Copy count": "Owned decoded strings/bytes generally copy from the wire. Rust FS output is encoded into another Vec; avoid assuming every schema has the same copy factor.",
+      "Backpressure": "FS/Auth bounded admission is useful and must be reused. Admission by record alone cannot price structural expansion.",
+      "Failure": "Guarded capacity refusal uses the existing IPC-owned CallError only under its documented consume-before-refuse conditions. Semantic policy rejection after decode does not undo allocation peaks.",
+      "Cancellation": "Native FS has a five-second cooperative operation budget. Auth tickets remain through physical drain. Transport timeout does not prove effect cancellation.",
+      "Ordering": "Per-owner scheduling and shared writer serialization apply. Existing request/effect order is part of the API contract.",
+      "Fairness": "Record caps are not byte fairness; many tiny decoded elements or a few maximum requests can dominate memory/work.",
+      "Slow peer": "Reply writers can retain decoded/output state while blocked. Answer capacity should be reserved before side effects when a reply is obligatory.",
+      "Crash/restart cleanup": "Generation retirement closes admission; retained physical work determines final release. No new parallel permission/parser owner should be added.",
+      "Evidence": "S16-S19; literal AuthRequest decode witness, not a Native auth acceptance result."
+    },
+    {
+      "stage": "8. Host dispatcher, UI commands and physical consumer",
+      "Ownership": "Core WindowSession/registry owns request admission. mpsc, wake bridge and Tao own successive handoffs. The native UI loop owns effects.",
+      "Bytes and messages": "Unbounded command mpsc and no credit carried through Tao. 1,024 window identities and 64 pending Destroy records per window are separate bounds.",
+      "Allocation": "Queue nodes, command records and any referenced objects. Payload ownership can move while total retained command count remains unchanged.",
+      "Copy count": "Rust commands move through channels/proxy. Moves are not proof of allocation-free queues; runtime/event nodes still exist.",
+      "Backpressure": "send_window_setter enqueues and replies Accepted without waiting for UI consumption. Producer may await every reply and still overrun the UI.",
+      "Failure": "Disconnected queue is an error. Capacity exhaustion has no current defined result. A correction must refuse before enqueue/Accepted.",
+      "Cancellation": "Physical teardown and generation checks exist. A bounded permit must survive forwarding and release only at a proven terminal consumer boundary.",
+      "Ordering": "Command enqueue order and native dispatch order must remain consistent. Do not silently coalesce effectful requests.",
+      "Fairness": "Repeated setters on one window can occupy all backlog. Reserve terminal/control capacity without letting ordinary commands consume it.",
+      "Slow peer": "A stalled UI accumulates commands even with a fast socket. A slow socket also blocks shared writer/transition owners.",
+      "Crash/restart cleanup": "Carry generation-tagged permits through the bridge; stale work must not free successor capacity. Avoid a blocking bounded send while holding shutdown locks.",
+      "Evidence": "S11-S13, S25, S30; 4,096 retained Accepted setters on one live window."
+    },
+    {
+      "stage": "9. Native event return path",
+      "Ownership": "Native window observer produces state facts. Core event coordinator filters and writes them back to the role.",
+      "Bytes and messages": "Unbounded mpsc before changed-only filtering. Four facts can be emitted for one state observation.",
+      "Allocation": "One retained queue entry per emitted fact, plus implementation-dependent node/block overhead. Registry/filter state is a different retained domain.",
+      "Copy count": "Owned fixed-size facts move through the queue and encode to output; exact allocator/node costs require measurement.",
+      "Backpressure": "UI sends do not wait for coordinator or role consumption. Synchronous writer can stop the coordinator.",
+      "Failure": "Current channel disconnect handling does not define overload. A new bounded mailbox needs explicit terminal behavior for lossless facts.",
+      "Cancellation": "Lifecycle/terminal events need reserved capacity and a nonblocking UI-facing path. Drop-oldest is not a cancellation protocol.",
+      "Ordering": "Created/Close/Released and state events may have observable order. Deduplicating after queueing is not an admission mechanism.",
+      "Fairness": "State floods can starve lifecycle delivery unless admission/scheduling rules protect it.",
+      "Slow peer": "A role that drains more slowly than native observations are produced can grow this queue indefinitely while each individual write still succeeds.",
+      "Crash/restart cleanup": "Retired-generation facts must be rejected/retired by the canonical owner. Bounded bridge state must not survive indefinitely into successors.",
+      "Evidence": "S11, S14, S25, S30. Source finding; no AppKit flood run was claimed."
+    },
+    {
+      "stage": "10. Bun FrameReader, shared ring and blocking reply slot",
+      "Ownership": "Worker FrameReader owns socket fragments/fill. Worker is sole ring writer; main applies and dispatches using atomic indices. One separate slot carries the blocking reply.",
+      "Bytes and messages": "Default SAB=64+65,536+1,048,576=1,114,176 bytes. Ring <=16,384 records and available bytes. FrameReader unread bytes <=one frame envelope after checks and <=65,536 fragments. Allocated backing is larger than received-byte count.",
+      "Allocation": "Owned callback chunks, active full-size fill, copied payload, fixed SAB and main ringCopy allocations. Callback is copied before aggregate rejection; peak requires a qualified callback-size allowance.",
+      "Copy count": "Contiguous input: callback copy, gather payload, ring copy, main delivery copy. Fragmented fill copies later fragments directly; state appliers can add a separate copy, and generated response decoding another.",
+      "Backpressure": "Ring overflow closes with 026; v2 has no live GRANT credit. The ring is a fail-closed bound, not elastic buffering for unlimited producers.",
+      "Failure": "Overflow retains earlier records for ordered drain. Blocking reply larger than its slot also fails. Default async ring cannot hold the valid large FS result in D09.",
+      "Cancellation": "Caller deadline drains retained replies before deciding abandon. Closing drains earlier retained facts before source end; that correct ordering must remain.",
+      "Ordering": "One atomic ring plus reply position, first-terminal-wins state and coalesced KICK preserve the current contract. Separate ring lanes would need a new ordering proof.",
+      "Fairness": "Dispatch processes a finite snapshot of W_BYTES, but arbitrary listener duration is unbounded. Count/byte limits do not imply a scheduling-time bound.",
+      "Slow peer": "A parked main can fill the ring; overflow is terminal, not drop/coalesce. A slow async handler may leave the ring empty while retaining work elsewhere.",
+      "Crash/restart cleanup": "Worker liveness while parked, terminal notification, ordered drain and eventual terminate exist. One end notification or a zero counter is not a physical reclamation proof.",
+      "Evidence": "S04 S06 S24 S29; preserve existing guards and differentiate their actual scope."
+    },
+    {
+      "stage": "11. Main dispatcher and application consumers",
+      "Ownership": "WorkerLink owns listeners, state appliers and host-CALL continuations. Application owns its own listener registrations, result retention and arbitrary internal allocations.",
+      "Bytes and messages": "No transport handler-concurrency cap. Event listener registrations are application-managed and unbounded by this transport. Application-retained results are outside transport-owned byte bounds.",
+      "Allocation": "ringCopy creates an independent payload. CALL Promise.then retains handler lifecycle state. Finalization copies pending values into an array before clearing, adding a proportional peak.",
+      "Copy count": "One delivery copy; state applier can separately copy the same EVENT. Response decoders may allocate independent content. Do not sum aliases as distinct backing stores.",
+      "Backpressure": "Synchronous event callback delays ring release. An async listener return is not awaited. CALL ring release precedes asynchronous handler completion.",
+      "Failure": "Thrown event listener errors are isolated/deferred. Handler throws/rejections end the link. Valid late handler answers after terminal state are suppressed.",
+      "Cancellation": "No automatic AbortSignal for application code. Bounded admission is enforceable; forced completion of arbitrary JS within the role requires process isolation/termination.",
+      "Ordering": "Dispatch order is FIFO. Async completion order can differ. Replies must correlate independently; do not promise completion order merely from input order.",
+      "Fairness": "A long synchronous callback can monopolize the role main thread. A scheduling slice cannot preempt arbitrary user code.",
+      "Slow peer": "Many handlers can stay unresolved after the ring drains, as the 512-handler probe demonstrated.",
+      "Crash/restart cleanup": "Transport can seal admission and suppress stale replies. It cannot reclaim objects that live application code still owns; a successor uses fresh generation identity.",
+      "Evidence": "S04; exact close behavior observed in the handler barrier experiment."
+    },
+    {
+      "stage": "12. Session retirement and supervisor history",
+      "Ownership": "Core and Runtime own generation fencing, reader stop flags, JoinHandles, child cleanup and successor admission.",
+      "Bytes and messages": "Reader handle map and stop-flag vector grow across completed generations until final session stop. Sliding-window crash suppression is not a lifetime resource cap.",
+      "Allocation": "Per-generation reader state, JoinHandle/result packets, Arc flags, map/vector capacity and per-link fixed buffers while generations overlap.",
+      "Copy count": "Mostly metadata ownership; count retained entries and capacities rather than assuming all stopped threads remain live.",
+      "Backpressure": "There is no bounded completed-reader reaper today. New generation work can continue while historical records remain retained.",
+      "Failure": "Terminal join observes thread failures. Removing historical entries too early can lose failure evidence or race stale callbacks.",
+      "Cancellation": "Do not synchronously join on the guardian owner whose acknowledgement a reader awaits. Completion/reaping must occur outside that dependency cycle.",
+      "Ordering": "Retire old authority before enabling successor. Ticket epoch and slot incarnation prevent old release from altering new capacity.",
+      "Fairness": "Reaping needs bounded scheduled progress so a long-lived session does not accumulate history.",
+      "Slow peer": "A retirement that cannot finish needs a finite overlapping-generation budget and terminal escalation; simply allocating another ledger compounds memory.",
+      "Crash/restart cleanup": "Observe actual Worker/thread/process exit, socket closure and record removal separately. A close request is not cleanup completion.",
+      "Evidence": "S20; app_session.rs:2360-2367 and 8050-8060; source finding, no restart-soak measurement."
+    }
+  ],
+  "tests": [
+    {
+      "id": "T01",
+      "name": "EVENT byte budget",
+      "positive": "Pause a real authenticated peer after HELLO. Keep record capacity ample. Flood uniquely marked 64 KiB/1 MiB/max-size payloads past B_data. Independent retained-buffer census must remain <=B_data; refused operations emit zero bytes.",
+      "mutant": "Remove only pre-post EVENT byte reservation. The independent census exceeds B_data before active-write timeout.",
+      "status": "Current defect witnessed; bounded implementation/mutant pair not run."
+    },
+    {
+      "id": "T02",
+      "name": "Message count independent of bytes",
+      "positive": "Use zero-length or minimum-size legal EVENTs and ample byte budget. Admit exactly N_data, then try one more.",
+      "mutant": "Remove only record admission. N_data+1 live envelopes are retained even though bytes fit.",
+      "status": "Specified."
+    },
+    {
+      "id": "T03",
+      "name": "Concurrent producer arbitration",
+      "positive": "Use32 logical producers for acceptance/FIFO load. For the atomicity mutant, barrier a real main-thread reservation against a Worker credit return on the same shared bytes-used counter; both read the old value before either updates. Check counter against independent live tickets, then attempt capacity-filling admissions.",
+      "mutant": "Replace only the shared atomic read-modify-write with a load/store pair. Main reservation and Worker release lose an update; independent live tickets disagree with credit and later admission exceeds capacity. A separate single-fault rollback arm leaks partially reserved credit.",
+      "status": "Specified; logical Promise concurrency alone cannot falsify synchronous admission atomicity. The negative arm requires the actual two-agent shared-counter schedule."
+    },
+    {
+      "id": "T04",
+      "name": "Backing stores and immutable ordinary input",
+      "positive": "Post a one-byte view into an 8 MiB backing and a pooled-buffer slice. Hold the writer, mutate caller storage, then compare admitted and peer digests plus actual backing sizes. Test direct WriteQueue separately so a mailbox clone cannot hide aliasing.",
+      "mutant": "Post the original view or omit the direct snapshot. Backing census exceeds charge or peer bytes differ.",
+      "status": "Both baseline alias/backing witnesses executed."
+    },
+    {
+      "id": "T05",
+      "name": "Shared-backed input",
+      "positive": "Supply an SAB-backed view and mutate it from another agent while the boundary is paused. Contract must either reject before dispatch or use a separately proved synchronization protocol.",
+      "mutant": "Remove shared-backing rejection while retaining ordinary copy behavior. Shared input reaches the unsynchronized path. Do not accept a potentially torn memcpy as a positive snapshot oracle.",
+      "status": "Shared alias probe executed; future rejection test specified."
+    },
+    {
+      "id": "T06",
+      "name": "Pre-Ready and encoder limits",
+      "positive": "Complete HELLO but withhold Ready. Offer enough valid FS/auth calls to fill operation and encoder budgets. Observe reservations before UTF-8/vector/snapshot allocation.",
+      "mutant": "Move admission to WorkerLink only. Pre-Ready encoded payload or waiter census exceeds its bound. Separately remove bounded encoder preflight; over-limit allocation occurs before refusal.",
+      "status": "Encoder baseline executed; pre-Ready source finding."
+    },
+    {
+      "id": "T07",
+      "name": "Active CALL records",
+      "positive": "Peer drains requests promptly but returns no replies. Long valid deadlines keep abandoned count zero. Byte budget stays mostly free.",
+      "mutant": "Release CALL records when writes complete. Main/Worker pending count exceeds N_call although queued payload bytes remain low.",
+      "status": "Specified."
+    },
+    {
+      "id": "T08",
+      "name": "Timeout does not free retained bytes",
+      "positive": "Hold a queued/partial frame, expire its caller, then use the apparently free capacity for other work. Observe live buffers independently.",
+      "mutant": "Release byte credit on caller timeout. Live retained bytes exceed B_out.",
+      "status": "Specified; source confirms timeout does not remove current writer work."
+    },
+    {
+      "id": "T09",
+      "name": "Permanent tombstone saturation",
+      "positive": "Use N_call128 below256; occupy other partitions while retaining prepaid abandon rights and the reserved terminal right. Expire all calls, keep peer alive and never answer. No new CALL is submitted and no abandon acquires a fresh control slot.",
+      "mutant": "Disable the permanent-saturation terminal transition, keeping local refusals. Link stays OPEN and unable to admit past the promised retirement deadline.",
+      "status": "Specified; existing PR1413 AC14 owns this interaction."
+    },
+    {
+      "id": "T10",
+      "name": "Late reply vs retirement",
+      "positive": "Deliver the exact old reply immediately before and after terminal commitment in separate barrier schedules. Check caller result, tombstone count and next operation.",
+      "mutant": "Drop the tombstone/reuse the correlation early. Old reply settles the wrong call or capacity is released twice.",
+      "status": "Specified."
+    },
+    {
+      "id": "T11",
+      "name": "Handler concurrency",
+      "positive": "Override the common profile: N_handler=1, at least2 answer ticket slots, and B_answer>=2*c_max (6F if c_max=3F); raise B_out and N_out equally. Hold one handler and submit a second valid CALL, pacing input to avoid ring saturation. Reserve2F of handler-input storage independently so that gate also stays open.",
+      "mutant": "Remove only handler-record reservation. Active handler count exceeds N_handler. A ring overflow must not mask this mutation.",
+      "status": "Executed baseline:512 unresolved handlers with8 ring slots."
+    },
+    {
+      "id": "T12",
+      "name": "Answer capacity before effects",
+      "positive": "Give record capacity but exhaust the maximum-answer allowance. Use an independent handler effect counter. Separately prove an already-reserved answer succeeds when data is full.",
+      "mutant": "Remove only advance answer-byte reservation. New handler effect occurs with no reply allowance; a later failed answer does not hide it.",
+      "status": "Specified."
+    },
+    {
+      "id": "T13",
+      "name": "Control reserve and all producers",
+      "positive": "Exercise HELLO, PING replies, CALL, EVENT, answers, abandon and close separately. Fill data; leave control free; make the EVENT charge fit remaining control.",
+      "mutant": "Allow ordinary EVENT to use control reserve. It is admitted against protected capacity. A separate skipped-PING-reservation mutant grows control work under a no-read peer.",
+      "status": "Specified; preserve one FIFO."
+    },
+    {
+      "id": "T14",
+      "name": "Credit return while main is parked",
+      "positive": "Park main in callBlocking. Worker drains a ticket from the exact partition needed by a following required operation, and peer waits for that operation before replying.",
+      "mutant": "Make release depend on a main-thread callback. Required progress fails despite physical drain. Keep other reserved partitions occupied so they cannot mask the fault.",
+      "status": "Specified; do not rely on data credit funding a disjoint control partition."
+    },
+    {
+      "id": "T15",
+      "name": "Exactly-once release and generation fences",
+      "positive": "Force reply/timeout, reply/close, poison/close and worker-death/release in both orders. Reuse a local slot in a successor and deliver an old completion.",
+      "mutant": "Remove release CAS or epoch/incarnation validation, one mutation per arm. Count underflows or old work frees occupied successor capacity.",
+      "status": "Specified; need both logical-state and real teardown observers."
+    },
+    {
+      "id": "T16",
+      "name": "Partial write poison",
+      "positive": "Peer records a partial header/payload; then inject failure with another queued frame.",
+      "mutant": "Treat partial failure as pre-dispatch refusal or keep writer usable. Peer sees subsequent frame bytes on the damaged stream, or result falsely claims no effect.",
+      "status": "Existing poison is present; new accounting integration must retain its regression."
+    },
+    {
+      "id": "T17",
+      "name": "Queue-age and whole-frame clocks",
+      "positive": "For TS queue age, let each head finish inside5s while a tail exceeds T_queue. For Rust, use an injectable clock and successful short writes whose total exceeds T_frame. Native short-read peer is a separate acceptance arm.",
+      "mutant": "Remove only the relevant absolute deadline. Tail/frame exceeds the configured bound without terminal settlement. Per-wait timeouts stay enabled.",
+      "status": "Specified; native drip-write test not run."
+    },
+    {
+      "id": "T18",
+      "name": "Worker termination and cleanup",
+      "positive": "Kill or wedge the Worker with payloads in mailbox, active writer and pending-reply states separately. Observe exact error, peer EOF, actual exit, retained references and healthy successor.",
+      "mutant": "Mark physical retirement at termination request, or accept a stale release. Quiescence/retention oracle fails despite counters showing zero.",
+      "status": "New ledger cleanup acceptance unrun."
+    },
+    {
+      "id": "T19",
+      "name": "Host UI end-to-end command permit",
+      "positive": "Stall physical UI consumer, issue K_ui+1 alternating setters on one window. Exactly K_ui can be Accepted. Resume one command and admit one healthy follow-up.",
+      "mutant": "Bypass pre-enqueue reservation. Retained commands exceed K_ui. Separately return permits at Tao forwarding: proxy backlog exceeds K_ui while mpsc stays empty.",
+      "status": "Baseline4096 retained Accepted commands executed; physical AppKit arm unrun."
+    },
+    {
+      "id": "T20",
+      "name": "Native facts before filtering",
+      "positive": "Keep coordinator blocked while generating repeated native observations and lifecycle facts. Observe mailbox occupancy before changed-only filtering.",
+      "mutant": "Remove mailbox admission. Duplicate/state facts exceed K_events. Separately let ordinary state consume lifecycle reserve and observe forbidden admission.",
+      "status": "Specified; no native UI flood result claimed."
+    },
+    {
+      "id": "T21",
+      "name": "Decoder cardinality and bytes",
+      "positive": "Use valid literal AuthRequest wire with many empty strings. Leave frame/record budgets ample; observe Vec/arena capacity before semantic policy.",
+      "mutant": "Remove count/decoded-byte precheck only. Allocated capacity exceeds D_schema. A later policy rejection cannot make the test pass.",
+      "status": "Baseline262151 wire bytes to8388480 vector backing executed."
+    },
+    {
+      "id": "T22",
+      "name": "Capacity compatibility",
+      "positive": "Through the public FS adapter and actual Host, read sizes around1MiB and exactly8MiB. The encoded envelope must fit the declared async receive capacity. Also test16MiB framing independently of schema limits.",
+      "mutant": "Restore1MiB default for this API profile. A valid2MiB result closes with026.",
+      "status": "Real WorkerLink/UDS2MiB baseline executed; actual Host FS qualification unrun."
+    },
+    {
+      "id": "T23",
+      "name": "Retired reader resource count",
+      "positive": "Replace generations beyond K_retired with barriers proving old readers exited. Observe live handles and stop registrations. Force guardian-ack ordering separately.",
+      "mutant": "Omit completed-reader removal. Metadata grows past K_retired. A synchronous-join mutation must expose the guardian dependency deadlock.",
+      "status": "Specified."
+    },
+    {
+      "id": "T24",
+      "name": "Renderer deadline and no unsafe retry",
+      "positive": "Keep one valid host-originated call unanswered on a live link. Require deadline settlement and bounded late-reply handling. In a separate arm, commit a side effect then lose its reply.",
+      "mutant": "Remove response deadline: pending slot never retires. Add automatic replay on022/006: independent effect count becomes2.",
+      "status": "Specified; do not use reconnect or code-only retry heuristics."
+    }
+  ],
+  "references": [
+    {
+      "id": "S01",
+      "title": "Architecture 02",
+      "path": "docs/architecture/02-ipc.md",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/docs/architecture/02-ipc.md#L51-L70"
+    },
+    {
+      "id": "S02",
+      "title": "Canonical TypeScript transport",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L1255-L1380"
+    },
+    {
+      "id": "S03",
+      "title": "WorkerLink public producers",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L2738-L2811"
+    },
+    {
+      "id": "S04",
+      "title": "Inbound dispatch and handler continuations",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L3208-L3376"
+    },
+    {
+      "id": "S05",
+      "title": "Transport Worker queue and end paths",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L3742-L3883"
+    },
+    {
+      "id": "S06",
+      "title": "FrameReader ownership and bounds",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L750-L864"
+    },
+    {
+      "id": "S07",
+      "title": "Generated filesystem codecs",
+      "path": "packages/@keld/api/src/fs.generated.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/fs.generated.ts#L19-L95"
+    },
+    {
+      "id": "S08",
+      "title": "Public filesystem adapter",
+      "path": "packages/@keld/api/src/fs.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/fs.ts#L11-L27"
+    },
+    {
+      "id": "S09",
+      "title": "Ready waiter ownership and invocation",
+      "path": "packages/@keld/api/src/app.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/app.ts#L211-L230"
+    },
+    {
+      "id": "S10",
+      "title": "Pre-Ready FS and auth invocation",
+      "path": "packages/@keld/api/src/app.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/app.ts#L360-L375"
+    },
+    {
+      "id": "S11",
+      "title": "Host UI command and native-event channels",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L2469-L2517"
+    },
+    {
+      "id": "S12",
+      "title": "Setter enqueue before Accepted reply",
+      "path": "crates/keld-core/src/app_session/window_router.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session/window_router.rs#L681-L699"
+    },
+    {
+      "id": "S13",
+      "title": "UI command forwarding to Tao",
+      "path": "crates/keld-wv/src/wkwebview/mod.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-wv/src/wkwebview/mod.rs#L919-L975"
+    },
+    {
+      "id": "S14",
+      "title": "Native state event production",
+      "path": "crates/keld-wv/src/wkwebview/managed_windows.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-wv/src/wkwebview/managed_windows.rs#L412-L448"
+    },
+    {
+      "id": "S15",
+      "title": "Rust frame writer",
+      "path": "crates/keld-ipc/src/link.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-ipc/src/link.rs#L828-L857"
+    },
+    {
+      "id": "S16",
+      "title": "Rust structured codec",
+      "path": "crates/keld-ipc/src/codec.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-ipc/src/codec.rs#L9-L49"
+    },
+    {
+      "id": "S17",
+      "title": "Auth admission, decoding and worker ownership",
+      "path": "crates/keld-core/src/app_session/auth_router.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session/auth_router.rs#L298-L327"
+    },
+    {
+      "id": "S18",
+      "title": "Auth request schema",
+      "path": "crates/keld-native/src/auth/mod.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-native/src/auth/mod.rs#L66-L83"
+    },
+    {
+      "id": "S19",
+      "title": "Native filesystem limits",
+      "path": "crates/keld-native/src/fs.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-native/src/fs.rs#L70-L81"
+    },
+    {
+      "id": "S20",
+      "title": "Generation reader retention",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L7583-L7616"
+    },
+    {
+      "id": "S21",
+      "title": "Renderer response wait",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L4504-L4515"
+    },
+    {
+      "id": "S22",
+      "title": "Canonical IPC error registry",
+      "path": "docs/engineering/keld-error-codes.md",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/docs/engineering/keld-error-codes.md#L36-L71"
+    },
+    {
+      "id": "S23",
+      "title": "Approved WorkerLink contract",
+      "path": "docs/specs/gh527-worker-owned-blocking-call-transport.md",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/docs/specs/gh527-worker-owned-blocking-call-transport.md#L503-L554"
+    },
+    {
+      "id": "S24",
+      "title": "Ring and reply capacities",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L1694-L1756"
+    },
+    {
+      "id": "S25",
+      "title": "Window registry and setter admission",
+      "path": "crates/keld-core/src/app_session/window_registry.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session/window_registry.rs#L485-L533"
+    },
+    {
+      "id": "S26",
+      "title": "Rust validated frame allocation and clock",
+      "path": "crates/keld-ipc/src/link.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-ipc/src/link.rs#L714-L825"
+    },
+    {
+      "id": "S27",
+      "title": "Generated auth codec",
+      "path": "packages/@keld/api/src/auth.generated.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/auth.generated.ts#L1-L120"
+    },
+    {
+      "id": "S28",
+      "title": "Worker private FIFO and correlation allocation",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L2894-L2922"
+    },
+    {
+      "id": "S29",
+      "title": "Worker ring append and wake",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L3668-L3739"
+    },
+    {
+      "id": "S30",
+      "title": "Current generation lock during I/O",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L8585-L8649"
+    },
+    {
+      "id": "S37",
+      "title": "Sliding crash window, not lifetime cap",
+      "path": "crates/keld-runtime/src/lib.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-runtime/src/lib.rs#L59-L71"
+    },
+    {
+      "id": "S38",
+      "title": "Restart crash-window eviction",
+      "path": "crates/keld-runtime/src/lib.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-runtime/src/lib.rs#L1580-L1586"
+    },
+    {
+      "id": "S39",
+      "title": "Generation reader stop registrations",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L2360-L2367"
+    },
+    {
+      "id": "S31",
+      "title": "GH623 tracker and acceptance",
+      "path": "Issue #623",
+      "url": "https://github.com/gyldlab/keld/issues/623"
+    },
+    {
+      "id": "S32",
+      "title": "Existing GH623 proposal, not landed",
+      "path": "PR1413 at 870d1c693214e5b20bc8cdc900afa3ded67e2823",
+      "url": "https://github.com/gyldlab/keld/blob/870d1c693214e5b20bc8cdc900afa3ded67e2823/docs/specs/gh623-bounded-outbound-budget.md"
+    },
+    {
+      "id": "S33",
+      "title": "Official Bun TCP manual backpressure contract",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://bun.sh/docs/runtime/networking/tcp"
+    },
+    {
+      "id": "S34",
+      "title": "Official Bun Worker serialization contract",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://bun.sh/docs/runtime/workers"
+    },
+    {
+      "id": "S35",
+      "title": "Rust Write::write_all repeats writes",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://doc.rust-lang.org/std/io/trait.Write.html#method.write_all"
+    },
+    {
+      "id": "S36",
+      "title": "Rust socket timeout semantics",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://doc.rust-lang.org/std/net/struct.TcpStream.html#method.set_write_timeout"
+    }
+  ],
+  "blocks": [
+    {
+      "kind": "heading",
+      "text": "1. Verdict and scope"
+    },
+    {
+      "kind": "paragraph",
+      "text": "KIPC does not currently provide an end-to-end bounded resource contract. Several local limits work, but ownership moves into unbounded mailboxes, Promise chains, handler continuations and Host UI queues. A maximum frame length and a bounded shared inbound ring do not bound the full pipeline. The smallest correction is composed admission and lifetime accounting inside the existing owners, with a permit held until the actual consumer retires the work."
+    },
+    {
+      "kind": "paragraph",
+      "text": "Baseline: published main 269d51528137faf574cfd3548586ee3ada1acfda, retrieved 23 November 2026. Existing GH623 proposal: PR1413 at 870d1c693214e5b20bc8cdc900afa3ded67e2823. The PR is open and not merged; its file remains Status:draft. B1 capacity/copy selection, B2 local failure semantics and B3 platform qualification remain open. This audit extends that existing work instead of inventing another transport or tracker. [S31-S32]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Scope covers the canonical app-link transport, generated FS/auth/echo consumers, production Core dispatch, macOS UI handoffs, decoder ownership and generation cleanup. Destination-only GRANT, remote cancellation, general schema generation and optional bulk transport are not credited as current protections. Native execution here is macOS only; this is not Windows/Linux acceptance or a full application qualification."
+    },
+    {
+      "kind": "paragraph",
+      "text": "No production implementation, branch, PR, issue or review was changed. Rust witnesses add44 test lines only in an isolated source archive. TypeScript probes import the pinned production code. The files are reproduction tools and design evidence, not proof that a new bound has been implemented."
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Decision atom",
+        "Owner and first falsifier"
+      ],
+      "rows": [
+        [
+          "Census and copies",
+          "Each queue/codec owner: any live backing store, metadata node or producer omitted from the census falsifies the budget."
+        ],
+        [
+          "Admission",
+          "Existing resource owner: any clone, pending record, queue insertion or handler effect before its reservation falsifies admission."
+        ],
+        [
+          "Lifetime",
+          "Ticket owner plus physical consumer: early/double/stale release falsifies accounting even if the counter looks bounded."
+        ],
+        [
+          "Work and order",
+          "Existing writer/dispatcher: byte interleave, reordered accepted frames or lost required events falsifies compatibility."
+        ],
+        [
+          "Time and progress",
+          "Deadline/teardown owner: a fresh per-step timeout, parked-main dependency or permanent saturated OPEN link falsifies liveness."
+        ],
+        [
+          "Statistic and artifact",
+          "Experiment owner: self-reported counters without an independent object/wire/consumer oracle cannot prove retained-memory limits."
+        ]
+      ]
+    },
+    {
+      "kind": "heading",
+      "text": "2. Executed evidence and its limits"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Environment: macOS26.5.1 build25F80, Darwin25.5.0, arm64. Bun1.4.4 revision38afee6c8. Rust1.99.1 (58cf8f9c3), Cargo1.99.1. Tests used temporary Unix sockets or isolated component fixtures. These observations establish specific resource/correctness behavior; no throughput, latency improvement or total-RSS value was measured."
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Probe",
+        "Observed result",
+        "What the result proves"
+      ],
+      "rows": [
+        [
+          "Actual WorkerLink, paused peer",
+          "512 EVENTs x64KiB accepted;32MiB payload; peer read48-byte HELLO only",
+          "No refusal through512 EVENTs/32MiB in this run; source shows no configured aggregate cap. Stage split and kernel bytes were not measured."
+        ],
+        [
+          "Injected stalled WriteQueue",
+          "2048 payload objects alive after separate-job GC;128MiB payload;0 completed;1 write attempt",
+          "Promise-chain payload retention crosses a67,108,928-byte test threshold. After barrier release all2048 completed."
+        ],
+        [
+          "Worker inbound CALLs",
+          "8 ring slots;512 started handlers;0 completed;32KiB handler payload",
+          "Ring occupancy does not bound active asynchronous handlers. All512 continuations ran after close when released."
+        ],
+        [
+          "Backing-store clone",
+          "1-byte view at offset123 cloned8,388,608-byte ArrayBuffer",
+          "Visible payload length undercounts clone backing storage on this exact Bun."
+        ],
+        [
+          "Ownership mutation",
+          "Direct queued byte65 changed to66 on wire; shared-backed post also observed66",
+          "Direct writer retains an alias; SAB cloning does not create a snapshot. Existing low-level ownership promise needs clarification."
+        ],
+        [
+          "FS encoder",
+          "16,777,217-byte UTF-8 allocation before over-limit refusal",
+          "A post-encoding frame check does not bound transient encoder allocation."
+        ],
+        [
+          "Host UI command component",
+          "4096 Accepted replies;4096 retained commands;1 window;0 consumer progress",
+          "Existing window-count/destroy limits do not cap setter backlog. Physical AppKit was not exercised."
+        ],
+        [
+          "Rust AuthRequest decoder",
+          "262151 wire bytes;262144 empty Strings;capacity349520;8,388,480 vector bytes",
+          "Decoded capacity can be about32x wire size before Native policy. This is vector backing capacity, not RSS."
+        ],
+        [
+          "Default async FS receive",
+          "Valid2MiB content;2,097,173-byte envelope;empty1MiB ring;026",
+          "Transport default rejects a result below the native8MiB content cap. Host filesystem execution was not exercised."
+        ],
+        [
+          "Existing targeted tests",
+          "Transport44/44; WorkerLink10/10 after PATH correction; Rust witness2/2",
+          "Existing local tests remain green while these gaps are exposed. Witness tests intentionally assert current bad behavior."
+        ]
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "The first WorkerLink test invocation had four subprocess launch failures because bare bun was missing from PATH. The explicit-path/PATH rerun passed10/10; the initial output is preserved. One initial Rust filter selected zero tests and is not used as evidence. The corrected resource_audit_ command ran both Rust witnesses. Full workspace tests, native installed-product qualification and the future ledger mutation suite were not run."
+    },
+    {
+      "kind": "heading",
+      "text": "3. Ranked defect ledger"
+    },
+    {
+      "kind": "paragraph",
+      "text": "P1 means this defect prevents a credible boundedness or compatibility claim and should block acceptance of that claim. P2 means a separate lifetime/liveness/fairness correction is required. These ranks are not invented CVSS scores. Executed witnesses and source-only findings are explicitly separated."
+    },
+    {
+      "kind": "subheading",
+      "text": "D01 | P1 | Outbound mailbox and writer retention"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Executed + source. WorkerLink posts without admission; WriteQueue retains payload closures without byte or message caps. A no-read synthetic peer accepted 512 x 64 KiB. An injected stalled writer retained 2,048 payloads / 128 MiB. The active-write timeout begins at service, so it cannot cap producer bursts or queue age. [S02 S03 S05]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: One ledger before the first retention; finite bytes, records and residence time; no admission waiters."
+    },
+    {
+      "kind": "subheading",
+      "text": "D02 | P1 | Pre-Ready work escapes a Worker-only limit"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source + encoder probe. FS encodes before its first await; invokeFs/invokeAuth then await whenReady. Each whenReady can add a promise/waiter. A healthy link that never sends Ready can retain any number of encoded requests. Moving admission only into WorkerLink leaves this path untouched. [S07 S08 S09 S10]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Reserve at the public adapter before encoding or readiness retention. Preserve direct whenReady semantics; refuse excess operation records locally."
+    },
+    {
+      "kind": "subheading",
+      "text": "D03 | P1 | Active CALL state has no aggregate bound"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source. Main creates a timer, Promise and Map record per call. Worker creates its own pending record. The 256-abandoned cap acts only after timeouts are processed; it does not bound active calls or a burst before that point. A peer can drain writes and withhold replies while byte use stays low. [S03 S05]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Keep one operation record until caller settlement AND Worker pending/tombstone retirement AND terminal delivery. Bound tombstone retirement separately."
+    },
+    {
+      "kind": "subheading",
+      "text": "D04 | P1 | Inbound ring drains into unbounded handlers"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Executed + source. The ring releases a CALL before startCallHandler. A real socket probe with eight ring slots started 512 unresolved handlers. After close, all 512 continuations resumed when their barrier opened; late answers were suppressed. Closing a transport does not cancel arbitrary application promises. [S04]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Reserve handler count, input retention and maximum answer bytes before invoking application code; prevent further invocation on exhaustion."
+    },
+    {
+      "kind": "subheading",
+      "text": "D05 | P1 | Host acknowledges an unbounded UI backlog"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Executed component + source. One window produced 4,096 Accepted replies while 4,096 setter commands remained unconsumed. The registry window/destroy limits are different resources. The wake bridge forwards into Tao, so bounding only the mpsc channel would move retention downstream. [S11 S12 S13 S25]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Reserve before enqueue and before Accepted. Transfer the same permit through Tao; release on physical UI consumption or proven discard."
+    },
+    {
+      "kind": "subheading",
+      "text": "D06 | P1 | Native facts accumulate before filtering"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source. UI observations enqueue four state facts through unbounded mpsc. Changed-only filtering occurs later in Core. The coordinator can wait on the shared writer while native observations continue. Duplicate filtering after the queue cannot bound that queue. [S11 S14 S25 S30]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: A bounded native-to-Core mailbox with reserved lifecycle capacity. UI must not block. Coalescing requires explicit state-event semantics."
+    },
+    {
+      "kind": "subheading",
+      "text": "D07 | P1 | Backing storage and shared-input ownership are unpriced"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Executed runtime + source. A one-byte Uint8Array view cloned an 8 MiB backing buffer on Bun 1.4.4. SharedArrayBuffer stayed shared and a post-send mutation was visible to the receiver. Direct WriteQueue also sent a later mutation. The low-level immutable-snapshot promise is currently unclear; the alias is demonstrated, not an invented existing API guarantee. [S02 S03 S28]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Compact ordinary input after admission; charge copy overlap. Reject shared-backed input or specify a synchronization protocol. Copying an unsynchronized SAB is not a coherent snapshot proof."
+    },
+    {
+      "kind": "subheading",
+      "text": "D08 | P1 | Codec and reader allocation differ from wire bytes"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Executed + source. 262,151 AuthRequest wire bytes decoded into 262,144 empty strings; vector capacity alone was 8,388,480 bytes. The 32-call auth limit is a record bound. FS encoded an over-limit string before rejecting it. FrameReader accounts received fill bytes rather than the allocated fill capacity and copies callbacks before its aggregate check. These are amplification/transient proof gaps, not infinite single-frame allocation claims. [S06 S07 S16 S17 S18 S27]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Schema-owned cardinality and decoded-storage limits before allocation; bounded encoder scratch; separately price callback, active fill, owned chunks and decode overlap."
+    },
+    {
+      "kind": "subheading",
+      "text": "D09 | P1 | Legal FS result cannot fit the default async ring"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Executed transport + source. Native FS permits 8 MiB. Default WorkerLink ring is 1 MiB. An independently encoded valid response for a 2 MiB file had a 2,097,173-byte envelope and failed with KELD-IPC-026 in an otherwise empty default ring. The probe exercised real WorkerLink/UDS, not a real filesystem Host call. [S07 S19 S24 S29]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: For the API role, provision a ring large enough for its largest legal encoded response, counted globally. With power-of-two rings, an 8 MiB result needs a 16 MiB ring. An alternate reply lane is a larger design."
+    },
+    {
+      "kind": "subheading",
+      "text": "D10 | P1 | Rust active write lacks an absolute frame clock"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source + official contract. write_frame uses write_all(header), write_all(payload), then flush. OS write timeouts constrain individual waits. Repeated successful short writes can outlast the intended frame budget while shared generation/transition locks remain held. A no-read peer does time out. A finite frame is not claimed to make positive progress literally forever. [S15 S30 S35 S36]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: One absolute header+payload+flush deadline; remaining-time waits; poison after a partial failure. Cancellation/close must not need the lock held by blocked I/O."
+    },
+    {
+      "kind": "subheading",
+      "text": "D11 | P2 | Queue residence and control fairness have no bound"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source. The writer is FIFO and its five-second clock starts only when a frame becomes active. Control, answers, abandon and close can sit behind admitted data. Reserved admission credit cannot make them overtake existing FIFO work. Strict ordering supplies no independent per-channel latency guarantee. [S02 S05 S28]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Preserve FIFO. Add admission-to-service and close deadlines plus bounded admission shares. Do not add a priority queue that changes accepted order."
+    },
+    {
+      "kind": "subheading",
+      "text": "D12 | P2 | One renderer response can wait without end"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source. The renderer bridge repeats recv_timeout(APP_LINK_READER_POLL) until reply, disconnect or stop. There is no overall response deadline. One pending slot bounds memory but can hold the renderer dispatcher indefinitely while a live Bun handler never answers. [S21]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Give the caller an absolute response deadline and bounded late-reply ownership; do not replay an unknown effect."
+    },
+    {
+      "kind": "subheading",
+      "text": "D13 | P2 | Retired reader metadata grows with session history"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source. Each generation appends a stop Arc and retains its JoinHandle. Retirement defers joins to terminal shutdown to avoid a real guardian acknowledgement deadlock. Spaced restarts can outlive the sliding crash window and grow retained history. This is metadata/result retention, not demonstrated live-thread leakage. [S20 S37 S38 S39]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Reap completed retired readers asynchronously outside the dependency cycle. Bound the reaper backlog and stop registrations before admitting more generations."
+    },
+    {
+      "kind": "subheading",
+      "text": "D14 | P1 contract | Architecture text can permit unsafe reasoning"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Evidence class: Source contradiction. Architecture02 equates pending post-Quit 022 with 024, while approved GH527 says 022 means effect unknown and only host 024 proves nonexecution. It also presents remote cancellation and allocation-free calls without accurate Current/Target status. Live timeout merely abandons correlation; it does not cancel queued or remote work. [S01 S03 S05 S23]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Minimal correction: Correct the exact architecture text, retain typed failure distinctions, and prohibit automatic replay of unanswered calls."
+    },
+    {
+      "kind": "heading",
+      "text": "4. Complete stage inventory"
+    },
+    {
+      "kind": "paragraph",
+      "text": "The following inventory follows Producer -> postMessage -> Worker -> WriteQueue -> socket -> Host reader -> decoder -> dispatcher -> consumer, then the reverse path and retirement. Each stage states all requested properties. A missing configured capacity is explicitly called unbounded; a known finite amplification is not mislabeled as infinite."
+    },
+    {
+      "kind": "subheading",
+      "text": "1. Public producer, generated encoder and readiness"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "Application owns inputs until the adapter snapshots them. Generated FS/auth codecs own serialized payloads. app.ts owns Ready waiters and the singleton link attempt."
+        ],
+        [
+          "Bytes and messages",
+          "No aggregate pre-Ready operation/byte cap. Frame limit is 16 MiB after several encoders have allocated. Direct whenReady waiters have no count bound."
+        ],
+        [
+          "Allocation",
+          "String UTF-8 buffers, byte snapshots, joined payload, Promise continuations and per-call Ready waiters. Auth vectors create per-element objects/arrays."
+        ],
+        [
+          "Copy count",
+          "FS Write normally copies content into encodeBytes, then into joinPayload: two source-visible content copies before posting. UTF-8 encoding is a representation allocation, counted separately."
+        ],
+        [
+          "Backpressure",
+          "No feedback from socket or UI consumption reaches this retained pre-Ready work. A singleton connection attempt does not bound its subscribers."
+        ],
+        [
+          "Failure",
+          "Local codec errors reject async APIs. Link failure rejects readiness waiters. An authenticated but never-Ready link is a distinct indefinite wait."
+        ],
+        [
+          "Cancellation",
+          "No public operation cancellation here. Waiting time before transport call is outside its later call deadline."
+        ],
+        [
+          "Ordering",
+          "Snapshot occurs before readiness yields. FIFO guarantees begin at post order, not arbitrary concurrent API invocation order."
+        ],
+        [
+          "Fairness",
+          "No producer quota or bounded admission arbitration. Application scheduling determines call order."
+        ],
+        [
+          "Slow peer",
+          "Withheld Ready retains requests without requiring a blocked socket. High-rate producers can grow this graph indefinitely."
+        ],
+        [
+          "Crash/restart cleanup",
+          "A failed singleton is not reset for reconnect. Failure rejects waiters, but only actual reference retirement and GC reclaim objects."
+        ],
+        [
+          "Evidence",
+          "S07-S10, S27; executed oversized-string allocation probe."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "2. Main-to-Worker postMessage boundary"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "WorkerLink owns a private MessagePort; Bun owns serialized/in-transit message storage. One FIFO carries data and control."
+        ],
+        [
+          "Bytes and messages",
+          "No configured cap. sendEvent posts after per-frame validation. CALLs add main pending state before posting."
+        ],
+        [
+          "Allocation",
+          "Message envelope, runtime clone storage, and closure/control metadata. A tiny view can clone a much larger backing store."
+        ],
+        [
+          "Copy count",
+          "Ordinary ArrayBuffer input is cloned at this boundary in the executed Bun probe. Exact transient overlap/native storage is not proven. Shared backing aliases rather than snapshots."
+        ],
+        [
+          "Backpressure",
+          "postMessage returns void. It does not wait for Worker service or socket drain."
+        ],
+        [
+          "Failure",
+          "Synchronous clone/post failure must roll back every reservation and pending record in the future design. Current code has no aggregate capacity failure."
+        ],
+        [
+          "Cancellation",
+          "Abandon and close are messages behind earlier posts; they do not remove messages already posted."
+        ],
+        [
+          "Ordering",
+          "The captured native port method preserves the existing single outbound FIFO. A second independent queue would create another ordering owner."
+        ],
+        [
+          "Fairness",
+          "Data can consume all available runtime queue storage before terminal metadata is serviced. FIFO alone gives no channel share."
+        ],
+        [
+          "Slow peer",
+          "Worker can drain the port faster than the socket by moving work into WriteQueue. Neither local queue is bounded."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Terminal STATE stops new public work; Worker exit/termination handles transport lifetime. Physical mailbox reclamation must be qualified independently."
+        ],
+        [
+          "Evidence",
+          "S03, S05, S28, S34; native UDS flood and backing-store probes."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "3. Worker operation records and local producers"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "TransportWorker owns pending CALL records, abandoned correlations, PING output, HELLO and the socket writer."
+        ],
+        [
+          "Bytes and messages",
+          "Active pending map has no application capacity. Abandoned unanswered count is capped at 256, with terminal transition on crossing. Heartbeat and one-shot open/kick metadata are different resources."
+        ],
+        [
+          "Allocation",
+          "One pending entry per CALL, write Promise/catch continuations, payload clone references and control-message records."
+        ],
+        [
+          "Copy count",
+          "Receiving the cloned view is not another explicit copy. Passing it to WriteQueue retains it until serialization/settlement."
+        ],
+        [
+          "Backpressure",
+          "No count admission before pending insertion. Writes queue independently of map growth."
+        ],
+        [
+          "Failure",
+          "Duplicate pending correlation fails closed. Write failure records terminal state. More than 256 processed abandons closes with 027."
+        ],
+        [
+          "Cancellation",
+          "Abandon marks a record; it does not remove an unstarted wire CALL. A late reply retires the abandoned entry without delivering it."
+        ],
+        [
+          "Ordering",
+          "CALL, EVENT and answer writes enter one writer. PING output must use the same authority."
+        ],
+        [
+          "Fairness",
+          "No admission share between ordinary data and Worker-local control producers."
+        ],
+        [
+          "Slow peer",
+          "Reading-but-never-replying peers permit unbounded active CALL state before caller timeouts. Healthy heartbeats do not prove application progress."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Worker end closes admission and arranges socket close; main has a five-second termination fallback after retained-ring drain. Credits must not be declared physically free just because STATE changed."
+        ],
+        [
+          "Evidence",
+          "S05, S24; existing abandoned cap must remain distinct from proposed active-operation cap."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "4. WriteQueue and active frame serialization"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "One WriteQueue per socket owns FIFO serialization and poison state. Promise closures retain caller payload references until their turn."
+        ],
+        [
+          "Bytes and messages",
+          "No aggregate queue cap. Each payload is <=16 MiB. One active writer limits concurrent writes, not queued payloads."
+        ],
+        [
+          "Allocation",
+          "Promise chain/catch records per frame. Active write allocates a 16-byte header and one complete contiguous envelope."
+        ],
+        [
+          "Copy count",
+          "One full payload copy into the active envelope. Direct callers are not snapshotted at admission; a mutated queued payload changes later bytes."
+        ],
+        [
+          "Backpressure",
+          "write returns a Promise; Worker does not await admission before taking more messages. DrainSignal wakes active write waits only."
+        ],
+        [
+          "Failure",
+          "Oversize refusal emits no bytes and preserves the queue. A write-chain failure poisons later writes because the stream may contain a prefix."
+        ],
+        [
+          "Cancellation",
+          "Caller timeout does not withdraw the closure or free retained payloads. A new bound must not release their credit at caller settlement."
+        ],
+        [
+          "Ordering",
+          "Complete frames are serialized in enqueue order. This is a sound guard against byte interleaving."
+        ],
+        [
+          "Fairness",
+          "Strict global FIFO; a large frame blocks all later frames. There is no per-channel scheduling guarantee."
+        ],
+        [
+          "Slow peer",
+          "Zero progress reaches the five-second active deadline. A legal slow drain can keep servicing frames while the unbounded waiting tail grows."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Poison makes subsequent chain work fail rather than write. A terminal chain still contains existing callbacks until settlement/Worker teardown."
+        ],
+        [
+          "Evidence",
+          "S02; 2,048 x 64 KiB payloads retained under an injected zero-progress writer, then all completed after release."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "5. Socket and OS buffers"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "Bun Worker owns the client socket. Host owns the accepted server stream. OS owns kernel send/receive buffers and named-pipe I/O state."
+        ],
+        [
+          "Bytes and messages",
+          "Kernel capacity is finite per endpoint but platform/configuration-dependent; no universal KELD process-wide total is declared. Stream buffers count bytes, not KIPC records."
+        ],
+        [
+          "Allocation",
+          "Kernel buffers and any runtime staging are separate from JS/Rust owned payloads. UDS, diagnostic TCP and Windows named pipes need separate receipts."
+        ],
+        [
+          "Copy count",
+          "User-to-kernel and kernel-to-user transfers must be reported separately. Source code alone does not establish physical memcpy count or zero-copy behavior."
+        ],
+        [
+          "Backpressure",
+          "Bun raw write returns accepted bytes; partial/zero writes need drain handling. Host blocking writes stop their caller. No pressure reaches an unbounded upstream mailbox automatically."
+        ],
+        [
+          "Failure",
+          "EOF, negative writes, OS timeout and partial-frame errors close/poison according to transport contract. Successful write proves local acceptance, not peer execution."
+        ],
+        [
+          "Cancellation",
+          "Socket shutdown and reader polling are platform-sensitive. Retire only after real endpoint/worker completion."
+        ],
+        [
+          "Ordering",
+          "One stream orders bytes. The writer must prevent interleaving at every shared use."
+        ],
+        [
+          "Fairness",
+          "Kernel scheduling does not provide application channel fairness. Writer locks are not a fair queue contract."
+        ],
+        [
+          "Slow peer",
+          "A no-read peer eventually blocks writes; a drip-reading peer tests absolute clocks, not only per-syscall timeouts."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Close descriptors/handles and revoke old generation before successor use. Do not treat flush or termination request as an acknowledgement."
+        ],
+        [
+          "Evidence",
+          "S02, S15, S33, S35-S36. Actual probes in this audit used Unix sockets on macOS only."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "6. Rust host reader and validation"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "keld-ipc link state machine and one generation-bound reader own the header/payload. Trusted context selects ReceivePolicy."
+        ],
+        [
+          "Bytes and messages",
+          "One 16-byte header and one payload <=16 MiB per executing reader. Multiply by active/retiring readers; the reader cap is not a global process cap."
+        ],
+        [
+          "Allocation",
+          "Payload Vec is allocated after length and semantic header validation. A new payload allocation occurs per frame."
+        ],
+        [
+          "Copy count",
+          "Read fills the payload storage. Owned deserialization can add separate String/Vec storage later; that belongs to the decoder stage."
+        ],
+        [
+          "Backpressure",
+          "Serial read/dispatch naturally stops reading during inline work or a blocking reply. Bounded worker admission may reject before decode."
+        ],
+        [
+          "Failure",
+          "Malformed shape fails before payload allocation. A started frame has an absolute first-byte deadline. Idle polls intentionally do not time out a healthy quiet session."
+        ],
+        [
+          "Cancellation",
+          "Short read polling checks stop/generation state. First-byte deadline cannot be renewed by fragments."
+        ],
+        [
+          "Ordering",
+          "Wire frames read in stream order, with trusted generation validation before effects."
+        ],
+        [
+          "Fairness",
+          "One reader per stream and sequential dispatch. No cross-channel fairness guarantee during a blocking handler/write."
+        ],
+        [
+          "Slow peer",
+          "Trickled header/payload hits the absolute deadline, with documented poll or OS-timeout overshoot. No-reply application waits are separate."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Stale readers are made inert. Completed reader handles and stop registrations remain until session end today; D13 covers that metadata history."
+        ],
+        [
+          "Evidence",
+          "S26, S20. Existing validation/deadline protections are preserved, not reported as missing."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "7. Decoder, schema and Rust handler admission"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "keld-ipc owns generic Postcard coding; schema owners own structural limits; Core owns FS/Auth scheduling; Native owns policy/effects."
+        ],
+        [
+          "Bytes and messages",
+          "FS allows one outstanding native request with sync_channel(1). Auth has 32 tickets spanning queued/physical work and sync_channel(32). No common decoded-byte bound prices their graphs."
+        ],
+        [
+          "Allocation",
+          "DeserializeOwned allocates nested Strings/Vecs. Wire frame and decoded graph coexist. encode uses to_allocvec; encode_into already exists for caller-owned storage."
+        ],
+        [
+          "Copy count",
+          "Owned decoded strings/bytes generally copy from the wire. Rust FS output is encoded into another Vec; avoid assuming every schema has the same copy factor."
+        ],
+        [
+          "Backpressure",
+          "FS/Auth bounded admission is useful and must be reused. Admission by record alone cannot price structural expansion."
+        ],
+        [
+          "Failure",
+          "Guarded capacity refusal uses the existing IPC-owned CallError only under its documented consume-before-refuse conditions. Semantic policy rejection after decode does not undo allocation peaks."
+        ],
+        [
+          "Cancellation",
+          "Native FS has a five-second cooperative operation budget. Auth tickets remain through physical drain. Transport timeout does not prove effect cancellation."
+        ],
+        [
+          "Ordering",
+          "Per-owner scheduling and shared writer serialization apply. Existing request/effect order is part of the API contract."
+        ],
+        [
+          "Fairness",
+          "Record caps are not byte fairness; many tiny decoded elements or a few maximum requests can dominate memory/work."
+        ],
+        [
+          "Slow peer",
+          "Reply writers can retain decoded/output state while blocked. Answer capacity should be reserved before side effects when a reply is obligatory."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Generation retirement closes admission; retained physical work determines final release. No new parallel permission/parser owner should be added."
+        ],
+        [
+          "Evidence",
+          "S16-S19; literal AuthRequest decode witness, not a Native auth acceptance result."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "8. Host dispatcher, UI commands and physical consumer"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "Core WindowSession/registry owns request admission. mpsc, wake bridge and Tao own successive handoffs. The native UI loop owns effects."
+        ],
+        [
+          "Bytes and messages",
+          "Unbounded command mpsc and no credit carried through Tao. 1,024 window identities and 64 pending Destroy records per window are separate bounds."
+        ],
+        [
+          "Allocation",
+          "Queue nodes, command records and any referenced objects. Payload ownership can move while total retained command count remains unchanged."
+        ],
+        [
+          "Copy count",
+          "Rust commands move through channels/proxy. Moves are not proof of allocation-free queues; runtime/event nodes still exist."
+        ],
+        [
+          "Backpressure",
+          "send_window_setter enqueues and replies Accepted without waiting for UI consumption. Producer may await every reply and still overrun the UI."
+        ],
+        [
+          "Failure",
+          "Disconnected queue is an error. Capacity exhaustion has no current defined result. A correction must refuse before enqueue/Accepted."
+        ],
+        [
+          "Cancellation",
+          "Physical teardown and generation checks exist. A bounded permit must survive forwarding and release only at a proven terminal consumer boundary."
+        ],
+        [
+          "Ordering",
+          "Command enqueue order and native dispatch order must remain consistent. Do not silently coalesce effectful requests."
+        ],
+        [
+          "Fairness",
+          "Repeated setters on one window can occupy all backlog. Reserve terminal/control capacity without letting ordinary commands consume it."
+        ],
+        [
+          "Slow peer",
+          "A stalled UI accumulates commands even with a fast socket. A slow socket also blocks shared writer/transition owners."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Carry generation-tagged permits through the bridge; stale work must not free successor capacity. Avoid a blocking bounded send while holding shutdown locks."
+        ],
+        [
+          "Evidence",
+          "S11-S13, S25, S30; 4,096 retained Accepted setters on one live window."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "9. Native event return path"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "Native window observer produces state facts. Core event coordinator filters and writes them back to the role."
+        ],
+        [
+          "Bytes and messages",
+          "Unbounded mpsc before changed-only filtering. Four facts can be emitted for one state observation."
+        ],
+        [
+          "Allocation",
+          "One retained queue entry per emitted fact, plus implementation-dependent node/block overhead. Registry/filter state is a different retained domain."
+        ],
+        [
+          "Copy count",
+          "Owned fixed-size facts move through the queue and encode to output; exact allocator/node costs require measurement."
+        ],
+        [
+          "Backpressure",
+          "UI sends do not wait for coordinator or role consumption. Synchronous writer can stop the coordinator."
+        ],
+        [
+          "Failure",
+          "Current channel disconnect handling does not define overload. A new bounded mailbox needs explicit terminal behavior for lossless facts."
+        ],
+        [
+          "Cancellation",
+          "Lifecycle/terminal events need reserved capacity and a nonblocking UI-facing path. Drop-oldest is not a cancellation protocol."
+        ],
+        [
+          "Ordering",
+          "Created/Close/Released and state events may have observable order. Deduplicating after queueing is not an admission mechanism."
+        ],
+        [
+          "Fairness",
+          "State floods can starve lifecycle delivery unless admission/scheduling rules protect it."
+        ],
+        [
+          "Slow peer",
+          "A role that drains more slowly than native observations are produced can grow this queue indefinitely while each individual write still succeeds."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Retired-generation facts must be rejected/retired by the canonical owner. Bounded bridge state must not survive indefinitely into successors."
+        ],
+        [
+          "Evidence",
+          "S11, S14, S25, S30. Source finding; no AppKit flood run was claimed."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "10. Bun FrameReader, shared ring and blocking reply slot"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "Worker FrameReader owns socket fragments/fill. Worker is sole ring writer; main applies and dispatches using atomic indices. One separate slot carries the blocking reply."
+        ],
+        [
+          "Bytes and messages",
+          "Default SAB=64+65,536+1,048,576=1,114,176 bytes. Ring <=16,384 records and available bytes. FrameReader unread bytes <=one frame envelope after checks and <=65,536 fragments. Allocated backing is larger than received-byte count."
+        ],
+        [
+          "Allocation",
+          "Owned callback chunks, active full-size fill, copied payload, fixed SAB and main ringCopy allocations. Callback is copied before aggregate rejection; peak requires a qualified callback-size allowance."
+        ],
+        [
+          "Copy count",
+          "Contiguous input: callback copy, gather payload, ring copy, main delivery copy. Fragmented fill copies later fragments directly; state appliers can add a separate copy, and generated response decoding another."
+        ],
+        [
+          "Backpressure",
+          "Ring overflow closes with 026; v2 has no live GRANT credit. The ring is a fail-closed bound, not elastic buffering for unlimited producers."
+        ],
+        [
+          "Failure",
+          "Overflow retains earlier records for ordered drain. Blocking reply larger than its slot also fails. Default async ring cannot hold the valid large FS result in D09."
+        ],
+        [
+          "Cancellation",
+          "Caller deadline drains retained replies before deciding abandon. Closing drains earlier retained facts before source end; that correct ordering must remain."
+        ],
+        [
+          "Ordering",
+          "One atomic ring plus reply position, first-terminal-wins state and coalesced KICK preserve the current contract. Separate ring lanes would need a new ordering proof."
+        ],
+        [
+          "Fairness",
+          "Dispatch processes a finite snapshot of W_BYTES, but arbitrary listener duration is unbounded. Count/byte limits do not imply a scheduling-time bound."
+        ],
+        [
+          "Slow peer",
+          "A parked main can fill the ring; overflow is terminal, not drop/coalesce. A slow async handler may leave the ring empty while retaining work elsewhere."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Worker liveness while parked, terminal notification, ordered drain and eventual terminate exist. One end notification or a zero counter is not a physical reclamation proof."
+        ],
+        [
+          "Evidence",
+          "S04 S06 S24 S29; preserve existing guards and differentiate their actual scope."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "11. Main dispatcher and application consumers"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "WorkerLink owns listeners, state appliers and host-CALL continuations. Application owns its own listener registrations, result retention and arbitrary internal allocations."
+        ],
+        [
+          "Bytes and messages",
+          "No transport handler-concurrency cap. Event listener registrations are application-managed and unbounded by this transport. Application-retained results are outside transport-owned byte bounds."
+        ],
+        [
+          "Allocation",
+          "ringCopy creates an independent payload. CALL Promise.then retains handler lifecycle state. Finalization copies pending values into an array before clearing, adding a proportional peak."
+        ],
+        [
+          "Copy count",
+          "One delivery copy; state applier can separately copy the same EVENT. Response decoders may allocate independent content. Do not sum aliases as distinct backing stores."
+        ],
+        [
+          "Backpressure",
+          "Synchronous event callback delays ring release. An async listener return is not awaited. CALL ring release precedes asynchronous handler completion."
+        ],
+        [
+          "Failure",
+          "Thrown event listener errors are isolated/deferred. Handler throws/rejections end the link. Valid late handler answers after terminal state are suppressed."
+        ],
+        [
+          "Cancellation",
+          "No automatic AbortSignal for application code. Bounded admission is enforceable; forced completion of arbitrary JS within the role requires process isolation/termination."
+        ],
+        [
+          "Ordering",
+          "Dispatch order is FIFO. Async completion order can differ. Replies must correlate independently; do not promise completion order merely from input order."
+        ],
+        [
+          "Fairness",
+          "A long synchronous callback can monopolize the role main thread. A scheduling slice cannot preempt arbitrary user code."
+        ],
+        [
+          "Slow peer",
+          "Many handlers can stay unresolved after the ring drains, as the 512-handler probe demonstrated."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Transport can seal admission and suppress stale replies. It cannot reclaim objects that live application code still owns; a successor uses fresh generation identity."
+        ],
+        [
+          "Evidence",
+          "S04; exact close behavior observed in the handler barrier experiment."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "12. Session retirement and supervisor history"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Property",
+        "Current behavior and implication"
+      ],
+      "rows": [
+        [
+          "Ownership",
+          "Core and Runtime own generation fencing, reader stop flags, JoinHandles, child cleanup and successor admission."
+        ],
+        [
+          "Bytes and messages",
+          "Reader handle map and stop-flag vector grow across completed generations until final session stop. Sliding-window crash suppression is not a lifetime resource cap."
+        ],
+        [
+          "Allocation",
+          "Per-generation reader state, JoinHandle/result packets, Arc flags, map/vector capacity and per-link fixed buffers while generations overlap."
+        ],
+        [
+          "Copy count",
+          "Mostly metadata ownership; count retained entries and capacities rather than assuming all stopped threads remain live."
+        ],
+        [
+          "Backpressure",
+          "There is no bounded completed-reader reaper today. New generation work can continue while historical records remain retained."
+        ],
+        [
+          "Failure",
+          "Terminal join observes thread failures. Removing historical entries too early can lose failure evidence or race stale callbacks."
+        ],
+        [
+          "Cancellation",
+          "Do not synchronously join on the guardian owner whose acknowledgement a reader awaits. Completion/reaping must occur outside that dependency cycle."
+        ],
+        [
+          "Ordering",
+          "Retire old authority before enabling successor. Ticket epoch and slot incarnation prevent old release from altering new capacity."
+        ],
+        [
+          "Fairness",
+          "Reaping needs bounded scheduled progress so a long-lived session does not accumulate history."
+        ],
+        [
+          "Slow peer",
+          "A retirement that cannot finish needs a finite overlapping-generation budget and terminal escalation; simply allocating another ledger compounds memory."
+        ],
+        [
+          "Crash/restart cleanup",
+          "Observe actual Worker/thread/process exit, socket closure and record removal separately. A close request is not cleanup completion."
+        ],
+        [
+          "Evidence",
+          "S20; app_session.rs:2360-2367 and 8050-8060; source finding, no restart-soak measurement."
+        ]
+      ]
+    },
+    {
+      "kind": "heading",
+      "text": "5. Queueing and resource model"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Let A_i(t) be admitted records at stage i, D_i(t) records retired at the actual consumer, Q_i(t) retained records, and B_i(t) retained backing bytes. Count allocations by backing identity and capacity, not merely each view length. Count payload-free records separately."
+    },
+    {
+      "kind": "code",
+      "text": "Q_i(t) = Q_i(0) + A_i(t) - D_i(t)\nB_i(t) = sum(capacity of distinct live backing allocations owned by stage i)\nIf admitted byte rate a_i > retirement byte rate d_i for an unbounded interval,\nB_i grows with the integral of (a_i - d_i), unless admission stops or the owner ends.\nA per-frame maximum M gives payload_bytes <= M * Q_i only when Q_i is bounded."
+    },
+    {
+      "kind": "paragraph",
+      "text": "The queueing failure is compositional. A worker can drain its mailbox into an unbounded writer, keeping mailbox occupancy low. The main thread can drain a bounded ring into unresolved handlers. Core can acknowledge setters while native commands remain queued. None of those local observations proves that the system consumed the work."
+    },
+    {
+      "kind": "paragraph",
+      "text": "Five-second active I/O timeouts do not create a universal byte cap. An arbitrarily large finite burst can allocate before that timeout runs. Under sustained slow-but-progressing service, each frame can finish within its own budget while the waiting tail grows indefinitely. Finite call deadlines only bound lifetime at a fixed producer rate, and the rate is not an enforced contract. Little's law, L=lambda*W, is a useful steady-state cross-check, not a hard admission bound."
+    },
+    {
+      "kind": "code",
+      "text": "For each live ticket j:\n  reserve worst_case_simultaneous_backing(j) before retention\n  sum(charge_bytes(j)) <= B_out\n  live_ticket_count <= N_out\n  distinct CALL tickets in pending/tombstone/completion states <= N_call\n  active_handler_count <= N_handler\n  UI_commands_not_physically_retired <= N_ui\n  native_facts_not_retired <= N_events\n  retired_readers_not_reaped <= N_retired\n  admission_waiter_count = 0"
+    },
+    {
+      "kind": "paragraph",
+      "text": "A ticket may release payload bytes before it releases its CALL record. A successful request write does not retire the waiting call. A timeout settles the caller but does not retire an unreceived request, Worker tombstone or running handler. A slot reused by a new generation requires both ledger epoch and slot incarnation. A zero logical counter does not prove that Bun has reclaimed an old mailbox or that an OS process has exited."
+    },
+    {
+      "kind": "code",
+      "text": "M_owned_live <= B_out + B_inbound + B_decode + B_encoder_scratch\n               + B_UI_commands + B_native_facts + B_generation_metadata\n               + B_bounded_completion_records\n\nM_process additionally includes runtime/GC/allocator capacity, native buffers,\napplication-owned retention. Kernel socket/pipe storage is separate and is not process RSS. A complete resource census counts both domains; a hard RSS claim needs\nexplicit bounds for those terms and for live + retiring generations. None is inferred here."
+    },
+    {
+      "kind": "paragraph",
+      "text": "The current shared inbound allocation is exactly64 + replyBytes + ringBytes. At defaults it is1,114,176 bytes. Usable ring records are no more than min(ringRecords, floor(ringBytes/16)); schemas can impose a larger minimum record size. FrameReader received-byte accounting is not allocated-capacity accounting: a one-byte partial payload can already own the entire declared fill. Include active fill, queued chunks, callback storage, copy overlap and metadata separately. [S06 S24]"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Current FS response compatibility requires ringBytes >=16 + maximum encoded FsResponse. An8MiB content result needs more than8MiB after Postcard/header overhead, so the present power-of-two configuration needs16MiB for this API profile. That choice is correctness accommodation, not an optimization claim. Multiply the larger fixed allocation by the permitted live/retiring link count. [S07 S19 S24]"
+    },
+    {
+      "kind": "heading",
+      "text": "6. Hard limits and qualification profile"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Production values remain a B1 decision in the existing proposal. This audit does not declare an unmeasured shipping default. It specifies the invariants that must hold for any approved values and provides a concrete test-only profile. Limits freeze before admission; invalid arithmetic, impossible partitions or inability to fit one required maximum frame must fail before Worker creation."
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Resource",
+        "Hard condition"
+      ],
+      "rows": [
+        [
+          "Outbound bytes",
+          "B_data + B_answer + B_control = B_out. Every distinct temporary clone/serialization overlap is charged. Ordinary data cannot borrow answer/control allowance."
+        ],
+        [
+          "Operation metadata",
+          "Live frame tickets <=N_out. CALL tickets <=N_call through pending/abandoned/delivery retirement. Metadata messages <=one original plus at most one abandon per CALL, plus bounded one-shots."
+        ],
+        [
+          "Handlers",
+          "At mostN_handler. Reserve bounded input and maximum answer storage before invoking code. Arbitrary app-internal allocation is excluded from transport-owned bytes."
+        ],
+        [
+          "Reader/decoder",
+          "Wire <=16MiB, fragment records <=65,536; separately enforce decoded element/byte/scratch capacities before allocation and a qualified maximum callback allowance."
+        ],
+        [
+          "UI and return facts",
+          "UI commands <=N_ui andB_ui until physical consumption; native facts <=N_events andB_events before filtering. Count proxy handoff as retained ownership."
+        ],
+        [
+          "Generations",
+          "Live + retiring role generations <=G; unreaped readers <=N_retired. Do not admit successors without remaining cleanup capacity."
+        ],
+        [
+          "Time",
+          "Separate finite T_queue, T_active_write, T_call, T_tombstone andT_close. A watchdog is not the deadline implementation."
+        ]
+      ]
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Test-only value",
+        "Purpose and qualification"
+      ],
+      "rows": [
+        [
+          "F =16,777,232 bytes",
+          "16MiB payload +16-byte wire header. Existing maximum-frame behavior stays separately tested."
+        ],
+        [
+          "B_data =4F =67,108,928 bytes",
+          "Accommodates one maximum frame if the actual counted compact-copy overlap is <=3F. This condition must be verified; it is not assumed from documentation."
+        ],
+        [
+          "B_answer =3F =50,331,696 bytes",
+          "One maximum-answer reservation for the one-handler test. If actual overlap is larger, raise charge/capacity or reject this profile as invalid."
+        ],
+        [
+          "B_control =65,536 bytes; N_control =32",
+          "HELLO/PING and bounded metadata only. No ordinary EVENT or arbitrary answer may spend this reserve."
+        ],
+        [
+          "B_out =117,506,160 bytes",
+          "Exact sum of the three partitions. Excludes fixed inbound region and explicitly separate decoded/UI/OS/app terms."
+        ],
+        [
+          "N_data =8192; N_call =128; N_handler =1",
+          "Large EVENT record allowance makes the byte-cap mutant reachable. A128-CALL profile deliberately tests retirement below the old256-abandoned threshold."
+        ],
+        [
+          "T11 isolated answer allowance",
+          "Override answer ticket slots>=2 and B_answer>=2*c_max (6F if c_max=3F), raising B_out and N_out equally. Otherwise answer-byte admission masks the removed handler-count gate. T12 separately exhausts answer bytes."
+        ],
+        [
+          "Ticket relationships",
+          "N_call128 is a subset of N_data8192. One answer slot plus32 independent control slots gives N_out8225. Each CALL prepays at most one abandon message; expiry needs no new control slot. Close has a reserved one-shot right."
+        ],
+        [
+          "Handler input allowance",
+          "B_handler_input=N_handler*F is a separate part of B_inbound, in addition to fixed SAB and reader storage. B_answer covers answer output only. T11 reserves at least2F input allowance as well, so input admission cannot mask the removed handler-count gate."
+        ],
+        [
+          "N_ui =64; N_events =128; N_retired =2",
+          "Deterministic acceptance limits, not proposed production capacities. Native and retirement tests isolate each resource."
+        ],
+        [
+          "ringBytes=16MiB for FS profile",
+          "Retains full8MiB FS compatibility under current power-of-two ring layout. Other transport tests explicitly configure their own ring sizes."
+        ],
+        [
+          "Test clock limits",
+          "T_queue2000ms before first write; T_active_write5000ms; T_call10000ms; T_tombstone5000ms from permanent saturation; T_close5000ms. These are injected-clock qualification settings, not new shipping defaults. Native scheduling tolerance and an independent teardown owner need separate qualification."
+        ]
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "The large stalled-writer probe retained134,217,728 payload bytes, exceeding this test profile's B_data threshold before progress. It is evidence against current unbounded retention, not a new ledger passing that profile. It does not measure mailbox/kernel splits or total memory. The earlier8MiB threshold in the small probe is a diagnostic threshold only, not a valid universal shipping cap for16MiB frames."
+    },
+    {
+      "kind": "heading",
+      "text": "7. Minimal architectural correction"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Retain one authenticated link, one transport Worker, one private main/Worker FIFO, the existing serialized writer, current receive policies and generated schema owners. The fix does not require another socket, a shared-memory payload transport, an async Rust runtime or a general protocol redesign."
+    },
+    {
+      "kind": "bullet",
+      "text": "Place one authoritative role ledger before the first framework retention. Public FS/auth adapters reserve through this owner before encoding and before readiness waits. WorkerLink and Worker-local HELLO/PING/answer/control producers use the same implementation. A low-level standalone writer gets the same bounded primitive under its own socket owner."
+    },
+    {
+      "kind": "bullet",
+      "text": "Use fixed-capacity tickets with ledger epoch, slot incarnation, class, byte charge and independent payload/operation retirement flags. Reserve all required units atomically or roll back immediately. Do not allocate a Promise waiter for failed admission. A fixed SPSC handoff may implement the ledger, but shared memory is justified here only by parked-main progress."
+    },
+    {
+      "kind": "bullet",
+      "text": "After reservation, compact ordinary caller input into exact-size owned storage. Leave caller buffers usable. Price the admitted snapshot, actual message clone and active frame overlap. Reject shared-backed input before dispatch unless an explicit synchronized ownership contract is approved. A transfer list is an optional optimization, not the proof."
+    },
+    {
+      "kind": "bullet",
+      "text": "Keep payload credit until the last charged transport reference is gone. Keep CALL records until caller settlement, Worker pending/abandoned retirement and retained terminal delivery finish. Worker must update shared credit without waiting for main callbacks; otherwise a blocking caller can deadlock the release."
+    },
+    {
+      "kind": "bullet",
+      "text": "Reserve handler count and maximum answer bytes before running host-CALL application code. If no reservation fits, follow the approved terminal path before any handler effect. Already-admitted answers consume their existing tickets. Merely failing to enqueue the result after a side effect is too late."
+    },
+    {
+      "kind": "bullet",
+      "text": "Preserve the existing global FIFO for admitted frames. Use per-producer admission shares if needed. Keep answer/control capacity protected, but do not claim it is priority service. Bound queue residence and graceful close separately; after a partial-write failure poison/close, never skip bytes and continue."
+    },
+    {
+      "kind": "bullet",
+      "text": "Extend the current Host UI owner with bounded permits that survive mpsc -> Tao -> physical consumer. Do not release at forwarding. A bounded queue plus one coalesced wake is an alternative only if the existing owner keeps the sole ordered payload queue; do not duplicate backlog in two queues."
+    },
+    {
+      "kind": "bullet",
+      "text": "Bound the native-fact mailbox before filtering. Do not block the native UI waiting for the role. Any coalescing must name exact replaceable state facts and preserve lifecycle/close/created/released semantics. Otherwise overflow is explicit terminal failure, not silent loss."
+    },
+    {
+      "kind": "bullet",
+      "text": "Add schema-level collection/decoded-storage limits during decoding and budgeted generated encoding. Reuse existing codec and schema generation; never hand-edit generated files or replicate permission validation in the transport."
+    },
+    {
+      "kind": "bullet",
+      "text": "Add an absolute Rust write deadline and an independent finite renderer response deadline. Make close/cancellation reachable without acquiring the lock held by blocked I/O. Reap completed readers outside the guardian acknowledgement cycle, with a bounded retirement backlog."
+    },
+    {
+      "kind": "paragraph",
+      "text": "Preserve current useful mechanisms: Rust preallocation validation, first-byte receive clock, one outstanding FS admission, Auth tickets through physical drain, fixed ring/reply storage, coalesced KICK, first-terminal-wins state, write poison, generation fences and ordered source disposal. A rewrite that drops those mechanisms is a regression, regardless of language or thread count."
+    },
+    {
+      "kind": "heading",
+      "text": "8. Exact protocol, API and specification changes"
+    },
+    {
+      "kind": "paragraph",
+      "text": "The deliverable includes architecture-02-amendments.patch against the pinned file. It is proposed text, not an applied repository change. The architecture proposal below adds explicit admission/retirement rules; it does not silently activate GRANT or remote cancellation."
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Contract owner",
+        "Required change",
+        "Wire effect"
+      ],
+      "rows": [
+        [
+          "Architecture02 sections1/2/6",
+          "Correct022 versus024; mark remote Cancel and allocation-free execution as Target; state current local timeout/abandon and allocations; add composed byte/record lifetime contract.",
+          "No frame/HELLO change."
+        ],
+        [
+          "Existing GH623 draft in PR1413",
+          "Refresh source pin; extend producer census to public pre-Ready/encoder retention; freeze charged-copy definitions; add queue-age, shared-backing and codec acceptance; retain AC14.",
+          "Internal ledger only."
+        ],
+        [
+          "Approved GH527",
+          "Define fixed ticket layout, epoch/incarnation/wrap refusal, byte vs CALL retirement, protected partitions, reachable saturation termination and close bound; preserve FIFO and reply ordering.",
+          "Internal Worker messages may carry ticket/deadline. v2 unchanged."
+        ],
+        [
+          "Error registry and one TS constructor",
+          "Approve narrow local AdmissionCapacity use of005; add machine-readable phase/reason if callers need to distinguish it. Keep existing Rust guarded-Host constructor preconditions.",
+          "No synthetic Host ERR for local refusal."
+        ],
+        [
+          "Window/Core host contract",
+          "Define full UI-command queue refusal before enqueue and Accepted. Explicitly extend an error code if005 is reused for HostInternal Window.046/047 keep Destroy/identity meanings.",
+          "Existing ERR frame shape, public payload/error review."
+        ],
+        [
+          "FS/API role profile",
+          "Make default receive capacity fit maximum encoded8MiB FS result, or separately approve a capacity-aware API/lane change. Count fixed region globally.",
+          "No wire change for ring sizing."
+        ],
+        [
+          "Schema/code generator",
+          "Bound string/vector cardinality and decoded allocation during parse; perform budgeted size/snapshot construction. Regenerate fs/auth declarations/codecs through current generator.",
+          "Same encoding; new admissible-value restrictions require API review."
+        ],
+        [
+          "Optional GRANT or remote CANCEL",
+          "Keep separate future work. Implementing a new live wire kind/HELLO semantics requires coordinated version and receiver-corpus changes.",
+          "GRANT is v3-gated by GH527; do not backport silently to v2."
+        ]
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "Preferred local failure amendment, conditional on B2: reuse KELD-IPC-005 with a dedicated local AdmissionCapacity constructor. Constant message: \"outbound transport capacity exhausted before dispatch\". Fix: \"Wait for admitted work to retire, then submit new work. This operation was not dispatched. Do not replay earlier unanswered calls.\" This is an explicit extension; current005 alone does not already authorize it. The Rust Host admission constructor remains guarded-channel-specific. [S22 S32]"
+    },
+    {
+      "kind": "code",
+      "text": "Proposed local result classification (additive public type review):\n  code: \"KELD-IPC-005\"\n  reason: \"capacity\"\n  phase: \"local-admission\"\n\nOnly this pre-dispatch branch proves this operation emitted no bytes.\nsendEvent(...) : void              -> throws before retention/posting\ncallBlocking(...) : Uint8Array     -> throws before correlation/parking\ncall(...) : Promise<Uint8Array>    -> rejects without a pending record\n\nPartial write / missing reply: existing001/006/022/025 rules remain.\n026 remains inbound-ring/reply-slot overflow;027 retains abandoned saturation meaning.\nCode alone never authorizes replay or reconnect."
+    },
+    {
+      "kind": "paragraph",
+      "text": "Remote cancellation is not necessary for the minimal budget correction. Today timeout is local settlement plus abandon. An optional later cancellation protocol needs separate before-admission, queued, running, committed and reply-race outcomes. It cannot claim rollback of committed effects. Releasing a caller's Promise is not cancellation of a host effect."
+    },
+    {
+      "kind": "heading",
+      "text": "9. Rejected fixes and tradeoffs"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Tempting fix",
+        "Why it fails or what must be proved"
+      ],
+      "rows": [
+        [
+          "Drop oldest/newest or coalesce all EVENTs",
+          "Violates accepted-event order/zero-loss behavior; breaks lifecycle facts and effectful requests. Only explicitly replaceable state can coalesce, under a separate contract."
+        ],
+        [
+          "Await space in an unbounded waiter queue",
+          "Moves retention into Promise callbacks, closure-captured arguments and timers. Bounded memory requires bounded waiters, or immediate explicit refusal."
+        ],
+        [
+          "Block the main/UI thread until drain",
+          "Main can be parked while Worker needs progress; UI shutdown/callbacks may require that same thread. Every wait needs an independent wake and absolute deadline."
+        ],
+        [
+          "Retry on timeout/022 or after reconnect",
+          "An operation may already have committed. A lost reply is not a no-effect acknowledgement. Require explicit idempotency/transaction identity for any retry policy."
+        ],
+        [
+          "Add a second queue or priority socket",
+          "Duplicates retention and ordering authority; control may overtake effects. Track one reservation through the existing FIFO and actual consumer."
+        ],
+        [
+          "Count only payload.byteLength",
+          "Misses ArrayBuffer backing, cloned storage, decoded objects, Promise/timer metadata and active frame copies. Zero-length messages still need count credit."
+        ],
+        [
+          "Release at write completion/timeout/forwarding",
+          "Write completion is not reply retirement; timeout is not cancellation; forwarding is not physical UI consumption. Each permits premature overadmission."
+        ],
+        [
+          "Increase MAX_FRAME_LEN, ring or thread count",
+          "May postpone failure or move it. Larger ring is justified for the FS compatibility mismatch, but is not an aggregate outbound fix."
+        ],
+        [
+          "Use Rust, threads, shared memory or transfer lists",
+          "These are mechanisms with their own ownership/copy/lifecycle costs. No performance benefit follows without equivalent-work measurement and native qualification."
+        ]
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "The unavoidable API tradeoff is explicit: bounded storage, lossless acceptance of every arbitrarily fast producer, and nonblocking synchronous submission cannot all be guaranteed. Preserve successful API signatures and ordering; define early refusal for work that was never accepted. Do not hide the new overload outcome behind a timer, drop or a fake success."
+    },
+    {
+      "kind": "heading",
+      "text": "10. Targeted regressions and one-fault negative controls"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Each row binds a mechanism to an independent observable and a reachable failure precondition. The future implementation must pass the unmodified test and fail the named single-fault mutant. Mechanisms proposed in this audit are not implemented, so their paired mutation results are specified, not fabricated. Current defect probes are executable witnesses and intentionally expect baseline failure behavior."
+    },
+    {
+      "kind": "subheading",
+      "text": "T01 | EVENT byte budget"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Pause a real authenticated peer after HELLO. Keep record capacity ample. Flood uniquely marked 64 KiB/1 MiB/max-size payloads past B_data. Independent retained-buffer census must remain <=B_data; refused operations emit zero bytes."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove only pre-post EVENT byte reservation. The independent census exceeds B_data before active-write timeout."
+        ],
+        [
+          "Current evidence",
+          "Current defect witnessed; bounded implementation/mutant pair not run."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T02 | Message count independent of bytes"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Use zero-length or minimum-size legal EVENTs and ample byte budget. Admit exactly N_data, then try one more."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove only record admission. N_data+1 live envelopes are retained even though bytes fit."
+        ],
+        [
+          "Current evidence",
+          "Specified."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T03 | Concurrent producer arbitration"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Use32 logical producers for acceptance/FIFO load. For the atomicity mutant, barrier a real main-thread reservation against a Worker credit return on the same shared bytes-used counter; both read the old value before either updates. Check counter against independent live tickets, then attempt capacity-filling admissions."
+        ],
+        [
+          "Single fault -> RED",
+          "Replace only the shared atomic read-modify-write with a load/store pair. Main reservation and Worker release lose an update; independent live tickets disagree with credit and later admission exceeds capacity. A separate single-fault rollback arm leaks partially reserved credit."
+        ],
+        [
+          "Current evidence",
+          "Specified; logical Promise concurrency alone cannot falsify synchronous admission atomicity. The negative arm requires the actual two-agent shared-counter schedule."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T04 | Backing stores and immutable ordinary input"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Post a one-byte view into an 8 MiB backing and a pooled-buffer slice. Hold the writer, mutate caller storage, then compare admitted and peer digests plus actual backing sizes. Test direct WriteQueue separately so a mailbox clone cannot hide aliasing."
+        ],
+        [
+          "Single fault -> RED",
+          "Post the original view or omit the direct snapshot. Backing census exceeds charge or peer bytes differ."
+        ],
+        [
+          "Current evidence",
+          "Both baseline alias/backing witnesses executed."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T05 | Shared-backed input"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Supply an SAB-backed view and mutate it from another agent while the boundary is paused. Contract must either reject before dispatch or use a separately proved synchronization protocol."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove shared-backing rejection while retaining ordinary copy behavior. Shared input reaches the unsynchronized path. Do not accept a potentially torn memcpy as a positive snapshot oracle."
+        ],
+        [
+          "Current evidence",
+          "Shared alias probe executed; future rejection test specified."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T06 | Pre-Ready and encoder limits"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Complete HELLO but withhold Ready. Offer enough valid FS/auth calls to fill operation and encoder budgets. Observe reservations before UTF-8/vector/snapshot allocation."
+        ],
+        [
+          "Single fault -> RED",
+          "Move admission to WorkerLink only. Pre-Ready encoded payload or waiter census exceeds its bound. Separately remove bounded encoder preflight; over-limit allocation occurs before refusal."
+        ],
+        [
+          "Current evidence",
+          "Encoder baseline executed; pre-Ready source finding."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T07 | Active CALL records"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Peer drains requests promptly but returns no replies. Long valid deadlines keep abandoned count zero. Byte budget stays mostly free."
+        ],
+        [
+          "Single fault -> RED",
+          "Release CALL records when writes complete. Main/Worker pending count exceeds N_call although queued payload bytes remain low."
+        ],
+        [
+          "Current evidence",
+          "Specified."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T08 | Timeout does not free retained bytes"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Hold a queued/partial frame, expire its caller, then use the apparently free capacity for other work. Observe live buffers independently."
+        ],
+        [
+          "Single fault -> RED",
+          "Release byte credit on caller timeout. Live retained bytes exceed B_out."
+        ],
+        [
+          "Current evidence",
+          "Specified; source confirms timeout does not remove current writer work."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T09 | Permanent tombstone saturation"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Use N_call128 below256; occupy other partitions while retaining prepaid abandon rights and the reserved terminal right. Expire all calls, keep peer alive and never answer. No new CALL is submitted and no abandon acquires a fresh control slot."
+        ],
+        [
+          "Single fault -> RED",
+          "Disable the permanent-saturation terminal transition, keeping local refusals. Link stays OPEN and unable to admit past the promised retirement deadline."
+        ],
+        [
+          "Current evidence",
+          "Specified; existing PR1413 AC14 owns this interaction."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T10 | Late reply vs retirement"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Deliver the exact old reply immediately before and after terminal commitment in separate barrier schedules. Check caller result, tombstone count and next operation."
+        ],
+        [
+          "Single fault -> RED",
+          "Drop the tombstone/reuse the correlation early. Old reply settles the wrong call or capacity is released twice."
+        ],
+        [
+          "Current evidence",
+          "Specified."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T11 | Handler concurrency"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Override the common profile: N_handler=1, at least2 answer ticket slots, and B_answer>=2*c_max (6F if c_max=3F); raise B_out and N_out equally. Hold one handler and submit a second valid CALL, pacing input to avoid ring saturation. Reserve2F of handler-input storage independently so that gate also stays open."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove only handler-record reservation. Active handler count exceeds N_handler. A ring overflow must not mask this mutation."
+        ],
+        [
+          "Current evidence",
+          "Executed baseline:512 unresolved handlers with8 ring slots."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T12 | Answer capacity before effects"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Give record capacity but exhaust the maximum-answer allowance. Use an independent handler effect counter. Separately prove an already-reserved answer succeeds when data is full."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove only advance answer-byte reservation. New handler effect occurs with no reply allowance; a later failed answer does not hide it."
+        ],
+        [
+          "Current evidence",
+          "Specified."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T13 | Control reserve and all producers"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Exercise HELLO, PING replies, CALL, EVENT, answers, abandon and close separately. Fill data; leave control free; make the EVENT charge fit remaining control."
+        ],
+        [
+          "Single fault -> RED",
+          "Allow ordinary EVENT to use control reserve. It is admitted against protected capacity. A separate skipped-PING-reservation mutant grows control work under a no-read peer."
+        ],
+        [
+          "Current evidence",
+          "Specified; preserve one FIFO."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T14 | Credit return while main is parked"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Park main in callBlocking. Worker drains a ticket from the exact partition needed by a following required operation, and peer waits for that operation before replying."
+        ],
+        [
+          "Single fault -> RED",
+          "Make release depend on a main-thread callback. Required progress fails despite physical drain. Keep other reserved partitions occupied so they cannot mask the fault."
+        ],
+        [
+          "Current evidence",
+          "Specified; do not rely on data credit funding a disjoint control partition."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T15 | Exactly-once release and generation fences"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Force reply/timeout, reply/close, poison/close and worker-death/release in both orders. Reuse a local slot in a successor and deliver an old completion."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove release CAS or epoch/incarnation validation, one mutation per arm. Count underflows or old work frees occupied successor capacity."
+        ],
+        [
+          "Current evidence",
+          "Specified; need both logical-state and real teardown observers."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T16 | Partial write poison"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Peer records a partial header/payload; then inject failure with another queued frame."
+        ],
+        [
+          "Single fault -> RED",
+          "Treat partial failure as pre-dispatch refusal or keep writer usable. Peer sees subsequent frame bytes on the damaged stream, or result falsely claims no effect."
+        ],
+        [
+          "Current evidence",
+          "Existing poison is present; new accounting integration must retain its regression."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T17 | Queue-age and whole-frame clocks"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "For TS queue age, let each head finish inside5s while a tail exceeds T_queue. For Rust, use an injectable clock and successful short writes whose total exceeds T_frame. Native short-read peer is a separate acceptance arm."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove only the relevant absolute deadline. Tail/frame exceeds the configured bound without terminal settlement. Per-wait timeouts stay enabled."
+        ],
+        [
+          "Current evidence",
+          "Specified; native drip-write test not run."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T18 | Worker termination and cleanup"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Kill or wedge the Worker with payloads in mailbox, active writer and pending-reply states separately. Observe exact error, peer EOF, actual exit, retained references and healthy successor."
+        ],
+        [
+          "Single fault -> RED",
+          "Mark physical retirement at termination request, or accept a stale release. Quiescence/retention oracle fails despite counters showing zero."
+        ],
+        [
+          "Current evidence",
+          "New ledger cleanup acceptance unrun."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T19 | Host UI end-to-end command permit"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Stall physical UI consumer, issue K_ui+1 alternating setters on one window. Exactly K_ui can be Accepted. Resume one command and admit one healthy follow-up."
+        ],
+        [
+          "Single fault -> RED",
+          "Bypass pre-enqueue reservation. Retained commands exceed K_ui. Separately return permits at Tao forwarding: proxy backlog exceeds K_ui while mpsc stays empty."
+        ],
+        [
+          "Current evidence",
+          "Baseline4096 retained Accepted commands executed; physical AppKit arm unrun."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T20 | Native facts before filtering"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Keep coordinator blocked while generating repeated native observations and lifecycle facts. Observe mailbox occupancy before changed-only filtering."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove mailbox admission. Duplicate/state facts exceed K_events. Separately let ordinary state consume lifecycle reserve and observe forbidden admission."
+        ],
+        [
+          "Current evidence",
+          "Specified; no native UI flood result claimed."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T21 | Decoder cardinality and bytes"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Use valid literal AuthRequest wire with many empty strings. Leave frame/record budgets ample; observe Vec/arena capacity before semantic policy."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove count/decoded-byte precheck only. Allocated capacity exceeds D_schema. A later policy rejection cannot make the test pass."
+        ],
+        [
+          "Current evidence",
+          "Baseline262151 wire bytes to8388480 vector backing executed."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T22 | Capacity compatibility"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Through the public FS adapter and actual Host, read sizes around1MiB and exactly8MiB. The encoded envelope must fit the declared async receive capacity. Also test16MiB framing independently of schema limits."
+        ],
+        [
+          "Single fault -> RED",
+          "Restore1MiB default for this API profile. A valid2MiB result closes with026."
+        ],
+        [
+          "Current evidence",
+          "Real WorkerLink/UDS2MiB baseline executed; actual Host FS qualification unrun."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T23 | Retired reader resource count"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Replace generations beyond K_retired with barriers proving old readers exited. Observe live handles and stop registrations. Force guardian-ack ordering separately."
+        ],
+        [
+          "Single fault -> RED",
+          "Omit completed-reader removal. Metadata grows past K_retired. A synchronous-join mutation must expose the guardian dependency deadlock."
+        ],
+        [
+          "Current evidence",
+          "Specified."
+        ]
+      ]
+    },
+    {
+      "kind": "subheading",
+      "text": "T24 | Renderer deadline and no unsafe retry"
+    },
+    {
+      "kind": "table",
+      "headers": [
+        "Arm",
+        "Required observation"
+      ],
+      "rows": [
+        [
+          "Positive / setup",
+          "Keep one valid host-originated call unanswered on a live link. Require deadline settlement and bounded late-reply handling. In a separate arm, commit a side effect then lose its reply."
+        ],
+        [
+          "Single fault -> RED",
+          "Remove response deadline: pending slot never retires. Add automatic replay on022/006: independent effect count becomes2."
+        ],
+        [
+          "Current evidence",
+          "Specified; do not use reconnect or code-only retry heuristics."
+        ]
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "For every count/byte test, run zero, exact capacity and capacity-plus-one. Keep the other resource dimension ample so it cannot mask the mutation. Use explicit barriers, peer acknowledgements and injected clocks; sleeps do not synchronize the test. Use subprocesses for death/wedge cases. After each refusal/recovery case, require a healthy follow-up. After terminal cases, require observed teardown and a permitted fresh-generation operation. Test each producer and each race order, not a generic representative only."
+    },
+    {
+      "kind": "heading",
+      "text": "11. Performance and memory measurement methodology"
+    },
+    {
+      "kind": "subheading",
+      "text": "Pin the work and environment"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Record commit, source/test hashes, Bun revision, Rust/toolchain, OS/build, architecture, CPU, power state, memory, socket backend, limits, schema, compiler/profile, signing/packaging when relevant, and concurrent machine load. Use identical application effects and payload bytes in baseline and candidate. A native UDS result does not qualify Windows named pipes."
+    },
+    {
+      "kind": "subheading",
+      "text": "Separate workload classes"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Use64B,1KiB,64KiB,1MiB,8MiB and legal16MiB framing payloads, plus mixtures with occasional large frames and many tiny messages. Include zero/minimum records, pooled/subview/shared inputs,1/2/8/32 logical producers, callback-bound work, stalled peer, drip peer, Ready withheld, slow UI and slow handler. Distinguish schema-valid limits from raw framing limits."
+    },
+    {
+      "kind": "subheading",
+      "text": "Use open and closed load"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Closed-loop fixed in-flight tests measure normal service; they hide an overload backlog by self-throttling. Open-loop offered arrivals must use absolute scheduled times and record generator lateness so coordinated omission is visible. Select load levels relative to an independently measured baseline saturation point; do not invent throughput numbers in advance."
+    },
+    {
+      "kind": "subheading",
+      "text": "Measure the full timeline"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Record offered, admitted, encoded, posted, Worker-received, queued, first-write, last-write, Host-read, decoded, dispatched, effect-committed, replied and consumer-retired events keyed by correlation/ticket/generation. Use one monotonic clock for each duration. Do not subtract unrelated process clocks without a clock model. Acceptance latency and consumer completion latency are distinct."
+    },
+    {
+      "kind": "subheading",
+      "text": "Observe resources independently"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Record reserved bytes/counts and independently inspect owned backing sizes, live objects, queue/proxy entries, timer/pending/handler counts, retired reader handles, descriptors and generation overlap. Log logical payload bytes, capacity bytes, allocated bytes, live retained bytes and process RSS/private memory as separate metrics. Include GC/allocator retained capacity and peak overlap; a plateau alone is not a hard bound."
+    },
+    {
+      "kind": "subheading",
+      "text": "Report statistics honestly"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Report offered/admitted/refused/completed rates separately, bytes including or excluding headers explicitly, latency p50/p95/p99/p99.9/max, service/queue-time decomposition, sample counts and run duration. Use repeated independent process runs with randomized baseline/candidate order and confidence intervals. Do not average percentiles into a supposed pooled percentile. Publish raw data and define all exclusions before the run."
+    },
+    {
+      "kind": "subheading",
+      "text": "Keep instrumentation from deciding the score"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Use a traced diagnostic arm for attribution and an equivalent minimally instrumented arm for performance scoring. Quantify instrumentation overhead. Forced GC and WeakRef probes are retention diagnostics, not normal production throughput workloads."
+    },
+    {
+      "kind": "subheading",
+      "text": "Apply the actual gates"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Require no silent drops, exact byte/correlation transcript, bounded independent census, same successful public outcomes, timely overload/terminal behavior, complete cleanup and a healthy successor. Existing architecture targets and the repository regression-review rule remain gates only for the workloads/platforms they define. Do not declare them met from these witnesses."
+    },
+    {
+      "kind": "subheading",
+      "text": "Keep artifacts reproducible"
+    },
+    {
+      "kind": "paragraph",
+      "text": "Retain fixture, payload seed/digests, exact command, mutation patch/hash, complete stdout/stderr/exit, source pin, environment and chronological machine-readable observations. A negative-control suite must name which oracle turned RED and why another guard did not mask it. Store unrun rows as unrun."
+    },
+    {
+      "kind": "heading",
+      "text": "12. Implementation sequence and acceptance boundary"
+    },
+    {
+      "kind": "bullet",
+      "text": "First reconcile the architecture contradictions and the current GH623 draft pin. Freeze the local005 branch and overload behavior with the existing owners; make capacity/copy decisions concrete in B1/B2."
+    },
+    {
+      "kind": "bullet",
+      "text": "Before implementation, turn the supplied witnesses into ordinary target regressions with explicit admitted/refused counts. Add pre-Ready, pending-call, handler-answer and UI-proxy tests so the bound cannot move to an unseen queue."
+    },
+    {
+      "kind": "bullet",
+      "text": "Implement the shared admission/lifetime primitive and integrate every current producer. Keep source-generation/stamping ownership and existing transport semantics. Add schema/Host/UI corrections in their owning modules; do not hide them behind the outbound counter."
+    },
+    {
+      "kind": "bullet",
+      "text": "Execute every positive and one-fault negative on the exact candidate. Prove selected-Bun backing behavior, physical termination and platform-specific deadlines. Qualify macOS, Windows named pipes and Linux independently before cross-platform claims."
+    },
+    {
+      "kind": "bullet",
+      "text": "Measure equivalent-work performance and total resource census. Activate only after B3 and the relevant public API/wire/native gates close. An audit report, passing witness probe or a small logical queue counter is not a production acceptance receipt."
+    },
+    {
+      "kind": "paragraph",
+      "text": "Remaining unknowns are explicit: numeric production limits; exact runtime/native temporary-copy overhead and reclamation timing; full installed-consumer reactions to new synchronous refusal; native short-write timing; physical UI flood/proxy capacity; restart-soak cleanup; and Windows/Linux behavior. Source inspection supports the named paths, not a formal proof that all future plugins or arbitrary application allocations are bounded."
+    },
+    {
+      "kind": "heading",
+      "text": "13. Source index"
+    },
+    {
+      "kind": "paragraph",
+      "text": "All repository sources below use immutable main269d51528137faf574cfd3548586ee3ada1acfda unless another pin is stated. The issue is a live tracker snapshot. External documentation was retrieved23 November2026; exact Bun behavior is supported separately by the recorded runtime probes. Context7 discovery used /oven-sh/bun, then official primary sources confirmed the raw TCP and Worker boundaries."
+    },
+    {
+      "kind": "reference",
+      "id": "S01",
+      "title": "Architecture 02",
+      "path": "docs/architecture/02-ipc.md",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/docs/architecture/02-ipc.md#L51-L70"
+    },
+    {
+      "kind": "reference",
+      "id": "S02",
+      "title": "Canonical TypeScript transport",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L1255-L1380"
+    },
+    {
+      "kind": "reference",
+      "id": "S03",
+      "title": "WorkerLink public producers",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L2738-L2811"
+    },
+    {
+      "kind": "reference",
+      "id": "S04",
+      "title": "Inbound dispatch and handler continuations",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L3208-L3376"
+    },
+    {
+      "kind": "reference",
+      "id": "S05",
+      "title": "Transport Worker queue and end paths",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L3742-L3883"
+    },
+    {
+      "kind": "reference",
+      "id": "S06",
+      "title": "FrameReader ownership and bounds",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L750-L864"
+    },
+    {
+      "kind": "reference",
+      "id": "S07",
+      "title": "Generated filesystem codecs",
+      "path": "packages/@keld/api/src/fs.generated.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/fs.generated.ts#L19-L95"
+    },
+    {
+      "kind": "reference",
+      "id": "S08",
+      "title": "Public filesystem adapter",
+      "path": "packages/@keld/api/src/fs.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/fs.ts#L11-L27"
+    },
+    {
+      "kind": "reference",
+      "id": "S09",
+      "title": "Ready waiter ownership and invocation",
+      "path": "packages/@keld/api/src/app.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/app.ts#L211-L230"
+    },
+    {
+      "kind": "reference",
+      "id": "S10",
+      "title": "Pre-Ready FS and auth invocation",
+      "path": "packages/@keld/api/src/app.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/app.ts#L360-L375"
+    },
+    {
+      "kind": "reference",
+      "id": "S11",
+      "title": "Host UI command and native-event channels",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L2469-L2517"
+    },
+    {
+      "kind": "reference",
+      "id": "S12",
+      "title": "Setter enqueue before Accepted reply",
+      "path": "crates/keld-core/src/app_session/window_router.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session/window_router.rs#L681-L699"
+    },
+    {
+      "kind": "reference",
+      "id": "S13",
+      "title": "UI command forwarding to Tao",
+      "path": "crates/keld-wv/src/wkwebview/mod.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-wv/src/wkwebview/mod.rs#L919-L975"
+    },
+    {
+      "kind": "reference",
+      "id": "S14",
+      "title": "Native state event production",
+      "path": "crates/keld-wv/src/wkwebview/managed_windows.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-wv/src/wkwebview/managed_windows.rs#L412-L448"
+    },
+    {
+      "kind": "reference",
+      "id": "S15",
+      "title": "Rust frame writer",
+      "path": "crates/keld-ipc/src/link.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-ipc/src/link.rs#L828-L857"
+    },
+    {
+      "kind": "reference",
+      "id": "S16",
+      "title": "Rust structured codec",
+      "path": "crates/keld-ipc/src/codec.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-ipc/src/codec.rs#L9-L49"
+    },
+    {
+      "kind": "reference",
+      "id": "S17",
+      "title": "Auth admission, decoding and worker ownership",
+      "path": "crates/keld-core/src/app_session/auth_router.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session/auth_router.rs#L298-L327"
+    },
+    {
+      "kind": "reference",
+      "id": "S18",
+      "title": "Auth request schema",
+      "path": "crates/keld-native/src/auth/mod.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-native/src/auth/mod.rs#L66-L83"
+    },
+    {
+      "kind": "reference",
+      "id": "S19",
+      "title": "Native filesystem limits",
+      "path": "crates/keld-native/src/fs.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-native/src/fs.rs#L70-L81"
+    },
+    {
+      "kind": "reference",
+      "id": "S20",
+      "title": "Generation reader retention",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L7583-L7616"
+    },
+    {
+      "kind": "reference",
+      "id": "S21",
+      "title": "Renderer response wait",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L4504-L4515"
+    },
+    {
+      "kind": "reference",
+      "id": "S22",
+      "title": "Canonical IPC error registry",
+      "path": "docs/engineering/keld-error-codes.md",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/docs/engineering/keld-error-codes.md#L36-L71"
+    },
+    {
+      "kind": "reference",
+      "id": "S23",
+      "title": "Approved WorkerLink contract",
+      "path": "docs/specs/gh527-worker-owned-blocking-call-transport.md",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/docs/specs/gh527-worker-owned-blocking-call-transport.md#L503-L554"
+    },
+    {
+      "kind": "reference",
+      "id": "S24",
+      "title": "Ring and reply capacities",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L1694-L1756"
+    },
+    {
+      "kind": "reference",
+      "id": "S25",
+      "title": "Window registry and setter admission",
+      "path": "crates/keld-core/src/app_session/window_registry.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session/window_registry.rs#L485-L533"
+    },
+    {
+      "kind": "reference",
+      "id": "S26",
+      "title": "Rust validated frame allocation and clock",
+      "path": "crates/keld-ipc/src/link.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-ipc/src/link.rs#L714-L825"
+    },
+    {
+      "kind": "reference",
+      "id": "S27",
+      "title": "Generated auth codec",
+      "path": "packages/@keld/api/src/auth.generated.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/api/src/auth.generated.ts#L1-L120"
+    },
+    {
+      "kind": "reference",
+      "id": "S28",
+      "title": "Worker private FIFO and correlation allocation",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L2894-L2922"
+    },
+    {
+      "kind": "reference",
+      "id": "S29",
+      "title": "Worker ring append and wake",
+      "path": "packages/@keld/kipc/src/transport.ts",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/packages/@keld/kipc/src/transport.ts#L3668-L3739"
+    },
+    {
+      "kind": "reference",
+      "id": "S30",
+      "title": "Current generation lock during I/O",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L8585-L8649"
+    },
+    {
+      "kind": "reference",
+      "id": "S37",
+      "title": "Sliding crash window, not lifetime cap",
+      "path": "crates/keld-runtime/src/lib.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-runtime/src/lib.rs#L59-L71"
+    },
+    {
+      "kind": "reference",
+      "id": "S38",
+      "title": "Restart crash-window eviction",
+      "path": "crates/keld-runtime/src/lib.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-runtime/src/lib.rs#L1580-L1586"
+    },
+    {
+      "kind": "reference",
+      "id": "S39",
+      "title": "Generation reader stop registrations",
+      "path": "crates/keld-core/src/app_session.rs",
+      "url": "https://github.com/gyldlab/keld/blob/269d51528137faf574cfd3548586ee3ada1acfda/crates/keld-core/src/app_session.rs#L2360-L2367"
+    },
+    {
+      "kind": "reference",
+      "id": "S31",
+      "title": "GH623 tracker and acceptance",
+      "path": "Issue #623",
+      "url": "https://github.com/gyldlab/keld/issues/623"
+    },
+    {
+      "kind": "reference",
+      "id": "S32",
+      "title": "Existing GH623 proposal, not landed",
+      "path": "PR1413 at 870d1c693214e5b20bc8cdc900afa3ded67e2823",
+      "url": "https://github.com/gyldlab/keld/blob/870d1c693214e5b20bc8cdc900afa3ded67e2823/docs/specs/gh623-bounded-outbound-budget.md"
+    },
+    {
+      "kind": "reference",
+      "id": "S33",
+      "title": "Official Bun TCP manual backpressure contract",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://bun.sh/docs/runtime/networking/tcp"
+    },
+    {
+      "kind": "reference",
+      "id": "S34",
+      "title": "Official Bun Worker serialization contract",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://bun.sh/docs/runtime/workers"
+    },
+    {
+      "kind": "reference",
+      "id": "S35",
+      "title": "Rust Write::write_all repeats writes",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://doc.rust-lang.org/std/io/trait.Write.html#method.write_all"
+    },
+    {
+      "kind": "reference",
+      "id": "S36",
+      "title": "Rust socket timeout semantics",
+      "path": "Retrieved 23 November 2026",
+      "url": "https://doc.rust-lang.org/std/net/struct.TcpStream.html#method.set_write_timeout"
+    }
+  ]
+}

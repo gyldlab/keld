@@ -3,196 +3,225 @@
 - Status: draft
 - Tracker: GH-623
 - Owner: Monish Khandelwal (@0monish, proposed approval owner)
-- Updated: 2026-11-13
-- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
+- Updated: 2026-11-23
+- Pin: 269d51528137faf574cfd3548586ee3ada1acfda
 
 ## 1. Goal & non-goals
 
-Bound transport-owned outbound bytes and live operation records before retention.
-Preserve the existing single role link, frame ordering, and error semantics.
+Bound transport-owned outbound bytes and operation records before their first retention.
+Preserve the existing role link, accepted-frame order, and failure distinctions.
 Define early refusal separately from a failed write with unknown effects.
-Runtime implementation requires approval of this draft and closure of its named design gates.
+Production implementation requires approval and closure of B-1 and B-2. Activation also requires B-3.
 
-FACT: The current frame payload limit is 16 MiB.
-It is a per-frame limit, not an aggregate queue limit.
-See `packages/@keld/kipc/src/transport.ts:222`.
-The current writer retains payloads in a Promise chain.
-See `packages/@keld/kipc/src/transport.ts:1182`.
+FACT: The payload limit is 16 MiB, while WriteQueue retains payloads in a Promise chain.
+See `packages/@keld/kipc/src/transport.ts:222` and `packages/@keld/kipc/src/transport.ts:1310`.
+FACT: Public FS and Auth adapters encode before their Ready wait. Their retention precedes WorkerLink.
+See `packages/@keld/api/src/fs.ts:13`, `packages/@keld/api/src/auth.ts:101`, and `packages/@keld/api/src/app.ts:361`.
 
 Non-goals:
-
-- No second socket, replacement transport, or shared-memory payload plane.
-- No increase to frame limits, timeout constants, or Host admission capacity.
-- No fix for application watch/unwatch ordering or application request floods.
-- No silent event drops, unbounded waiter queue, automatic retry, or coalesced application messages.
+- No second socket, replacement transport, shared-memory payload plane, or new Host wire message.
+- No frame-limit increase or silent replacement of existing timeout constants.
+- No native Host-capacity, decoder, receive-profile, role-custody, or watch-ordering implementation.
+- No silent drops, automatic retry, coalesced application messages, or unbounded admission waiters.
 - No change to Host execution authority, profile admission, or replay policy.
-- No total-process memory claim from a logical transport counter.
+- No total-process memory or performance claim from transport counters.
 
 ## 2. Spec refs
 
-FACT: GH527 owns one Worker, one link, one ordered outbound path, and typed terminal failures.
-See `docs/specs/gh527-worker-owned-blocking-call-transport.md:409`.
-Its typed error and wake contracts remain authoritative.
-See `docs/specs/gh527-worker-owned-blocking-call-transport.md:503`.
-Architecture 02 owns framing and the control plane.
-See `docs/architecture/02-ipc.md:1`.
-
-FACT: Current KELD-IPC-005 capacity wording concerns Host admission.
-See `docs/engineering/keld-error-codes.md:60`.
-A local early-refusal use needs the explicit error-owner amendment in B-2.
-This draft allocates no new code and does not silently broaden an existing code.
-
-FACT: WorkerLink uses one private MessagePort for CALL, EVENT, answers, abandonment, and close.
-See `packages/@keld/kipc/src/transport.ts:2328` and `packages/@keld/kipc/src/transport.ts:2783`.
-The new ledger belongs inside that existing transport owner.
+FACT: GH527 owns the Worker, link, outbound order, typed failures, and wake contract.
+See `docs/specs/gh527-worker-owned-blocking-call-transport.md:409` and `docs/specs/gh527-worker-owned-blocking-call-transport.md:503`.
+FACT: Architecture 02 owns framing and the control plane. See `docs/architecture/02-ipc.md:1`.
+FACT: The IPC-005 capacity contract currently concerns guarded Host admission.
+See `docs/engineering/keld-error-codes.md:60`. B-2 must approve any local extension.
+FACT: One private MessagePort carries CALL, EVENT, answer, abandon, and close messages.
+See `packages/@keld/kipc/src/transport.ts:2456` and `packages/@keld/kipc/src/transport.ts:2911`.
+The ledger stays with that owner. GH527 remains the owner of shared ordering and termination.
 
 ## 3. Acceptance criteria
 
-B-1 selects capacities before production implementation.
-B-2 freezes error/API behavior.
-B-3 gates runtime qualification, not the work needed to produce that qualification.
+B-1 selects capacities and queue/retirement clocks. B-2 freezes public failure and shared-input behavior.
+B-3 gates activation, not the qualification work in T-3.
 
 ### AC-1: Refuse before retaining more work
 
-- **Given:** A valid live link whose declared byte or record capacity is exhausted.
+- **Given:** A valid live link whose byte or record capacity is exhausted.
 - **When:** A producer requests another CALL or EVENT.
-- **Then:** It receives the B-2 local refusal before payload cloning, pending-state creation, or MessagePort enqueue.
+- **Then:** Return the B-2 refusal before cloning, pending-state creation, or posting.
 - **Negative control:**
-  - **Single fault:** Bypass admission for EVENT.
-  - **At-risk precondition:** The peer stops reading after HELLO and the producer exceeds the frozen capacity.
-  - **Expected RED:** The independent retained-byte or record census exceeds its declared ceiling.
+  - **Single fault:** Bypass EVENT admission.
+  - **At-risk precondition:** The peer stops reading after HELLO. Offered work exceeds the frozen capacity.
+  - **Expected RED:** An independent retained-byte or record census exceeds its ceiling.
 
 ### AC-2: Count backing storage and zero-length records
 
-- **Given:** Small views into large buffers, pooled buffers, empty payloads, and maximum-size payloads.
+- **Given:** Small views into large buffers, pooled buffers, empty payloads, and maximum payloads.
 - **When:** Each enters the outbound path.
-- **Then:** Transport retains only admitted compact snapshots and bounded metadata. Empty payloads consume a record.
+- **Then:** Retain admitted compact snapshots and bounded metadata only. Empty payloads consume a record.
 - **Negative control:**
-  - **Single fault:** Post a small view directly while charging only its visible length.
-  - **At-risk precondition:** That view retains or clones a larger backing buffer in the qualified runtime.
-  - **Expected RED:** The independent backing-storage census exceeds the recorded charge.
+  - **Single fault:** Post a small view while charging only its visible length.
+  - **At-risk precondition:** The qualified runtime retains or clones the larger backing buffer.
+  - **Expected RED:** The independent backing census exceeds the charge.
 
 ### AC-3: Include each producer in one budget
 
-- **Given:** A partially full ledger and valid work from each producer listed in D-2.
-- **When:** Each producer attempts to cross its partition's capacity.
-- **Then:** Every path reserves before retention or terminates through its specified fail-closed path.
+- **Given:** A partly full ledger and valid work from each D-2 producer.
+- **When:** Each producer attempts to exceed its partition.
+- **Then:** Reserve before retention or follow the specified terminal path. Ordinary data cannot borrow protected capacity.
 - **Negative control:**
-  - **Single fault:** Bypass the ledger for Worker-generated PING replies.
+  - **Single fault:** Bypass reservation for Worker-generated PING replies.
   - **At-risk precondition:** The peer sends valid PINGs while refusing outbound bytes.
-  - **Expected RED:** PING work exceeds the declared control partition without the expected terminal refusal.
+  - **Expected RED:** Control work exceeds its partition without the specified terminal refusal.
 
 ### AC-4: Preserve ordered, immutable frame contents
 
-- **Given:** A direct WriteQueue caller admits frames with unique sequence numbers and payload digests.
-- **When:** The first write pauses, the caller mutates a later admitted buffer, and the peer forces fragmented writes.
-- **Then:** The peer receives each admitted snapshot once, in existing send order, without interleaved bytes.
-  Run a separate WorkerLink mailbox case for the same ordering contract.
+- **Given:** A direct WriteQueue caller admits numbered frames with independent payload digests.
+- **When:** The first write pauses, the caller mutates a later buffer, and the peer forces fragmented writes.
+- **Then:** Receive each admitted snapshot once, in send order, without interleaving. Run a separate WorkerLink mailbox case.
 - **Negative control:**
-  - **Single fault:** Keep the direct writer caller's mutable view instead of its admitted snapshot.
-  - **At-risk precondition:** The later frame reaches no Worker or MessagePort clone before the caller mutates it.
-  - **Expected RED:** The independent peer digest differs from the admitted digest.
+  - **Single fault:** Retain the direct caller's mutable view instead of its snapshot.
+  - **At-risk precondition:** No Worker or MessagePort clone occurs before the caller mutation.
+  - **Expected RED:** The peer digest differs from the admitted digest.
 
 ### AC-5: Release payload credit only after retention ends
 
 - **Given:** A frame remains queued or partly written.
-- **When:** A caller times out before the write finishes.
-- **Then:** Payload credit remains charged until the actual retained buffers are released or the link quiesces.
+- **When:** Its caller times out before write completion.
+- **Then:** Keep byte credit until the charged backing retires or physical link quiescence releases it.
 - **Negative control:**
-  - **Single fault:** Release byte credit when the caller timeout fires.
-  - **At-risk precondition:** The writer still retains the payload and a new producer fills the apparently free capacity.
-  - **Expected RED:** The retained-buffer census exceeds the ledger ceiling.
+  - **Single fault:** Release byte credit on caller timeout.
+  - **At-risk precondition:** The writer retains the payload while another producer fills the apparently free capacity.
+  - **Expected RED:** Independent retained buffers exceed the byte ceiling.
 
 ### AC-6: Keep pending CALL records bounded
 
-- **Given:** A peer reads requests but withholds replies, then returns replies while main-thread delivery is paused.
-- **When:** The producer continues issuing async CALLs.
-- **Then:** Pending callers, Worker entries, abandonment records, and retained terminal deliveries stay within the declared record ceiling.
+- **Given:** A peer reads without replying, then replies while main-thread delivery is paused.
+- **When:** Producers continue issuing asynchronous CALLs.
+- **Then:** Bound distinct CALL tickets across caller, Worker, abandonment, and retained-delivery states. Do not double-count one ticket across states.
 - **Negative control:**
-  - **Single fault:** Release a CALL record when its request finishes writing.
-  - **At-risk precondition:** The peer drains requests quickly and never answers them.
-  - **Expected RED:** Pending operation records exceed the ceiling while outbound byte use stays small.
+  - **Single fault:** Release CALL credit when its request finishes writing.
+  - **At-risk precondition:** The peer drains requests promptly and never answers.
+  - **Expected RED:** Pending CALLs exceed their ceiling while outbound byte use remains small.
 
 ### AC-7: Release each reservation once
 
-- **Given:** One reservation encounters write failure, late reply, timeout, close, or generation retirement in both event orders.
-- **When:** All owned callbacks and retained messages settle.
-- **Then:** Each credit releases once. Counts never become negative. Retired tickets cannot release successor credit.
+- **Given:** A reservation encounters failure, reply, timeout, close, and retirement in both competing event orders.
+- **When:** Its callbacks and retained messages settle.
+- **Then:** Release each credit once. Prevent negative counts and release into a successor ledger.
 - **Negative control:**
-  - **Single fault:** Remove the ticket-state compare-and-exchange from release.
-  - **At-risk precondition:** Two terminal paths race to release the same reservation.
-  - **Expected RED:** A count underflows or a new admission exceeds the real available capacity.
+  - **Single fault:** Remove the release-state compare-and-exchange.
+  - **At-risk precondition:** Two terminal paths release the same reservation.
+  - **Expected RED:** Credit underflows or admission exceeds independently observed free capacity.
 
 ### AC-8: Preserve progress while the main thread is parked
 
-- **Given:** A blocking CALL parks main while the Worker can still drain admitted outbound data.
-- **When:** Writes finish and the Host sends the matching reply.
-- **Then:** Worker-owned byte release requires no main-thread acknowledgment. The call returns under the existing deadline and wake contract.
+- **Given:** A blocking CALL parks main. Worker retirement can release credit required by a following operation.
+- **When:** The Worker drains that ticket and the peer waits for the required operation before replying.
+- **Then:** Worker release needs no main callback. The required operation progresses and the call respects its original deadline.
 - **Negative control:**
-  - **Single fault:** Make byte-credit release depend on a main-thread message callback.
-  - **At-risk precondition:** Later required control output needs the credit released by the drained data.
-  - **Expected RED:** The control/progress oracle stalls or refuses despite completed writes and available physical capacity.
+  - **Single fault:** Make credit release depend on a main-thread callback.
+  - **At-risk precondition:** Drain the exact partition needed next. Occupy other reserves so their credit cannot hide the fault.
+  - **Expected RED:** Required progress fails despite completed drain and available physical capacity.
 
 ### AC-9: Distinguish early refusal from partial-write damage
 
-- **Given:** Separate cases for full-budget refusal and a socket failure after a partial header or payload write.
+- **Given:** Separate full-budget refusals and failures after a partial header or payload write.
 - **When:** The operation fails.
-- **Then:** Early refusal writes zero bytes and preserves a healthy link. Partial writes poison the writer and preserve unknown-effect semantics.
+- **Then:** Early refusal emits zero bytes and preserves the link. Partial-write failure poisons it and preserves unknown-effect semantics.
 - **Negative control:**
-  - **Single fault:** Treat a partial-write failure as an early local refusal.
-  - **At-risk precondition:** The peer records part of the original frame before the injected failure.
-  - **Expected RED:** A later frame is written on the damaged stream or the error claims proven nonexecution.
+  - **Single fault:** Treat partial-write failure as early refusal.
+  - **At-risk precondition:** The peer records a frame prefix before failure.
+  - **Expected RED:** Later bytes use the damaged stream or the error falsely proves nonexecution.
 
 ### AC-10: Keep terminal control capacity separate from ordinary data
 
-- **Given:** Normal traffic fills its data partition while the declared control allowance remains available.
-- **When:** Submit another ordinary EVENT, then separately request the actual terminal close.
-- **Then:** Refuse the EVENT without consuming control credit. The close completes through bounded reserved capacity and creates no extra queue.
+- **Given:** Data capacity is full while control capacity remains available.
+- **When:** Submit another ordinary EVENT, then separately request terminal close.
+- **Then:** Refuse the EVENT without control credit. Close uses bounded reserved capacity without another payload queue.
 - **Negative control:**
-  - **Single fault:** Let ordinary EVENTs consume the reserved control partition.
-  - **At-risk precondition:** Only data credit is exhausted. The valid EVENT's complete byte/record charge fits the free control allowance and reaches the real admission owner.
-  - **Expected RED:** The EVENT is admitted against control credit. Independent admission and retained-object observations detect the forbidden charge.
+  - **Single fault:** Allow ordinary EVENTs to spend control credit.
+  - **At-risk precondition:** The valid EVENT fits the free control bytes and records, and reaches actual admission.
+  - **Expected RED:** Independent admission and retention observations detect its forbidden control charge.
 
 ### AC-11: Keep Host handler admission bounded
 
-- **Given:** Host handler records are exhausted, answer-byte capacity is available, and a valid CALL targets an installed handler.
-- **When:** The request reaches handler admission.
-- **Then:** The handler is not invoked. The link follows the approved terminal path and retains no unbounded Promise chain.
+- **Given:** One active handler fills a one-handler cap. Answer tickets, answer bytes, and handler-input storage remain available.
+- **When:** Another valid CALL reaches its installed handler.
+- **Then:** Do not invoke it. Follow the approved terminal path without an unbounded Promise chain.
 - **Negative control:**
-  - **Single fault:** Omit the handler-record reservation before invocation while preserving answer-byte admission.
-  - **At-risk precondition:** Existing handlers wait behind a barrier and the next valid CALL reaches record admission with answer bytes available.
-  - **Expected RED:** Active handler records exceed the declared bound.
+  - **Single fault:** Omit handler-record reservation while preserving answer and input admission.
+  - **At-risk precondition:** Hold one handler behind a barrier. Fund two maximum answers and inputs, and pace CALLs below ring overflow.
+  - **Expected RED:** Active handlers exceed the configured handler bound.
 
 ### AC-12: Preserve capacity across failure and a healthy successor
 
-- **Given:** Separate runs cover postMessage throw, pre-write refusal, stalled writes, Worker death, and link retirement.
-- **When:** The owner observes each actual terminal boundary.
-- **Then:** No new work enters a retired ledger. A new role generation uses a new ledger after the existing lifecycle permits it.
+- **Given:** Separate postMessage-throw, pre-write-refusal, stalled-write, Worker-death, and retirement cases.
+- **When:** The owner observes each physical terminal boundary.
+- **Then:** Seal retired admission. Give the permitted successor a fresh ledger. Observe actual exit separately from termination request.
 - **Negative control:**
-  - **Single fault:** Accept a release carrying the previous generation's ticket.
-  - **At-risk precondition:** The successor has an occupied slot with the same local index.
-  - **Expected RED:** Old work frees successor capacity or the successor exceeds its real bound.
+  - **Single fault:** Accept a release with a previous generation's ticket.
+  - **At-risk precondition:** The successor occupies the same local slot index.
+  - **Expected RED:** Old work frees successor credit or permits excessive admission.
 
 ### AC-13: Reserve answer bytes before Host handler effects
 
-- **Given:** A valid Host CALL has record capacity but cannot reserve its maximum answer bytes. A separate positive case already holds both reservations.
-- **When:** The new CALL reaches handler admission, or the positive handler answers while normal traffic fills its data partition.
-- **Then:** Refuse the new CALL before handler effects. The admitted positive answer reaches the peer using its existing ticket.
+- **Given:** A valid Host CALL has record capacity but lacks maximum-answer bytes. A separate positive handler holds both reservations.
+- **When:** The new CALL reaches admission, or the admitted handler answers while data capacity is full.
+- **Then:** Refuse before new handler effects. Deliver the positive answer with its existing ticket.
 - **Negative control:**
-  - **Single fault:** Omit only the maximum-answer byte reservation before granting handler invocation.
-  - **At-risk precondition:** The new CALL has valid role, framing, handler and record capacity. Its answer-byte allowance is exhausted.
-  - **Expected RED:** The independently observed handler effect occurs without a reserved answer ceiling. Later answer refusal cannot hide that effect.
+  - **Single fault:** Omit only maximum-answer reservation before invocation.
+  - **At-risk precondition:** Role, frame, handler, record, and input checks pass. Answer capacity alone is exhausted.
+  - **Expected RED:** An independent effect occurs without reserved answer capacity. Later answer refusal cannot hide it.
 
 ### AC-14: Retire permanent CALL tombstone saturation
 
-- **Given:** The smallest legal CALL capacity, with other partitions occupied, and a peer that reads but never replies.
-- **When:** CALL timeouts reach the selected B-1 terminal threshold or fill eligible record capacity while heartbeats continue.
-- **Then:** The B-1 terminal rule retires the link within its approved bound, without a new CALL or main-thread callback.
-  Preserve retained correlations until actual retirement. Separately, late replies before terminal commitment restore admission, and a healthy successor completes a CALL.
+- **Given:** The smallest legal CALL capacity, occupied competing partitions, and a reading peer that never replies.
+- **When:** Timeouts reach the B-1 threshold or fill eligible records while heartbeats continue.
+- **Then:** Retire within the approved bound without new CALLs or main callbacks. Keep correlations until actual retirement.
+  Late replies before terminal commitment restore admission. Test both reply/retirement orders and a healthy successor CALL separately.
 - **Negative control:**
-  - **Single fault:** Disable the selected B-1 tombstone terminal transition while preserving local refusal.
-  - **At-risk precondition:** Tombstones fill eligible record capacity. The peer never replies, and no further CALL is submitted.
-  - **Expected RED:** The retirement bound expires while the link stays OPEN and no CALL can be admitted.
+  - **Single fault:** Disable saturation retirement while preserving local refusal.
+  - **At-risk precondition:** Tombstones fill eligible capacity. Abandon and close rights are prepaid, and no further CALL is submitted.
+  - **Expected RED:** The bound expires with the link OPEN and CALL admission permanently unavailable.
+
+### AC-15: Admit before encoding and Ready retention
+
+- **Given:** HELLO succeeds but Ready is withheld. Public FS/Auth operations can exhaust their record or encoding allowance.
+- **When:** Exceed either allowance with valid operations. Separately submit oversized encoder input with available operation and scratch capacity.
+- **Then:** Refuse excess operations before encoding or Ready retention. Refuse oversized encoding before allocation. Preserve direct whenReady behavior.
+- **Negative control:**
+  - **Single fault:** Move operation admission after Ready. In a separate run, remove only encoder size preflight.
+  - **At-risk precondition:** Withhold Ready for the first arm. Keep other capacity checks open for the oversized-encoding arm.
+  - **Expected RED:** Retained storage or waiters exceed their bound, or oversized encoding allocates before refusal, respectively.
+
+### AC-16: Arbitrate real main and Worker credit updates
+
+- **Given:** Main reserves while the Worker returns credit on the same shared counter. Independent live tickets identify actual usage.
+- **When:** Barrier those updates, then fill the remaining capacity. Separately force partial reservation failure and check rollback.
+- **Then:** Credit equals live-ticket charges, admission respects capacity, and failed reservations leave no partial charge.
+- **Negative control:**
+  - **Single fault:** Replace the shared atomic update with a load/store pair.
+  - **At-risk precondition:** Both agents read the old value before either stores. The Worker stores last, losing the reservation update.
+  - **Expected RED:** Credit disagrees with live tickets and subsequent admissions exceed actual capacity.
+
+### AC-17: Enforce the approved shared-input boundary
+
+- **Given:** B-2 has approved the proposed shared-backed-input refusal. A valid payload view uses a SharedArrayBuffer.
+- **When:** Another agent mutates that storage while admission is paused.
+- **Then:** Reject before dispatch or asynchronous retention. An unsynchronized copy does not satisfy a coherent-snapshot claim.
+- **Negative control:**
+  - **Single fault:** Remove shared-backing rejection while preserving ordinary compaction.
+  - **At-risk precondition:** Frame and capacity checks pass. The shared view reaches the input boundary.
+  - **Expected RED:** Shared-backed input enters the prohibited path instead of receiving the B-2 refusal.
+
+### AC-18: Bound admission-to-service residence
+
+- **Given:** Accepted work has a B-1 queue deadline. Each preceding active write completes within its existing I/O deadline.
+- **When:** A queued tail exceeds its original residence deadline before its first write.
+- **Then:** Apply the B-2 terminal outcome within its bound. Preserve FIFO and unknown effects of earlier work.
+- **Negative control:**
+  - **Single fault:** Remove queue-age expiry while keeping active-write and caller timeouts.
+  - **At-risk precondition:** Slow progress keeps every head healthy while tail residence exceeds the queue bound.
+  - **Expected RED:** The tail remains retained beyond its bound without the required terminal settlement.
 
 ## 4. Design
 
@@ -200,255 +229,202 @@ B-3 gates runtime qualification, not the work needed to produce that qualificati
 
 | Atom and owner | Boundary | Failure and falsifier |
 | --- | --- | --- |
-| Census, transport owner | Retained objects to bytes and records | Omitted backing store or producer. AC-2, AC-3. |
-| Admission, transport ledger | Valid input to reserved ticket | Enqueue or handler effect before its required charge. AC-1, AC-11, AC-13. |
-| Work and order, existing writer | Ticket and snapshot to ordered stream | Mutable payload or frame interleave. AC-4. |
-| Clock, current deadline owner | Original deadline to terminal decision | Timeout frees still-retained memory. AC-5. |
-| Lifetime, ticket state | Queue/pending completion to one release | Double release or early CALL release. AC-6, AC-7. |
-| Progress, existing Worker | Reserved control capacity to wake/close | Main-thread-dependent release. AC-8, AC-10. |
-| Failure meaning, IPC error owner | Dispatch facts to typed failure | Partial write reported as no effect. AC-9. |
-| Statistic and artifact, test owner | Independent census and raw run to claim | Self-reported counters presented as memory proof. B-3. |
+| Census, transport | Objects to bytes and records | Missing producer/backing. AC-2, AC-3, AC-15. |
+| Admission, ledger | Input to reservation | Retention or effect before charge. AC-1, AC-11, AC-13. |
+| Work/order, writer | Snapshot to stream | Mutation or interleaving. AC-4, AC-17. |
+| Clock, deadline owner | Original clock to retirement | Early credit release or unlimited residence. AC-5, AC-18. |
+| Lifetime, ticket | Ownership to release | Early, double, stale, or lost release. AC-6, AC-7, AC-12, AC-16. |
+| Progress, Worker | Credit to wake/close | Parked-main dependence or immortal saturation. AC-8, AC-10, AC-14. |
+| Failure, IPC owner | Dispatch facts to error | Unknown effect reported as nonexecution. AC-9. |
+| Statistic/artifact, test owner | Independent observations to claim | Ledger counter substitutes for memory evidence. B-3. |
 
-Admission does not prove memory release.
-Write completion does not prove application execution.
-A caller timeout does not prove that the peer did nothing.
-A byte bound does not bound pending timers or handler Promises.
-Each of those facts needs a separate record or observable.
+Admission does not prove release. Write completion does not prove execution. Timeout does not prove nonexecution.
+Byte limits do not bound timers or handlers. Each lifetime needs its own record and observable.
 
 ### D-2: Complete producer census
 
-FACT: These source paths currently produce or retain outbound-related work.
+FACT: These paths currently produce or retain outbound-related work at the Pin.
 
 | Producer | Current source | Target admission and lifetime |
 | --- | --- | --- |
-| Blocking CALL | `packages/@keld/kipc/src/transport.ts:2610` | Reserve before correlation publication and parking. |
-| Async CALL | `packages/@keld/kipc/src/transport.ts:2640` | Reserve before timer, Promise record, and enqueue. |
-| Application EVENT | `packages/@keld/kipc/src/transport.ts:2679` | Synchronous reserve or synchronous local refusal. |
-| Host CALL answer | `packages/@keld/kipc/src/transport.ts:3162` | Reserve handler record and answer ceiling before invoking handler. |
-| Worker HELLO | `packages/@keld/kipc/src/transport.ts:3404` | Bounded bootstrap allocation within the same lifetime owner. |
-| Worker PING | `packages/@keld/kipc/src/transport.ts:3466` | Bounded control partition and ordinary writer order. |
-| Abandon and close | `packages/@keld/kipc/src/transport.ts:2328` | Bounded metadata, one abandon per CALL and one close per link. |
-| Low-level writer callers | `packages/@keld/kipc/src/transport.ts:1193` | Reuse the same ledger implementation for each socket owner. |
+| Public FS encoding | `packages/@keld/api/src/fs.ts:13` | Reserve before generated encoding and snapshot storage. |
+| Public Auth encoding | `packages/@keld/api/src/auth.ts:101` | Reserve before generated encoding and snapshot storage. |
+| Operation Ready wait | `packages/@keld/api/src/app.ts:361` | Keep the same ticket through Ready. No second queue. |
+| Blocking CALL | `packages/@keld/kipc/src/transport.ts:2739` | Reserve before correlation publication and parking. |
+| Async CALL | `packages/@keld/kipc/src/transport.ts:2767` | Reserve before timer, Promise record, and posting. |
+| Application EVENT | `packages/@keld/kipc/src/transport.ts:2807` | Synchronous reservation or local refusal. |
+| Host CALL answer | `packages/@keld/kipc/src/transport.ts:3290` | Reserve handler input/count and maximum answer before effects. |
+| Worker HELLO | `packages/@keld/kipc/src/transport.ts:3532` | Bounded bootstrap allocation under the same owner. |
+| Worker PING | `packages/@keld/kipc/src/transport.ts:3594` | Protected control admission, existing writer order. |
+| Abandon and close | `packages/@keld/kipc/src/transport.ts:2456` | Prepaid metadata, one abandon per CALL and one close per link. |
+| Direct writer | `packages/@keld/kipc/src/transport.ts:1321` | Reuse the ledger primitive under each existing socket owner. |
 
-Worker-created wire frames still enter its existing WriteQueue.
-All main-to-Worker messages still use the current private FIFO.
-Do not add a second MessagePort or a second ordering owner.
+Worker frames still enter WriteQueue. Main messages still use the existing private FIFO.
+Do not add another MessagePort, ordering owner, or capacity-waiter queue.
 
 ### D-3: One pre-retention ledger
 
-Proposed private transport types, conditional on B-1 and B-2:
-
+Proposed private state, conditional on B-1 and B-2:
 ~~~ts
 type OutboundClass = "data" | "answer" | "control";
-interface OutboundLimits {
-  readonly retainedBytes: number;
-  readonly records: number;
-  readonly answerBytes: number;
-  readonly controlRecords: number;
-}
 interface OutboundTicket {
+  readonly epoch: number;
   readonly slot: number;
   readonly incarnation: number;
 }
 ~~~
-
-These names illustrate the internal contract. They add no public constructor.
-The limits freeze when the link opens.
-Reject nonintegers, unsafe arithmetic, impossible partitions, and undersized bootstrap reserves before spawning the Worker.
-
-Use a fixed-capacity ticket table inside the existing shared control owner.
-Separate byte and record credits within that one ledger.
-Reserve both before retaining a payload, callback, timer, or mailbox message.
-If partial reservation fails, roll it back before returning.
-No producer waits in an unbounded queue for credit.
-
-A slot state and incarnation identify each reservation.
-Only the current transition can release that reservation.
-The implementation must prove arithmetic bounds and exhaustion behavior before enabling reuse.
-A naked slot index never authorizes release.
-
-Worker release updates shared credit directly.
-It must not require delivery of an acknowledgment to the parked main thread.
-The ledger's internal additions do not change the Host wire format.
+Limits freeze before admission. B-1 defines byte, frame, CALL, handler, answer, control, input, and metadata capacities separately.
+Reject nonintegers, unsafe arithmetic, impossible partitions, and insufficient bootstrap/maximum-frame allowances before Worker creation.
+Use a fixed ticket table in the existing shared control owner. Reserve all required units or roll back completely.
+Include encoder scratch and operation Ready retention before WorkerLink. Carry the ticket rather than reserving twice.
+Preserve direct whenReady semantics. Its application subscriptions do not become an alternate operation queue.
+Regenerate codecs through their existing owner if budgeted encoding changes. Do not hand-edit generated output or duplicate parsing.
+Shared updates must arbitrate main reservations against Worker releases. Promise concurrency on one JS agent is insufficient evidence.
+Validate epoch and incarnation on every release. Define exhaustion before arithmetic or incarnation wrap permits unsafe reuse.
+Worker release updates shared credit directly, without a parked-main acknowledgment. Internal tickets do not change Host wire format.
 
 ### D-4: Bytes, copies, and records
 
-Count transport-owned backing allocations, not only visible payload lengths.
-Make an exact-length immutable snapshot after admission and before asynchronous retention.
-Do not retain an application's large backing buffer through a small view.
+Count backing allocations and temporary overlap. Snapshot ordinary input after admission and before asynchronous retention.
+Do not retain a large backing through a tiny view. Charge admitted snapshots, mailbox clones, and serialized envelopes together.
+The charge covers worst simultaneous retention. Qualify pooled buffers and every distinct copy on the selected Bun build.
+Caller buffers remain usable. Transfer-based optimization requires B-3 evidence and an approved public contract.
+Proposed B-2 rule: reject shared-backed input before dispatch. Ordinary copying cannot prove a coherent concurrent SAB snapshot.
+A future synchronized shared-input protocol needs separate approval. AC-17 must change with that approved contract before activation.
 
-Declare and account for every transport copy:
-the admitted snapshot, any mailbox clone, and the contiguous serialized frame.
-Temporary overlap during copy counts too.
-The charge must cover the chosen implementation's worst simultaneous retained copies.
-A view, alias, or pooled buffer must not bypass this accounting.
+Release bytes after every charged reference retires. Keep CALL credit until caller settlement, Worker retirement, and retained delivery finish.
+Count distinct CALL tickets across those states. Timeout does not release the Worker tombstone or withdraw queued wire work.
+Prepay one abandon message per CALL. Reserve one terminal right without requiring fresh admission during saturation.
+B-1 must couple all legal partitions with bounded tombstone retirement. Never free correlations early to restore apparent capacity.
 
-No transfer-based optimization is assumed.
-A proposed transfer may ship only after B-3 qualifies the pinned Bun semantics.
-Caller buffers remain usable under the existing public contract.
-
-Byte credit may release after the owning transport drops every relevant payload reference.
-CALL record credit remains until both sides retire their operation state.
-The caller must settle, and the Worker must retire its pending or abandonment entry.
-A reply retained for later main delivery still owns a record.
-Caller timeout alone does not release a Worker tombstone.
-B-1 must couple record capacities with abandonment termination for every legal partition, including occupied answer/control reservations.
-Permanent tombstone saturation must not leave an OPEN link indefinitely refusing CALLs.
-Never restore capacity by dropping tombstones, reusing correlations, or claiming that timeout proves nonexecution.
-
-For a Host CALL, reserve its record before invoking application code.
-Reserve the approved maximum answer size before granting that invocation.
-If no reservation fits, terminate through the existing typed path before invoking the handler.
-Never invoke a side effect, discover answer exhaustion, and silently discard the result.
-
-B-1 selects total ceilings and partitions.
-One legal maximum-size frame must fit the approved ordinary-data configuration.
-Control reserves cannot admit arbitrary application data.
-All partitions count toward the same declared total.
+Before handler invocation, reserve its record, retained input, and maximum answer storage. Input and answer allowances are separate.
+If any reservation fails, follow the approved terminal path before effects. Already admitted answers use their existing tickets.
+Ordinary traffic cannot spend answer/control reserves. Reserved admission does not provide priority over accepted FIFO work.
 
 ### D-5: Failure, cancellation, and ordering
 
-Proposed early-refusal mapping: reuse KELD-IPC-005 with an owner-approved local diagnostic.
-B-2 must approve that extension before any implementation depends on it.
-Do not reuse the Host admission-capacity constructor without its documented dispatch preconditions.
+Proposed B-2 extension: one local AdmissionCapacity constructor uses KELD-IPC-005. It does not reuse the guarded Host constructor.
+Proposed message: "outbound transport capacity exhausted before dispatch".
+Proposed fix: "Wait for admitted work to retire, then submit new work. This operation was not dispatched. Do not replay earlier unanswered calls."
+B-2 also reviews additive `reason: "capacity"` and `phase: "local-admission"` fields, plus shared-input refusal code/message/fix.
+sendEvent and callBlocking throw before dispatch. call rejects without a pending record. Early refusal emits zero bytes.
+Recoverable saturation preserves a healthy link. Permanent tombstone saturation follows B-1 retirement and keeps earlier effects unknown.
+Code alone never authorizes replay or reconnect. A Host-issued 024 and a caller-observed 022 remain distinct.
+See `docs/specs/gh527-worker-owned-blocking-call-transport.md:523`.
 
-For sendEvent and callBlocking, local refusal throws before dispatch.
-For call, local refusal rejects without creating a pending transport record.
-The failed request writes no bytes and leaves a healthy link usable during recoverable saturation.
-Permanent tombstone saturation instead follows the B-1 approved terminal rule, preserving unknown-effect semantics for earlier CALLs.
-Termination must remain reachable without another admission or main-thread delivery. This introduces no automatic resend or reconnect.
-Code alone never authorizes automatic replay.
+Capture queue age at the first operation reservation. Preserve existing caller-clock semantics unless B-2 approves their amendment.
+B-1 selects queue, saturation, and close bounds. Keep existing active I/O clocks and GH527 ordered-close obligations.
+Neither successful short writes nor renewed polls reset an original clock. B-2 freezes queue-expiry errors and their terminal behavior.
+Partial-write failure poisons the queue. Keep existing IPC-001/006 and terminal-cause propagation where their contracts apply.
+Cancellation records a terminal decision. Release follows actual ownership retirement. Close seals admission before retiring queued work.
+A termination request is not physical quiescence. Observe Worker exit and retained storage separately.
+A permitted successor receives a fresh ledger. Old callbacks cannot change successor capacity.
 
-Reuse existing I/O and caller deadlines.
-Do not reset a caller's original deadline while it waits in a bounded writer.
-A write failure after possible byte emission poisons the queue.
-Keep existing KELD-IPC-001/006 and terminal cause propagation where their contracts apply.
+### D-6: Reuse and external semantics
 
-Cancellation records one terminal decision.
-Reservation release follows actual ownership retirement, not that decision alone.
-Close seals admission first.
-Queued work follows the existing GH527 ordered-close contract.
-A lost Worker may leave resources awaiting physical teardown.
-Report that state instead of publishing fabricated zero retention.
-
-A successor role gets a fresh ledger through existing lifecycle ownership.
-Old callbacks never decrement the successor's counters.
-No new reconnect path is introduced.
-
-### D-6: Alternatives and current external semantics
-
-Reuse the existing Writer, Worker, shared control block, and channel contracts.
-A larger queue does not fix unbounded retention.
-A high-water callback alone cannot bound messages already posted.
-A main-thread acknowledgment alone cannot support parked progress.
-Changing sendEvent into a Promise-returning API would expand the public contract without need.
-
-FACT: Bun documents manual handling of socket backpressure.
-Its TCP documentation says "manage backpressure manually with the drain handler."
-Source: https://bun.sh/docs/runtime/networking/tcp
-Retrieved 2026-11-05. Current documentation is not a pinned-runtime measurement.
-
+Reuse the existing writer, Worker, shared control block, schemas, and channel contracts. No replacement transport is required.
+Larger queues and high-water callbacks cannot bound prior posting. A second queue duplicates retention and ordering ownership.
+Do not change sendEvent into a Promise-returning API. Do not hide overload in indefinite blocking, silent drops, or retries.
+FACT: Bun documents manual socket backpressure: "manage backpressure manually with the drain handler."
+Source: https://bun.sh/docs/runtime/networking/tcp. Retrieved 2026-11-05 for historical E-2.
 FACT: Bun describes message serialization using "HTML Structured Clone Algorithm."
-Source: https://bun.sh/docs/runtime/workers
-Retrieved 2026-11-05.
-This establishes why mailbox retention belongs in the census.
-It does not establish a precise copy count or memory ceiling for the required Bun version.
+Source: https://bun.sh/docs/runtime/workers. Retrieved 2026-11-05 for historical E-2.
+Those documents do not establish pinned-runtime copy overlap or cleanup. E-3 supplies narrower executed observations.
 
 ## 5. Boundaries
 
-Future implementation stays within the existing transport owner and its real callers:
+Future work uses the existing transport owner and its actual public adapters:
+- `packages/@keld/kipc/src/transport.ts`, its tests, generation, stamping, and installed-package contracts.
+- Existing FS/Auth adapters, Ready integration, and schema-generator inputs needed for admission before encoding.
+- IPC error declarations and shared GH527 contracts only after B-2 approval.
 
-- `packages/@keld/kipc/src/transport.ts` and its contract/Worker tests.
-- Existing transport generation, stamping, and package tests when their inputs change.
-- IPC error-owner declarations only under B-2's approved amendment.
-- Shared GH527 architecture text only through its owner-approved amendment.
-
-This PR adds only this specification.
-Do not edit producer ordering fixes, native Host capacity, role custody, or active Windows transport branches.
-Do not add a schema, dependency, or Host wire message for local accounting.
+This PR changes draft specification, architecture clarification, and proposal evidence only. It activates no runtime behavior.
+Native Host queues, decoder limits, receive-size compatibility, and retired-reader reaping remain with their existing owners.
+The broader evidence records those findings without expanding GH623 implementation authority.
+Do not edit native Host capacity, role custody, producer-ordering fixes, or active Windows transport work.
+Do not add a dependency, duplicate schema, Host message, GRANT implementation, or remote cancellation protocol.
 
 ## 6. Tasks
 
 ### T-1: Select capacities and freeze error semantics
 
 - **Blocked by:** none
-- Inventory every D-2 caller and retained object at the selected current revision.
-- Measure ordinary and stalled-peer demand without enabling a new production path.
-- Close B-1 and B-2 with the transport and error owners.
-- Record exact numeric ceilings, units, copy accounting, and public failure fixtures.
+- Inventory every D-2 caller and retained object at the selected revision. Measure ordinary and stalled-peer demand.
+- Close B-1 and B-2 with transport/error owners. Freeze units, partitions, copy charges, clocks, and public failure fixtures.
 
 ### T-2: Add failure-first admission and lifetime fixtures
 
 - **Blocked by:** T-1, B-1, B-2
-- Register AC-1 through AC-14 before the implementation change.
-- Use an independent peer transcript and retained-object census.
-- Prove the baseline crosses the intended bound in the stalled-peer case.
-- Keep expected failure explicit. Do not classify the future feature as passing.
+- Register AC-1 through AC-18 before implementation. Use independent peer transcripts and retained-object observations.
+- Prove baseline failures where feasible. Keep expected baseline failure distinct from positive boundedness acceptance.
 
 ### T-3: Implement disabled integration and qualify the actual runtime
 
 - **Blocked by:** T-2
-- Integrate the ledger at every existing producer and writer seam.
-- Run all ACs and their one-fault mutants on the pinned Bun/runtime matrix.
-- Measure copies, retained records, process memory, and teardown separately.
-- This work produces the evidence needed to close B-3.
+- Integrate the ledger at each producer and writer seam. Run all ACs and single-fault mutants on the pinned runtime matrix.
+- Measure copies, retained records, memory, teardown, and successor behavior separately. This work produces B-3 evidence.
 
 ### T-4: Activate the reviewed contract and reconcile consumers
 
 - **Blocked by:** T-3, B-3
-- Update existing callers for explicit early refusal without automatic retry.
-- Preserve ordering, typed errors, generated/stamped transport ownership, and installed-package tests.
-- Publish the exact-head acceptance and independent review before activation.
+- Reconcile callers with explicit refusal and no automatic retry. Preserve generated/stamped ownership and installed-package tests.
+- Publish exact-head acceptance and independent review before activation.
 
 ## 7. Test plan & evidence
 
 | Family | Criteria | Independent oracle |
 | --- | --- | --- |
-| Stalled peer and all producers | AC-1, AC-3, AC-10, AC-11, AC-13 | Peer bytes, actual admission, handler effects/count and separate retained-object census |
-| Sliced, pooled, mutable, empty, maximum buffers | AC-2, AC-4 | Backing-store sizes and peer digest |
-| Deadline, reply, close, poison, and retirement cuts | AC-5, AC-6, AC-7, AC-9, AC-12 | Distinct caller/Worker retirement events and terminal errors |
-| Permanent tombstone saturation and late-reply recovery | AC-14 | Actual link retirement, retained correlations and healthy successor response |
-| Blocking caller with an active Worker | AC-8 | Barrier-controlled progress and original call deadline |
+| Stalled peers and producer partitions | AC-1, AC-3, AC-10 | Peer bytes, admission, retained backing and records |
+| Input ownership | AC-2, AC-4, AC-17 | Backing capacities, input rejection, peer digests |
+| CALL lifetime and teardown races | AC-5, AC-6, AC-7, AC-9, AC-12, AC-14 | Both retirement orders, exact errors, physical exit, successor |
+| Parked main and shared updates | AC-8, AC-16 | Real main/Worker schedule, live tickets, required progress |
+| Handler effects | AC-11, AC-13 | Input/answer allowances, active handlers, independent effect count |
+| Public adapters and queue residence | AC-15, AC-18 | Pre-Ready allocations/waiters, original clock, terminal settlement |
 
-Test zero, exact capacity, and capacity-plus-one for bytes and records independently.
-Hold a real peer after HELLO instead of delaying it with sleep.
-Use explicit read/write and callback barriers.
-Run hostile teardown in an isolated child.
-Observe Worker exit and retained-resource release separately from a close request.
-Measure both event orders at each race.
-A wrapper counter cannot serve as its own bounded-memory oracle.
+Test zero, exact capacity, and capacity-plus-one independently for bytes and records. Keep other gates open for each mutant.
+Use barriers after HELLO and at actual consumer boundaries. Do not synchronize with sleeps. Isolate hostile teardown in children.
+Observe both race orders, physical cleanup, and a healthy follow-up. Instrumentation must not supply its own resource oracle.
+Use logical concurrent producers for load/order and actual main/Worker execution for atomicity. Check encoder allocations before refusal separately.
 
-### E-1: Current transport source inspection
+### E-1: Historical transport source inspection
 
-- **Run:** Read current transport producer, WriteQueue, pending-map, shared-control, and error paths through GitHub.
-- **n:** One pinned main revision, eight producer/retention categories, zero product runs.
-- **Environment:** Cloud documentation workspace on 2026-11-05.
-- **Limits:** Source identifies current ownership and retention paths. It establishes no runtime memory or throughput result.
+- **Run:** Read producer, writer, pending, shared-control, and error paths through GitHub at `0eb3ce203187f35c5276a4237189c906a5220d5a`.
+- **n:** One source revision, eight producer/retention categories, zero product runs.
+- **Environment:** Cloud documentation workspace, 2026-11-05.
+- **Limits:** Historical source inspection establishes no runtime memory or throughput result. D-2 is the refreshed census.
 
-### E-2: Current external documentation
+### E-2: Historical external documentation
 
-- **Run:** Resolve Context7 /oven-sh/bun, query socket/Worker semantics, then confirm the official Bun pages in D-6.
-- **n:** Two official documentation pages, zero pinned Bun execution runs.
-- **Environment:** Documentation retrieved 2026-11-05.
-- **Limits:** Runtime clone behavior, termination quiescence, and concrete retained-memory costs remain subject to B-3.
+- **Run:** Resolve Context7 /oven-sh/bun, query socket/Worker semantics, and confirm the official D-6 pages.
+- **n:** Two documentation pages, zero pinned Bun executions.
+- **Environment:** Retrieved 2026-11-05 for the original `0eb3ce203187f35c5276a4237189c906a5220d5a` source study.
+- **Limits:** Documentation does not establish selected-runtime copy costs or termination quiescence.
+
+### E-3: Executed baseline probes and proposal evidence
+
+- **Run:** Commands, fixtures, hashes, receipts, and limitations: [GH623 proposal evidence](../engineering/gh623-proposal-evidence/README.md).
+- **n:** 2,048 retained writer payloads, 512 native EVENTs, 512 unresolved handlers, two Rust witnesses, and 54 existing tests across corrected runs.
+- **Environment:** Pin, macOS 26.5.1 arm64, Bun 1.4.4 revision38afee6c8, Rust/Cargo 1.99.1, 2026-11-23.
+- **Limits:** Baseline defects, not bounded-fix acceptance. No throughput/RSS ceiling, Windows/Linux qualification, physical UI run, or new-ledger mutation pass.
+FACT: The writer witness retained 134,217,728 logical payload bytes. A one-byte view cloned an 8 MiB backing in Bun.
+FACT: Shared input remained shared, and direct queued mutation changed wire bytes. E-3 binds these observations.
+The linked README owns the complete structured evidence, derivative manifest, raw-result limitations, and 24 cross-owner regression designs.
+Its numeric qualification profile is illustrative. It does not close B-1 or replace the ACs in this specification.
 
 ## 8. Review gates triggered
 
-Public API: changed failure behavior requires exact-content approval.
+Public API: refusal, shared-input behavior, and queue expiry require exact-content approval.
 Permission model: no new authority proposed.
-Wire protocol: no Host wire change proposed. GH527 still reviews internal ordering and termination.
-Dependency addition: none proposed.
-Unsafe: none proposed.
-B-2 owns code allocation or reuse. This draft cannot self-approve that gate.
+Wire protocol: no Host wire change. GH527 reviews internal ordering, ticket lifetime, and termination.
+Dependency addition: none proposed. Unsafe: none proposed.
+B-2 owns code allocation/reuse. This draft cannot approve itself.
 
 ## 9. Perf impact
 
-The target is bounded retained work, not an unmeasured speed improvement.
-Report logical bytes, operation records, and process memory separately.
-Process memory includes allocator and runtime overhead beyond the ledger.
-Measure throughput and latency with the same workload before and after.
-Retain the existing architecture 01 budgets and regression-review rule.
-A lower queue count does not alone prove lower resident memory.
+The target is bounded retention. No speed improvement is claimed.
+Measure logical bytes, backing capacity, operation records, and process memory separately. Count kernel buffers in their own domain.
+Compare equivalent workloads before and after. Include open-loop overload, mixed payloads, slow consumers, and recovery.
+Retain architecture 01 budgets and regression review. Lower queue counts do not prove lower resident memory.
 
 ## 10. Open questions, blockers & unknowns
 
@@ -456,35 +432,31 @@ A lower queue count does not alone prove lower resident memory.
 
 - **Status:** open
 - **Owner:** Monish Khandelwal with the GH527 transport owner
-- **Impact:** Blocks production limit values, shared-layout approval, and implementation after T-1.
-- **Check:** Publish measured demand, exact byte/record ceilings, answer/control partitions, and a conservative copy-accounting rule.
-  Prove a capacity/terminal invariant for every legal configuration, including the smallest ceiling and competing reservations.
-  Either keep the existing abandonment termination reachable, or specify bounded fail-closed retirement when tombstones prevent further admission.
-  Select the bound and termination trigger with GH527 before implementation. Require AC-14, without releasing retained state early.
+- **Impact:** Blocks production limits, shared layout, clocks, and implementation after T-1.
+- **Check:** Publish measured demand, exact byte/record/input ceilings, protected partitions, conservative copy charges, and queue/retirement bounds.
+  Prove every legal capacity/terminal configuration, including the smallest CALL ceiling and occupied competing partitions.
+  Prepay abandon/close rights. Keep existing abandonment termination reachable, or approve bounded saturation retirement without early release. Require AC-14.
 
 ### B-2: Local refusal and shared-contract amendment
 
 - **Status:** open
 - **Owner:** GH1101 error owner with GH527 transport owner
-- **Impact:** Blocks implementation of new refusal behavior and any claim that IPC-005 already covers this local case.
-- **Check:** Approve exact code/message/fix, no-effect distinction, caller behavior, and the corresponding canonical contract amendment.
+- **Impact:** Blocks new refusal behavior, shared-input restrictions, queue-expiry behavior, and claims that IPC-005 already permits them.
+- **Check:** Approve exact code/message/fix, no-effect distinction, optional typed fields, caller behavior, and canonical contract amendments.
 
 ### B-3: Native runtime qualification
 
 - **Status:** open
-- **Owner:** GH623 implementation owner and the operators of each claimed OS
-- **Impact:** Blocks activation and any Bun/OS memory or compatibility claim. It does not block qualification work in T-3.
-- **Check:** Publish exact-version runs for all ACs, mutants, retained storage, teardown, and a healthy successor on each claimed platform.
+- **Owner:** GH623 implementation owner and operators of each claimed OS
+- **Impact:** Blocks activation and broad memory/compatibility claims. It does not block qualification work in T-3.
+- **Check:** Publish exact-version AC/mutant runs, independent retained-storage evidence, physical teardown, and a healthy successor for each claimed platform.
 
-### U-1: Concrete Bun retention and termination behavior
+### U-1: Remaining Bun retention and termination behavior
 
-UNKNOWN: Exact mailbox copy overlap, pooled-buffer behavior, and post-termination retention for the selected Bun build.
-T-3 must measure these on the actual runtime.
-Node compatibility or current documentation cannot substitute for that receipt.
+UNKNOWN: Exact simultaneous mailbox-copy overlap, pooled-buffer retention, and post-termination reclamation on the selected build.
+E-3 narrows ordinary subview and shared-alias behavior only. T-3 must qualify the remaining lifetimes on the actual runtime.
 
 ### U-2: Existing caller handling of synchronous refusal
 
-UNKNOWN: Every installed consumer's response to the proposed sendEvent refusal.
-T-1 must enumerate actual callers.
-T-4 must preserve application outcomes or keep the affected consumer unqualified.
-
+UNKNOWN: Every installed consumer's response to the proposed refusals and queue expiry.
+T-1 enumerates callers. T-4 preserves application outcomes or leaves the affected consumer unqualified.

@@ -1,0 +1,59 @@
+--- a/docs/architecture/02-ipc.md
++++ b/docs/architecture/02-ipc.md
+@@ -66,2 +66,3 @@
+-drain ends at that EOF and a call still pending then ends as `KELD-IPC-022`, which
+-callers treat as the drain's `KELD-IPC-024`. The transport Worker's entry is the
++drain ends at that EOF. A call still pending then ends as `KELD-IPC-022`, with
++unknown host effect. Only a Host-issued `KELD-IPC-024` proves refusal before
++execution. Neither timeout nor a lost reply permits automatic replay. The transport Worker's entry is the
+@@ -341 +342,3 @@
+-- **Correlation ids** give request/reply without per-call allocations; channels are
++- **Correlation ids** associate requests with replies. The current TypeScript path
++  allocates per-call Promise, timer and pending-map state. Allocation-free operation
++  remains a target that requires separate evidence. Channels are
+@@ -355,2 +358,6 @@
+-- **Cancellation**: `STREAM_CANCEL`/`CALL_CANCEL` carry corr id; handlers observe an
+-  `AbortSignal` in JS, a `CancelToken` in Rust.
++- **Cancellation (destination):** a future cancellation protocol carries the
++  correlation id and defines handler observation through JS and Rust cancellation
++  interfaces. The current WorkerLink deadline settles the caller and posts a local
++  `abandon`; it does not withdraw a queued CALL or prove remote cancellation.
++  Retained payloads, pending records and side effects keep their existing owners.
++  A live remote cancellation protocol requires coordinated receiver and wire review.
+@@ -369,0 +377,30 @@
++
++### Aggregate resource contract (proposed GH623 amendment)
++
++This section defines the target contract. It is not a claim of current implementation.
++The existing GH623 specification owns capacity and local-refusal approval.
++
++- One authoritative ledger bounds each role generation's retained outbound bytes
++  and operation records before the first framework retention, including encoding,
++  readiness waits, message posting, Worker-local output and serialized writes.
++- Admission counts backing storage and temporary copy overlap. Zero-length work
++  still consumes a record. Failed admission creates no pending transport waiter.
++- Accepted frames keep the existing single FIFO. Capacity exhaustion never silently
++  drops accepted EVENTs or automatically retries unanswered CALLs.
++- Caller settlement does not release another owner's payload, pending correlation,
++  handler or tombstone. Release follows actual retirement, exactly once.
++- Worker-owned credit release cannot depend on a callback to a parked main thread.
++  Permanent tombstone saturation has a bounded terminal path without a new call.
++- Handler invocation reserves both concurrency and maximum answer storage before
++  application effects. Control and answer reserves cannot admit ordinary data.
++- Host UI commands remain charged through forwarding until physical consumption.
++  Native facts have a separate bound before filtering. A local queue bound cannot
++  be presented as a bound on the full pipeline.
++- Absolute queue, write, call, retirement and close budgets are distinct. A successful
++  short write or renewed polling timeout cannot renew the operation's original clock.
++- Schema owners bound decoded elements and storage before allocation. Receive capacity
++  must fit the largest supported encoded response, including its envelope.
++- A generation's late callback cannot release successor credit. Physical cleanup is
++  observed separately from a terminal state or termination request.
++- Fixed buffers, decoded objects, application retention, runtime and OS memory remain
++  separate terms. Logical transport accounting alone does not establish total RSS.
+@@ -469,0 +507,5 @@
++
++The state-machine and allocation-free rules below are destination constraints.
++Current TypeScript writes allocate frame storage and use Promise serialization.
++Current Rust structured decode and allocating encode also allocate per frame.
++A bounded-memory or performance claim needs measurements of the actual path.

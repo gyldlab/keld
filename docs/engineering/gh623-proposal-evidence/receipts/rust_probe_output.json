@@ -1,0 +1,13 @@
+{
+  "pin": "269d51528137faf574cfd3548586ee3ada1acfda",
+  "kind": "audit reproduction probes; not boundedness acceptance",
+  "scope": "actual Core component dispatch and literal postcard decode on native macOS; no UI execution or throughput measurement",
+  "runtime": {
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.99.1 (5f94df478 2026-08-27)"
+  },
+  "result": {
+    "exit_code": 0,
+    "output": "--- command 1/4 ---\nDarwin 25.5.0 Darwin Kernel Version 25.5.0: Mon Apr 27 20:41:26 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T8132 arm64\n--- exit code 0 ---\n--- command 2/4 ---\nProductName:\t\tmacOS\nProductVersion:\t\t26.5.1\nBuildVersion:\t\t25F80\n--- exit code 0 ---\n--- command 3/4 ---\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s\n     Running unittests src/lib.rs (target/debug/deps/keld_core-9ece2e0775165e22)\n\nrunning 2 tests\nAUDIT_DECODE wire_bytes=262151 scope_count=262144 vec_capacity=349520 string_size=24 retained_vec_bytes=8388480\nAUDIT_SETTERS accepted=4096 retained_commands=4096 windows=1 consumer_progress=0\ntest app_session::window_router::tests::resource_audit_auth_decode_amplifies_empty_scope_metadata ... ok\ntest app_session::window_router::tests::resource_audit_stalled_window_consumer_retains_all_acknowledged_setters ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 267 filtered out; finished in 0.03s\n\n--- exit code 0 ---\n--- command 4/4 ---\n55573433c82aa19542240541f35a78749b569eac6e2ffa2ace6865d5aaa6f0aa  crates/keld-core/src/app_session/window_router/tests.rs\n909b81e02e07534f236a656a2b03d65310929ecaf802221d8deb8634d2ee6c3c  crates/keld-core/src/app_session/window_router.rs\neb8fa3d53e5d53acf7348e0cb70a86b82ef630a931c3fb689bb0aafb9d36f36b  crates/keld-ipc/src/link.rs\n--- exit code 0 ---\n"
+  }
+}

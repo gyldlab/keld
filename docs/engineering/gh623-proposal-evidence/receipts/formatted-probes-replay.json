@@ -1,0 +1,77 @@
+{
+  "schema": "keld.gh623-formatted-probe-replay/v1",
+  "source_pin": "269d51528137faf574cfd3548586ee3ada1acfda",
+  "purpose": "Replay repository-formatted derivatives; original audit receipts remain unchanged. These reproduce baseline defects and do not accept a bounded implementation.",
+  "environment": {
+    "platform": "Darwin",
+    "machine": "arm64",
+    "bun": "1.4.4"
+  },
+  "probe_sha256": {
+    "ts-fs-capacity-probe.ts": "b6f3f1d40f745dc6a22eaa6ee9304f05d0b7fdea1217c80937fb34c8fff10b22",
+    "ts-native-pipeline-probe.ts": "0b6ab0289e9268fc349342a808d27098c84d7f0c6a541925bdbfc9e78d796ed8",
+    "ts-resource-probe.ts": "b5503c52492dbb9fdcda84ecd2c4b9b2af9bf0e11c912c3158db7630e5f6eca5"
+  },
+  "runs": [
+    {
+      "name": "resource-small",
+      "argv": [
+        "bun",
+        "audit-ts/ts-resource-probe.ts"
+      ],
+      "env": {},
+      "exit_code": 0,
+      "stdout": "{\n  \"source\": \"269d51528137faf574cfd3548586ee3ada1acfda\",\n  \"runtime\": \"1.4.4\",\n  \"platform\": \"darwin\",\n  \"arch\": \"arm64\",\n  \"subviewClone\": {\n    \"logicalBytes\": 1,\n    \"backingBytes\": 8388608,\n    \"byteOffset\": 123,\n    \"receivedByte\": 65,\n    \"producerByteAfterPost\": 66\n  },\n  \"mutableQueuedPayload\": {\n    \"suppliedByte\": 65,\n    \"laterByte\": 66,\n    \"wireByte\": 66\n  },\n  \"stalledWriter\": {\n    \"attemptedFrames\": 512,\n    \"acceptedFrames\": 512,\n    \"completedBeforeRelease\": 0,\n    \"retainedPayloadObjects\": 512,\n    \"retainedLogicalPayloadBytes\": 33554432,\n    \"candidateTestBudgetBytes\": 8388608,\n    \"exceedsCandidateBudget\": true,\n    \"socketWriteAttemptsBeforeRelease\": 1,\n    \"limitation\": \"Injected zero-progress socket proves WriteQueue retention, not native socket buffering or RSS.\"\n  },\n  \"stalledWriterCleanup\": {\n    \"completedAfterRelease\": 512\n  },\n  \"encoderAdmission\": {\n    \"maxFrameBytes\": 16777216,\n    \"largestTextEncoderAllocation\": 16777217,\n    \"error\": \"Error: KELD-IPC-003: FS payload exceeds MAX_FRAME_LEN\"\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "resource-large",
+      "argv": [
+        "bun",
+        "audit-ts/ts-resource-probe.ts"
+      ],
+      "env": {
+        "KIPC_AUDIT_FRAMES": "2048",
+        "KIPC_AUDIT_BUDGET": "67108928"
+      },
+      "exit_code": 0,
+      "stdout": "{\n  \"source\": \"269d51528137faf574cfd3548586ee3ada1acfda\",\n  \"runtime\": \"1.4.4\",\n  \"platform\": \"darwin\",\n  \"arch\": \"arm64\",\n  \"subviewClone\": {\n    \"logicalBytes\": 1,\n    \"backingBytes\": 8388608,\n    \"byteOffset\": 123,\n    \"receivedByte\": 65,\n    \"producerByteAfterPost\": 66\n  },\n  \"mutableQueuedPayload\": {\n    \"suppliedByte\": 65,\n    \"laterByte\": 66,\n    \"wireByte\": 66\n  },\n  \"stalledWriter\": {\n    \"attemptedFrames\": 2048,\n    \"acceptedFrames\": 2048,\n    \"completedBeforeRelease\": 0,\n    \"retainedPayloadObjects\": 2048,\n    \"retainedLogicalPayloadBytes\": 134217728,\n    \"candidateTestBudgetBytes\": 67108928,\n    \"exceedsCandidateBudget\": true,\n    \"socketWriteAttemptsBeforeRelease\": 1,\n    \"limitation\": \"Injected zero-progress socket proves WriteQueue retention, not native socket buffering or RSS.\"\n  },\n  \"stalledWriterCleanup\": {\n    \"completedAfterRelease\": 2048\n  },\n  \"encoderAdmission\": {\n    \"maxFrameBytes\": 16777216,\n    \"largestTextEncoderAllocation\": 16777217,\n    \"error\": \"Error: KELD-IPC-003: FS payload exceeds MAX_FRAME_LEN\"\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "worker-outbound",
+      "argv": [
+        "bun",
+        "audit-ts/ts-native-pipeline-probe.ts",
+        "outbound"
+      ],
+      "env": {},
+      "exit_code": 0,
+      "stdout": "{\"mode\":\"outbound\",\"source\":\"269d51528137faf574cfd3548586ee3ada1acfda\",\"runtime\":\"1.4.4\",\"platform\":\"darwin\",\"arch\":\"arm64\",\"acceptedFrames\":512,\"acceptedPayloadBytes\":33554432,\"peerReadBytes\":48,\"peerReadPausedAfterHello\":true,\"limitation\":\"Actual WorkerLink and native Unix socket. Accepted payload bytes are not a measured split of mailbox, WriteQueue and kernel bytes.\"}\n{\"cleanup\":true,\"terminal\":\"KELD-IPC-022\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "worker-handlers",
+      "argv": [
+        "bun",
+        "audit-ts/ts-native-pipeline-probe.ts",
+        "handlers"
+      ],
+      "env": {},
+      "exit_code": 0,
+      "stdout": "{\"mode\":\"handlers\",\"source\":\"269d51528137faf574cfd3548586ee3ada1acfda\",\"runtime\":\"1.4.4\",\"platform\":\"darwin\",\"arch\":\"arm64\",\"configuredRingRecords\":8,\"startedHandlers\":512,\"completedHandlers\":0,\"retainedHandlerPayloadBytes\":32768,\"observed\":\"Healthy transport drained all 512 CALLs into unresolved handler continuations despite only 8 ring slots.\"}\n{\"afterClose\":true,\"startedHandlers\":512,\"completedAfterBarrierRelease\":512,\"observed\":\"Link close does not cancel application handler continuations; late responses are suppressed by terminal state.\"}\n{\"cleanup\":true,\"terminal\":\"KELD-IPC-022\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "fs-default-profile",
+      "argv": [
+        "bun",
+        "audit-ts/ts-fs-capacity-probe.ts"
+      ],
+      "env": {},
+      "exit_code": 0,
+      "stdout": "{\"source\":\"269d51528137faf574cfd3548586ee3ada1acfda\",\"runtime\":\"1.4.4\",\"platform\":\"darwin\",\"arch\":\"arm64\",\"defaultRingBytes\":1048576,\"fileBytes\":2097152,\"nativeFsContentCapBytes\":8388608,\"validFsPayloadBytes\":2097157,\"result\":\"KELD-IPC-026\",\"limitation\":\"Real WorkerLink/UDS with independently generated valid FS response; not a real filesystem Host run.\"}\n",
+      "stderr": "kipc transport Worker: KELD-IPC-026: a 2097173-byte frame did not fit the 1048576 free ring bytes\n"
+    }
+  ]
+}

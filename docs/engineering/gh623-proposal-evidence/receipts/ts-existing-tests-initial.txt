@@ -1,0 +1,125 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/@keld/kipc/src/transport.test.ts:
+(pass) wire constants match keld-ipc > Rust source pins the same numbers this module exports [3.09ms]
+(pass) outbound header numeric domain > preserves the full declared integer domain without truncation [2.25ms]
+(pass) outbound header numeric domain > rejects values JavaScript typed arrays would silently wrap or truncate [3.08ms]
+(pass) outbound header numeric domain > the positional overload rejects the same lossy or missing values [0.04ms]
+(pass) outbound header numeric domain > does not coerce non-numeric runtime input before rejection [0.02ms]
+(pass) fail-closed header semantics > unknown kind is KELD-IPC-002 [0.02ms]
+(pass) fail-closed header semantics > wrong-channel Err fails closed as KELD-IPC-005 [1.50ms]
+(pass) GH-527 receive policy mirrors > replyWaiter is the row-7 shape on its channel; lifecycle is its channel-3 call [0.04ms]
+(pass) GH-527 receive policy mirrors > replyWaiter refuses the HELLO channel and the REPLY-only echo channel [0.01ms]
+(pass) GH-527 receive policy mirrors > replyWaiter accepts only channel table ids, by type and at runtime (GH-597) [0.04ms]
+(pass) GH-527 receive policy mirrors > eventReceiver equals the lifecycle event policy and refuses other channels [0.03ms]
+(pass) FrameReader chunk queue > overlapping readFrame() rejects; the first waiter still gets the frame [2.96ms]
+(pass) FrameReader chunk queue > first byte starts one frame deadline that later fragments cannot renew [5001.26ms]
+(pass) FrameReader chunk queue > deadline census progress survives later arrivals, consumption, and compaction [15319.47ms]
+(pass) FrameReader chunk queue > arrival is captured before copy and late completion cannot beat a delayed timer [5010.93ms]
+(pass) FrameReader chunk queue > wall-clock rollback cannot extend a monotonic frame deadline [5000.49ms]
+(pass) FrameReader chunk queue > no-waiter late completion keeps deadline precedence over a later bad header [5011.40ms]
+(pass) FrameReader chunk queue > active waiter checks a late malformed header against the deadline first [5010.28ms]
+(pass) FrameReader chunk queue > queued partial frame keeps its first-byte clock before a waiter exists [5303.04ms]
+(pass) FrameReader chunk queue > deadline census follows the logical head after in-chunk consumption [5101.65ms]
+(pass) FrameReader chunk queue > fragmented pushes keep a chunk queue, not a merged prefix [4.09ms]
+(pass) FrameReader chunk queue > an incomplete fragmented frame reports N chunks, not one concatenated buffer [0.14ms]
+(pass) FrameReader chunk queue > an incomplete max-size frame reports exact byte and fragment counts without prefix concatenation [3.53ms]
+(pass) FrameReader chunk queue > retains an owned copy when a borrowed socket chunk is still incomplete [0.40ms]
+(pass) FrameReader chunk queue > consumes fragmented chunks without calling Array.shift [0.56ms]
+(pass) FrameReader chunk queue > fails closed instead of retaining more than one maximum frame envelope [9.49ms]
+(pass) FrameReader chunk queue > fails closed when tiny fragments exceed the pending-chunk cap [8.87ms]
+(pass) FrameReader direct payload fill > a fragmented payload is copied once with no per-fragment allocation [0.99ms]
+(pass) FrameReader direct payload fill > a fragment that completes one frame and starts the next keeps both exact [1.16ms]
+(pass) FrameReader direct payload fill > an incomplete direct fill expires on the frame deadline [5000.84ms]
+(pass) FrameReader direct payload fill > late completion of a direct fill cannot beat the frame deadline [5010.58ms]
+(pass) FrameReader direct payload fill > a peer close during a direct fill rejects the truncated frame and releases it [0.30ms]
+(pass) u32 postcard varint bounds > rejects overflow in the fifth byte and any sixth byte [0.53ms]
+(pass) u32 postcard varint bounds > rejects non-integer and out-of-range offsets [0.07ms]
+(pass) u32 postcard varint bounds > postcard strings reuse the bounded decoder [0.05ms]
+(pass) DrainSignal / WriteQueue > one fire wakes every waiter [0.11ms]
+(pass) DrainSignal / WriteQueue > wall-clock jumps do not expire a progressing write [0.33ms]
+(pass) DrainSignal / WriteQueue > a failed mid-frame write poisons later writes [0.08ms]
+(pass) DrainSignal / WriteQueue > an oversized payload fails before socket effects without poisoning later writes [1.76ms]
+(pass) deadline leftover I/O > withIoDeadline leaves FrameReader.#pending until fail() closes it [21.10ms]
+(pass) deadline leftover I/O > end() still returns complete buffered frames in order, then the close error [0.13ms]
+(pass) deadline leftover I/O > end() with a parked read and nothing buffered rejects it at once [0.02ms]
+(pass) deadline leftover I/O > fail() then drain.fire() rejects the parked read and wakes writers [0.03ms]
+(pass) deadline leftover I/O > connect failure handlers reject the reader before waking writers [0.39ms]
+
+packages/@keld/kipc/src/worker-link.test.ts:
+(pass) WorkerLink bounds (spec §4.3, §4.5) > constants are the spec's values [0.01ms]
+(pass) WorkerLink bounds (spec §4.3, §4.5) > control block words are the §4.3 layout; words 2 and 15 stay reserved [0.02ms]
+(pass) WorkerLink.open refuses invalid bounds before the Worker spawns > each invalid option is KELD-IPC-005 and nothing connects [2.14ms]
+(pass) WorkerLink.open refuses invalid bounds before the Worker spawns > test hooks are refused unless KELD_KIPC_TEST_HOOKS=1 [0.37ms]
+248 |         format: "esm",
+249 |       });
+250 |       expect(built.success).toBe(true);
+251 |       const bundle = join(dir, "main.js");
+252 |       await Bun.write(bundle, built.outputs[0]!);
+253 |       const proc = Bun.spawn(["bun", bundle], {
+                             ^
+error: Executable not found in $PATH: "bun"
+  path: "bun",
+ errno: -2,
+  code: "ENOENT"
+
+      at <anonymous> (AUDIT_SNAPSHOT/packages/@keld/kipc/src/worker-link.test.ts:253:24)
+(fail) WorkerLink.open refuses a transport bundled into an app entry (GH-527 §4.2) > the bundled open is KELD-IPC-005 and nothing connects [31.01ms]
+55 |     },
+56 |   });
+57 |   let proc: ReturnType<typeof Bun.spawn> | undefined;
+58 |   try {
+59 |     const runner = await layout.write(dir);
+60 |     proc = Bun.spawn(["bun", join(dir, runner)], {
+                    ^
+error: Executable not found in $PATH: "bun"
+  path: "bun",
+ errno: -2,
+  code: "ENOENT"
+
+      at runLayout (AUDIT_SNAPSHOT/packages/@keld/kipc/test/bundle-layout.ts:60:16)
+      at async <anonymous> (AUDIT_SNAPSHOT/packages/@keld/kipc/src/worker-link.test.ts:276:43)
+(fail) WorkerLink.open refuses a bundle whatever its name (#643 review) > a bundle run as the process entry is refused, even when named kipc-transport.js [2.83ms]
+55 |     },
+56 |   });
+57 |   let proc: ReturnType<typeof Bun.spawn> | undefined;
+58 |   try {
+59 |     const runner = await layout.write(dir);
+60 |     proc = Bun.spawn(["bun", join(dir, runner)], {
+                    ^
+error: Executable not found in $PATH: "bun"
+  path: "bun",
+ errno: -2,
+  code: "ENOENT"
+
+      at runLayout (AUDIT_SNAPSHOT/packages/@keld/kipc/test/bundle-layout.ts:60:16)
+      at async <anonymous> (AUDIT_SNAPSHOT/packages/@keld/kipc/src/worker-link.test.ts:295:23)
+(fail) no transport Worker evaluates a module that is not the stamped transport (#653) > an app bundle named transport.js is refused before any transport Worker evaluates it [2.54ms]
+55 |     },
+56 |   });
+57 |   let proc: ReturnType<typeof Bun.spawn> | undefined;
+58 |   try {
+59 |     const runner = await layout.write(dir);
+60 |     proc = Bun.spawn(["bun", join(dir, runner)], {
+                    ^
+error: Executable not found in $PATH: "bun"
+  path: "bun",
+ errno: -2,
+  code: "ENOENT"
+
+      at runLayout (AUDIT_SNAPSHOT/packages/@keld/kipc/test/bundle-layout.ts:60:16)
+      at async <anonymous> (AUDIT_SNAPSHOT/packages/@keld/kipc/src/worker-link.test.ts:316:23)
+(fail) no transport Worker evaluates a module that is not the stamped transport (#653) > a split build that puts the transport in a shared chunk is refused [3.58ms]
+(pass) §4.7 per-frame policy selection > trusted state selects the policy; the unchanged validator decides [0.32ms]
+(pass) §4.7 per-frame policy selection > the reply waiter comes from the pending entry's channel, never the frame's [0.02ms]
+
+4 tests failed:
+(fail) WorkerLink.open refuses a transport bundled into an app entry (GH-527 §4.2) > the bundled open is KELD-IPC-005 and nothing connects [31.01ms]
+(fail) WorkerLink.open refuses a bundle whatever its name (#643 review) > a bundle run as the process entry is refused, even when named kipc-transport.js [2.83ms]
+(fail) no transport Worker evaluates a module that is not the stamped transport (#653) > an app bundle named transport.js is refused before any transport Worker evaluates it [2.54ms]
+(fail) no transport Worker evaluates a module that is not the stamped transport (#653) > a split build that puts the transport in a shared chunk is refused [3.58ms]
+
+ 50 pass
+ 4 fail
+ 1761 expect() calls
+Ran 54 tests across 2 files. [60.99s]

@@ -1,0 +1,9 @@
+--- command 1/2 ---
+{"mode":"outbound","source":"269d51528137faf574cfd3548586ee3ada1acfda","runtime":"1.4.4","platform":"darwin","arch":"arm64","acceptedFrames":512,"acceptedPayloadBytes":33554432,"peerReadBytes":48,"peerReadPausedAfterHello":true,"limitation":"Actual WorkerLink and native Unix socket. Accepted payload bytes are not a measured split of mailbox, WriteQueue and kernel bytes."}
+{"cleanup":true,"terminal":"KELD-IPC-022"}
+--- exit code 0 ---
+--- command 2/2 ---
+{"mode":"handlers","source":"269d51528137faf574cfd3548586ee3ada1acfda","runtime":"1.4.4","platform":"darwin","arch":"arm64","configuredRingRecords":8,"startedHandlers":512,"completedHandlers":0,"retainedHandlerPayloadBytes":32768,"observed":"Healthy transport drained all 512 CALLs into unresolved handler continuations despite only 8 ring slots."}
+{"afterClose":true,"startedHandlers":512,"completedAfterBarrierRelease":512,"observed":"Link close does not cancel application handler continuations; late responses are suppressed by terminal state."}
+{"cleanup":true,"terminal":"KELD-IPC-022"}
+--- exit code 0 ---

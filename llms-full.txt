@@ -1359,8 +1359,9 @@ generation is refused, and the Worker's death is that role's link loss. Current
 `@keld/api`'s `LifecycleLink` (which `@keld/electron` re-exports), own their link
 this way; the main-thread client path is removed. The role's `Quit` is its last call:
 the link closes the moment the Quit REPLY returns, on every OS, so the host's post-Quit
-drain ends at that EOF and a call still pending then ends as `KELD-IPC-022`, which
-callers treat as the drain's `KELD-IPC-024`. The transport Worker's entry is the
+drain ends at that EOF. A call still pending then ends as `KELD-IPC-022`, with
+unknown host effect. Only a Host-issued `KELD-IPC-024` proves refusal before
+execution. Neither timeout nor a lost reply permits automatic replay. The transport Worker's entry is the
 transport file itself, so the transport is never bundled into an app entry, and a
 release build strips its test hooks through the `KELD_KIPC_RELEASE` build-time
 constant.
@@ -1634,7 +1635,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   measurement yet; the kipc bench lane owns that number). A JSON fallback codec is
   planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
   never sit on the hot path.
-- **Correlation ids** give request/reply without per-call allocations; channels are
+- **Correlation ids** associate requests with replies. The current TypeScript path
+  allocates per-call Promise, timer and pending-map state. Allocation-free operation
+  remains a target that requires separate evidence. Channels are
   u16 handles whose ids come from the static `keld-ipc` channel table (§4; live since
   X05-T4, #597), so string names never travel per-call. Resolving ids from schema
   names at handshake is destination work (§4).
@@ -1648,8 +1651,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   the hello scaffold consume the same rules; Rust and Bun replay one canonical
   hostile-vector corpus (`crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv`,
   one owner, one digest).
-- **Cancellation**: `STREAM_CANCEL`/`CALL_CANCEL` carry corr id; handlers observe an
-  `AbortSignal` in JS, a `CancelToken` in Rust.
+- **Cancellation (destination):** a future cancellation protocol carries the
+  correlation id and defines handler observation through JS and Rust cancellation
+  interfaces. The current WorkerLink deadline settles the caller and posts a local
+  `abandon`; it does not withdraw a queued CALL or prove remote cancellation.
+  Retained payloads, pending records and side effects keep their existing owners.
+  A live remote cancellation protocol requires coordinated receiver and wire review.
 - **Backpressure (destination):** per-channel credit windows granted in `GRANT`
   frames (SPSC credit counting); senders suspend (JS: promise; Rust:
   state-machine pause) at zero credit. The design goal is no unbounded queues
@@ -1663,6 +1670,39 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   `GRANT` its first payload: optional credit that the role's transport Worker sends to
   the host, which bounds the host's `EVENT`s to that role by the Worker's free ring
   space. It ships only behind a protocol-version bump.
+
+### Aggregate resource contract (proposed GH623 amendment)
+
+This section defines the target contract. It is not a claim of current implementation.
+The existing GH623 specification owns local outbound capacity and refusal approval.
+Host queues, schema limits, receive profiles and reader retirement retain their existing
+subsystem owners. The [dated proposal evidence](../engineering/gh623-proposal-evidence/README.md)
+links each finding to that owner.
+
+- One authoritative ledger bounds each role generation's retained outbound bytes
+  and operation records before the first framework retention, including encoding,
+  readiness waits, message posting, Worker-local output and serialized writes.
+- Admission counts backing storage and temporary copy overlap. Zero-length work
+  still consumes a record. Failed admission creates no pending transport waiter.
+- Accepted frames keep the existing single FIFO. Capacity exhaustion never silently
+  drops accepted EVENTs or automatically retries unanswered CALLs.
+- Caller settlement does not release another owner's payload, pending correlation,
+  handler or tombstone. Release follows actual retirement, exactly once.
+- Worker-owned credit release cannot depend on a callback to a parked main thread.
+  Permanent tombstone saturation has a bounded terminal path without a new call.
+- Handler invocation reserves both concurrency and maximum answer storage before
+  application effects. Control and answer reserves cannot admit ordinary data.
+- Host UI commands remain charged through forwarding until physical consumption.
+  Native facts have a separate bound before filtering. A local queue bound cannot
+  be presented as a bound on the full pipeline.
+- Absolute queue, write, call, retirement and close budgets are distinct. A successful
+  short write or renewed polling timeout cannot renew the operation's original clock.
+- Schema owners bound decoded elements and storage before allocation. Receive capacity
+  must fit the largest supported encoded response, including its envelope.
+- A generation's late callback cannot release successor credit. Physical cleanup is
+  observed separately from a terminal state or termination request.
+- Fixed buffers, decoded objects, application retention, runtime and OS memory remain
+  separate terms. Logical transport accounting alone does not establish total RSS.
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
@@ -1763,6 +1803,12 @@ compromised keeps the host's threat model uniform).
   (it's a blocking CALL with a deadline; Electron apps abuse it, so it must exist).
 
 ## 6. Hot-path implementation rules (Bun-rewrite discipline)
+
+The state-machine and allocation-free rules below are destination constraints.
+Current TypeScript writes allocate frame storage and use Promise serialization.
+Rust decoding can allocate for owned strings and vectors. The allocating encoder
+creates output storage; `encode_into` uses caller-owned storage.
+A bounded-memory or performance claim needs measurements of the actual path.
 
 - Reader/writer are explicit state machines (`Idle → Header → Payload → Dispatch`)
   driven by readiness events; zero allocations steady-state (pooled frame buffers,
