@@ -11,6 +11,7 @@ use crate::host_identity::v2::{embed_ordinary_v2, read_ordinary_v2_bytes};
 use crate::{ExpectedAppIdentityPayload, PackError, embed_host_identity, read_host_identity_bytes};
 
 mod dev;
+mod recovery;
 
 fn payload() -> ExpectedAppIdentityV2 {
     ExpectedAppIdentityV2::new(V2IdentityFields {

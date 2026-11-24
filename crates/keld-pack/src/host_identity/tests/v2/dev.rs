@@ -13,7 +13,7 @@ use crate::{PackError, read_host_identity_bytes};
 
 const APP_SPKI: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-fn expected_dev() -> ExpectedAppIdentityV2 {
+pub(super) fn expected_dev() -> ExpectedAppIdentityV2 {
     ExpectedAppIdentityV2::new(V2IdentityFields {
         app_id: "com.example.app",
         channel: "stable",
@@ -28,7 +28,7 @@ fn expected_dev() -> ExpectedAppIdentityV2 {
     .expect("canonical synthetic DEV fields")
 }
 
-fn dev_section(virtual_address: u32, raw_pointer: u32) -> Section {
+pub(super) fn dev_section(virtual_address: u32, raw_pointer: u32) -> Section {
     let mut bytes = b"keld.expected-app-identity/v2\0\
         \x0fcom.example.app\
         \x06stable\

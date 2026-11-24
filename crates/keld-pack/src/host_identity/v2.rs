@@ -9,7 +9,7 @@
 #[cfg(windows)]
 use super::Handle;
 use super::{
-    Bytes, CHECKSUM, COFF_END, CONTAINER_CHARACTERISTICS, ImageSource, LOADER_MAX_SECTIONS,
+    Bytes, CHECKSUM, COFF_END, CONTAINER_CHARACTERISTICS, ImageSource, LOADER_MAX_SECTIONS, Layout,
     NUMBER_OF_SECTIONS, PADDING_CHUNK_BYTES, PackError, SECTION_HEADER_BYTES, SECTION_NAME,
     SIZE_OF_IMAGE, SIZE_OF_INITIALIZED_DATA, admit_structure, container_invalid, invalid, no_room,
     not_pristine, patch, read_exact, round_up, section_header, to_index,
@@ -18,6 +18,11 @@ use crate::expected_identity_v2::{ExpectedAppIdentityV2, MAX_PAYLOAD_BYTES, MIN_
 
 const SECTION_V2: [u8; 8] = *b".keldea2";
 const RECOVERY_SECTION: [u8; 8] = *b".keldrec";
+
+// Source-only D-RECOVERY PE observation. This has no signature, policy, or
+// installation authority and is not reachable from the production Pack API.
+#[allow(dead_code)]
+pub(super) mod recovery;
 
 /// Private codec selection fixed by the caller's compiled entry point, never
 /// by the PE, a request, an argv flag, or an observed signature.
@@ -190,17 +195,33 @@ fn read_v2(
         .iter()
         .enumerate()
         .filter(|(_, section)| section.name == SECTION_V2);
-    let Some((index, container)) = matching.next() else {
+    let Some((index, _)) = matching.next() else {
         return Err(container_invalid("the v2 identity section is absent"));
     };
     if matching.next().is_some() {
         return Err(PackError::IdentityContainerDuplicate);
     }
+    read_v2_final_section(source, &layout, index, byte_reader)
+}
+
+// Both the ordinary and the deliberately nonauthorizing recovery observer
+// share the exact final D4 section validator and byte codec. The caller must
+// have separately established its allowed operation and section census.
+fn read_v2_final_section(
+    source: &impl ImageSource,
+    layout: &Layout,
+    index: usize,
+    byte_reader: V2ByteReader,
+) -> Result<ExpectedAppIdentityV2, PackError> {
+    let sections = layout.sections();
     if index == 0 || index + 1 != sections.len() {
         return Err(container_invalid(
             "the v2 identity must be the final PE section",
         ));
     }
+    let container = sections
+        .get(index)
+        .ok_or_else(|| container_invalid("the v2 identity section is absent"))?;
     if container.characteristics != CONTAINER_CHARACTERISTICS {
         return Err(container_invalid(
             "the v2 section attributes are not read-only initialized data",
