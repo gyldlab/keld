@@ -40,6 +40,38 @@ fn recovery_pe() -> Vec<u8> {
     })
 }
 
+// The large boundary probes MUST remain fully valid at the shared PE Layout
+// boundary. Otherwise a generic VA/raw-size refusal could falsely appear to
+// test the private RecoveryDirective length limit.
+fn large_recovery_pe(length: u32) -> Vec<u8> {
+    let raw_size = u32::try_from(fixture::round_up(
+        u64::from(length),
+        fixture::FILE_ALIGNMENT,
+    ))
+    .expect("test raw length fits");
+    let next_virtual = u32::try_from(fixture::round_up(
+        0x3000 + u64::from(length),
+        fixture::SECTION_ALIGNMENT,
+    ))
+    .expect("test virtual address fits");
+    let next_raw = 0x600_u32
+        .checked_add(raw_size)
+        .expect("test raw address fits");
+    build(&fixture::Spec {
+        sections: vec![
+            text(),
+            data(),
+            fixture::Section {
+                virtual_size: length,
+                raw_size,
+                ..rec_section(0x3000, 0x600)
+            },
+            dev_section(next_virtual, next_raw),
+        ],
+        ..two_section_spec()
+    })
+}
+
 #[test]
 fn one_original_pe_can_be_observed_without_granting_any_recovery_authority() {
     let image = recovery_pe();
@@ -130,14 +162,6 @@ fn recovery_shape_refuses_modified_header_padding_identity_and_legacy() {
     assert!(observe_local_development_recovery_bytes(&image).is_err());
 
     let mut image = recovery_pe();
-    let offset = header_at(&image, 2) + VIRTUAL_SIZE;
-    put_u32(&mut image, offset, 65_537);
-    assert!(
-        observe_local_development_recovery_bytes(&image).is_err(),
-        "an overbound directive cannot reach the unqualified observer"
-    );
-
-    let mut image = recovery_pe();
     image[0x800 + 97] = 1; // Production provider, not DEV.
     assert!(observe_local_development_recovery_bytes(&image).is_err());
 
@@ -152,6 +176,28 @@ fn recovery_shape_refuses_modified_header_padding_identity_and_legacy() {
     });
     super::valid_pe_fixture(&legacy);
     assert!(observe_local_development_recovery_bytes(&legacy).is_err());
+}
+
+#[test]
+fn recovery_directive_boundary_refuses_65537_only_after_valid_pe_structure() {
+    let admitted = large_recovery_pe(65_536);
+    super::valid_pe_fixture(&admitted);
+    assert_eq!(
+        observe_local_development_recovery_bytes(&admitted)
+            .expect("65536 is a valid unqualified byte length")
+            .directive_bytes
+            .len(),
+        65_536
+    );
+
+    let overbound = large_recovery_pe(65_537);
+    super::valid_pe_fixture(&overbound);
+    assert!(matches!(
+        observe_local_development_recovery_bytes(&overbound),
+        Err(crate::PackError::IdentityContainerInvalid {
+            detail: "recovery section size is outside directive bounds"
+        })
+    ));
 }
 
 #[test]
