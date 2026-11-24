@@ -687,6 +687,145 @@ unsafe extern "C" {
     fn process_observer_fcntl(fd: i32, command: i32, ...) -> i32;
 }
 
+fn fixture_kqueue() -> std::os::fd::OwnedFd {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
+    assert_eq!(
+        std::mem::align_of::<ProcessKevent>(),
+        8,
+        "SDK kevent64 alignment"
+    );
+    assert_eq!(
+        std::mem::size_of::<ProcessKeventTimeout>(),
+        16,
+        "SDK timespec ABI"
+    );
+    // SAFETY: kqueue takes no arguments and returns a new owned descriptor.
+    let fd = unsafe { kqueue() };
+    assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
+    // SAFETY: successful kqueue returned a valid descriptor owned only here.
+    let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: variadic fcntl receives this valid owned fd, F_SETFD=2 and the
+    // promoted integer FD_CLOEXEC=1. No other owner's descriptor is changed.
+    let cloexec = unsafe { process_observer_fcntl(queue.as_raw_fd(), 2, 1_i32) };
+    assert_eq!(
+        cloexec,
+        0,
+        "observer CLOEXEC: {}",
+        std::io::Error::last_os_error()
+    );
+    queue
+}
+
+fn register_fixture_event(queue: &std::os::fd::OwnedFd, change: &ProcessKevent) {
+    use std::os::fd::AsRawFd as _;
+    let mut receipt = ProcessKevent::default();
+    // SAFETY: SDK-matched repr(C) values live for this call. Counts are one;
+    // queue is owned/live. KEVENT_FLAG_IMMEDIATE=1 obtains a registration
+    // receipt without waiting. No ptrace, signal, waitpid or target mutation.
+    let registered = unsafe {
+        kevent64(
+            queue.as_raw_fd(),
+            std::ptr::from_ref(change),
+            1,
+            &raw mut receipt,
+            1,
+            1,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(
+        registered,
+        1,
+        "watcher registration receipt: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(receipt.ident, change.ident);
+    assert_eq!(receipt.filter, change.filter);
+    assert_ne!(receipt.flags & 0x4000, 0, "EV_RECEIPT missing");
+    assert_eq!(
+        receipt.data, 0,
+        "watcher registration errno for {}",
+        change.ident
+    );
+}
+
+/// Records mutations of one held, private ordinary fixture directory.
+/// The event carries no basename or actor; independently observed filesystem
+/// state and the cooperating fixture supply that attribution.
+#[cfg(test)]
+pub(crate) struct FixtureDirectoryWrites {
+    queue: std::os::fd::OwnedFd,
+    root: fs::File,
+}
+
+#[cfg(test)]
+impl FixtureDirectoryWrites {
+    const FILTER: i16 = -4; // Darwin EVFILT_VNODE
+    const NOTE_WRITE: u32 = 0x0000_0002;
+
+    pub(crate) fn arm(path: &Path) -> Self {
+        use std::os::fd::AsRawFd as _;
+        let root = fs::File::open(path).expect("hold private fixture root");
+        assert!(root.metadata().expect("inspect held root").is_dir());
+        let queue = fixture_kqueue();
+        register_fixture_event(
+            &queue,
+            &ProcessKevent {
+                ident: u64::try_from(root.as_raw_fd()).expect("held descriptor"),
+                filter: Self::FILTER,
+                flags: 0x0001 | 0x0004 | 0x0020 | 0x0040, // ADD | ENABLE | CLEAR | RECEIPT
+                fflags: Self::NOTE_WRITE,
+                ..ProcessKevent::default()
+            },
+        );
+        Self { queue, root }
+    }
+
+    pub(crate) fn take_write(&self) -> bool {
+        use std::os::fd::AsRawFd as _;
+        let timeout = ProcessKeventTimeout {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        let mut event = ProcessKevent::default();
+        loop {
+            // SAFETY: the queue and held directory are live, the event buffer
+            // and timeout have the SDK ABI. No changelist or target mutation.
+            let observed = unsafe {
+                kevent64(
+                    self.queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &raw mut event,
+                    1,
+                    0,
+                    &raw const timeout,
+                )
+            };
+            if observed < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("private fixture directory event: {error}");
+            }
+            if observed == 0 {
+                return false;
+            }
+            assert_eq!(observed, 1);
+            assert_eq!(
+                event.ident,
+                u64::try_from(self.root.as_raw_fd()).expect("held descriptor")
+            );
+            assert_eq!(event.filter, Self::FILTER);
+            assert_eq!(event.flags & 0x4000, 0, "directory filter failed"); // EV_ERROR
+            assert_ne!(event.fflags & Self::NOTE_WRITE, 0, "expected NOTE_WRITE");
+            return true;
+        }
+    }
+}
+
 /// Observes one PID's kernel exit status without reaping it; `OwnedFd` closes
 /// this census. For a fixture-admitted process ([`Self::arm`]) the guardian
 /// remains the sole parent/reaper. For a test-owned child
@@ -713,33 +852,8 @@ impl ProcessExitObserver {
     }
 
     fn arm_with_parent(pid: u32, observer_is_parent: bool) -> Self {
-        use std::os::fd::{AsRawFd as _, FromRawFd as _};
         assert!(pid > 1 && pid != std::process::id(), "fixture-admitted PID");
-        assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
-        assert_eq!(
-            std::mem::align_of::<ProcessKevent>(),
-            8,
-            "SDK kevent64 alignment"
-        );
-        assert_eq!(
-            std::mem::size_of::<ProcessKeventTimeout>(),
-            16,
-            "SDK timespec ABI"
-        );
-        // SAFETY: kqueue takes no arguments and returns a new owned descriptor.
-        let fd = unsafe { kqueue() };
-        assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
-        // SAFETY: successful kqueue returned a valid descriptor owned only here.
-        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        // SAFETY: variadic fcntl receives this valid owned fd, F_SETFD=2 and the
-        // promoted integer FD_CLOEXEC=1. No other owner's descriptor is changed.
-        let cloexec = unsafe { process_observer_fcntl(queue.as_raw_fd(), 2, 1_i32) };
-        assert_eq!(
-            cloexec,
-            0,
-            "observer CLOEXEC: {}",
-            std::io::Error::last_os_error()
-        );
+        let queue = fixture_kqueue();
         let change = ProcessKevent {
             ident: u64::from(pid),
             filter: Self::FILTER,
@@ -747,31 +861,7 @@ impl ProcessExitObserver {
             fflags: Self::EXIT_FLAGS,
             ..ProcessKevent::default()
         };
-        let mut receipt = ProcessKevent::default();
-        // SAFETY: SDK-matched repr(C) values live for this call. Counts are one;
-        // queue is owned/live. KEVENT_FLAG_IMMEDIATE=1 obtains a registration
-        // receipt without waiting. No ptrace, signal, waitpid or target mutation.
-        let registered = unsafe {
-            kevent64(
-                queue.as_raw_fd(),
-                &raw const change,
-                1,
-                &raw mut receipt,
-                1,
-                1,
-                std::ptr::null(),
-            )
-        };
-        assert_eq!(
-            registered,
-            1,
-            "exit watcher receipt: {}",
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(receipt.ident, u64::from(pid));
-        assert_eq!(receipt.filter, Self::FILTER);
-        assert_ne!(receipt.flags & Self::ERROR_FLAG, 0, "EV_RECEIPT missing");
-        assert_eq!(receipt.data, 0, "exit watcher registration errno for {pid}");
+        register_fixture_event(&queue, &change);
         Self {
             pid,
             queue,

@@ -286,8 +286,10 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
         !output.status.success(),
         "{case}: invalid boot became success"
     );
-    // The native observer samples. The host attempt ledger separately checks
-    // for attempts that are too brief for an external sample to observe.
+    // Native samples can miss activity between observations. The host ledger
+    // covers its instrumented startup points, not every native resource:
+    // Guardian bootstrap attempts, completed guarded-primary registration,
+    // and initial renderer window creation attempts.
     let observations = String::from_utf8(native_output.stdout).expect("watcher output UTF-8");
     assert_eq!(
         observations, "READY\nDONE\n",

@@ -383,3 +383,104 @@ fn native_absence_watcher_rejects_incomplete_process_census() {
     // No watcher owns this PID or resumes the synthetic census target.
     await_process_state(pid, 'T');
 }
+
+#[test]
+fn native_absence_samples_do_not_claim_between_sample_directory_coverage() {
+    use crate::support::control::observe_owned_stopped_child;
+    use crate::support::process::{FixtureDirectoryWrites, SessionDirCensus, await_process_state};
+    use std::io::{ErrorKind, Write as _};
+
+    let fixture = tempfile::tempdir().expect("create private sampler fixture");
+    let observed = fixture.path().join("observed");
+    fs::create_dir(&observed).expect("create private scan root");
+    // Keep the real initial and final sample paths. Block only the injected
+    // observer's intervening loop until the owner requests its final sample.
+    let loop_source = "while !finalSampleRequested() { sample() }";
+    assert_eq!(NATIVE_ABSENCE_SOURCE.matches(loop_source).count(), 1);
+    let source = NATIVE_ABSENCE_SOURCE.replace(
+        loop_source,
+        "guard getchar() == 70 else { invalidArguments() }",
+    );
+    let watcher = NativeAbsenceWatcher::compile_source(fixture.path(), &source);
+    let census = SessionDirCensus::before_launch_in(vec![observed.clone()]);
+    let roots = census.watcher_roots().expect("encode owned root");
+    let mut child = ReapOnDrop(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"set -eu
+kill -STOP $$
+name=$(printf 'kb-%x-between-samples' "$$")
+path=$1/$name
+/bin/mkdir "$path"
+IFS= read -r release
+[ "$release" = "retire" ]
+/bin/rmdir "$path""#,
+                "between-sample-fixture",
+            ])
+            .arg(&observed)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("start inert directory fixture"),
+    );
+    let pid = child.0.id();
+    await_process_state(pid, 'T');
+    let path = observed.join(format!("kb-{pid:x}-between-samples"));
+    let mut release = child.0.stdin.take();
+    assert_eq!(
+        fs::symlink_metadata(&path)
+            .expect_err("fixture starts absent")
+            .kind(),
+        ErrorKind::NotFound,
+    );
+    let writes = FixtureDirectoryWrites::arm(&observed);
+    assert!(
+        !writes.take_write(),
+        "private directory must start without an event"
+    );
+    let native = watcher.spawn(pid, &roots, census.watcher_baseline(pid));
+    let (child_output, native_output) =
+        observe_owned_stopped_child(child, native, EVENT_DEADLINE, || {
+            let Some(waiting) = release.as_mut() else {
+                return;
+            };
+            match fs::symlink_metadata(&path) {
+                Ok(info) => {
+                    assert!(
+                        info.file_type().is_dir(),
+                        "owned fixture must be a directory"
+                    );
+                    if !writes.take_write() {
+                        return;
+                    }
+                    // The child cannot remove the exact PID-matched directory
+                    // until this independent observation releases it.
+                    waiting
+                        .write_all(b"retire\n")
+                        .expect("release owned directory");
+                    release.take();
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => panic!("inspect owned fixture directory: {error}"),
+            }
+        });
+    assert!(child_output.status.success(), "{child_output:?}");
+    assert!(
+        release.is_none(),
+        "creation was never observed independently"
+    );
+    assert_eq!(
+        fs::symlink_metadata(&path)
+            .expect_err("owned directory was retired")
+            .kind(),
+        ErrorKind::NotFound,
+    );
+    // The first event was consumed before removal was permitted. The held
+    // private directory must report the independent retirement event as well.
+    assert!(
+        writes.take_write(),
+        "retirement generated no directory event"
+    );
+    // A sample-only oracle is deliberately blind to this verified lifecycle.
+    assert_eq!(native_output.stdout, b"READY\nDONE\n");
+}
