@@ -1,6 +1,6 @@
 ---
 name: "2026-10-31-process-linear-mcp-comment-pagination"
-description: "Linear MCP list_comments returns the newest page only; old comment ids need createdAt order plus cursor, and get_issue truncates long descriptions."
+description: "Linear MCP returned a single page in this observation. Use a stable order and page cursors. Long descriptions can be truncated."
 area: "process"
 tags: ["linear", "mcp", "comments", "pagination", "cursor", "claims"]
 platform: "all"
@@ -15,9 +15,9 @@ related: []
 
 The workflow requires a re-fetch of issue comments before the first edit. The Linear MCP connector does not return a whole thread in one call.
 
-- `list_comments` returns one page of at most 50 comments, newest first by `updatedAt`. On KEL-140, about 50 comments from 2026-10-11 pushed the 2026-10-10 product observation (`604aa046`) past page three. A missing id on page one is not evidence that the comment is absent.
-- To reach an old comment id, pass `orderBy: createdAt` and the `cursor` from the previous page. Budget one extra call per 30 comments on a busy issue.
-- A page that exceeds the tool output cap is written to a file. Parse it with a script; the line is one JSON object.
-- `get_issue` truncates a long description and appends "(truncated, use get_issue for full description)" even when called with `fields: ["description"]` (KEL-55 on 2026-10-31). Quote the comment thread or a landed artifact instead, and label the citation as secondary.
+- In this observation, `list_comments` returned one page; results were newest-first. A missing ID on page one does not prove the comment is absent.
+- Choose a stable order and keep it for the walk. Follow `pageInfo` with the returned cursor until the target appears or the response indicates there is no next page. Page size and default ordering can vary by connector version.
+- In this observation, an oversized response moved to a file that contained one JSON object on one line. Inspect the actual format before parsing.
+- On 2026-10-31, `get_issue` truncated one long description and appended "(truncated, use get_issue for full description)" even with `fields: ["description"]`. Quote the comment thread or a landed artifact instead, and label the citation as secondary.
 
-Negative control: fetching KEL-140 with the default order on 2026-10-31 returned 40 comments and `hasNextPage: true`; the target id appeared only after the cursor walk. Evidence: prompt-tracker PR https://github.com/0monish/prompt-tracker/pull/58, `commands.log` and packet §13.
+Historical negative control (2026-10-31): the first response contained 40 comments and `hasNextPage: true`. The target ID appeared only after following the cursor. This is an observation, not a fixed page-size limit.
