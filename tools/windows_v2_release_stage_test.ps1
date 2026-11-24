@@ -207,6 +207,77 @@ try {
         $testOnly.IndexOf($copyAnchor) -ne $testOnly.LastIndexOf($copyAnchor)) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE postcopy injection anchor missing/ambiguous'
     }
+    # Force each child-directory substitution immediately before the catch.
+    # The sentinel is outside the staging tree, but inside this disposable
+    # test fixture. The original stage directory is moved aside, never deleted
+    # by the injection. The original cleanup implementation deletes the
+    # sentinel through the junction before inspecting that directory.
+    foreach ($cleanupCase in @(
+        @{ child = 'bin'; leaf = 'keld-host.exe' },
+        @{ child = 'bindings'; leaf = 'keld-mcp-stdio.json' },
+        @{ child = 'recovery'; leaf = 'keld-host.exe' }
+    )) {
+        $child = $cleanupCase.child
+        $caseParent = Join-Path $fixture ("cleanup-alias-$child")
+        [IO.Directory]::CreateDirectory($caseParent) | Out-Null
+        $outside = Join-Path $caseParent 'outside-stage'
+        [IO.Directory]::CreateDirectory($outside) | Out-Null
+        $sentinel = Join-Path $outside $cleanupCase.leaf
+        [IO.File]::WriteAllText($sentinel, "INDEPENDENT_OUTSIDE_SENTINEL_$child")
+        $sentinelHash = (Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash
+        $aliasInjection = @(
+            ('$slot = Join-Path $temporary ''{0}''' -f $child),
+            '[IO.Directory]::Move($slot, ($slot + ''-original''))',
+            '$aliasTarget = Join-Path $parent ''outside-stage''',
+            '$null = New-Item -ItemType Junction -Path $slot -Target $aliasTarget -ErrorAction Stop',
+            'throw ''INJECTED_POST_COPY_ALIAS_FAULT'''
+        ) -join [Environment]::NewLine
+        $aliasSource = $testOnly.Replace(
+            $copyAnchor, $copyAnchor + [Environment]::NewLine + $aliasInjection)
+        $aliasScript = Join-Path $fixture ("fault-cleanup-$child.ps1")
+        [IO.File]::WriteAllText($aliasScript, $aliasSource, (New-Object System.Text.UTF8Encoding($false)))
+        $validPinsFile = Join-Path $fixture 'pins.json'
+        [IO.File]::WriteAllText($validPinsFile, ($unsignedPins | ConvertTo-Json -Depth 6))
+        $aliasOutput = Join-Path $caseParent 'output'
+        try {
+            $ErrorActionPreference = 'Continue'
+            try {
+                $aliasResult = (& $powershell '-NoProfile' '-NonInteractive' '-File' $aliasScript '-PinsFile' $validPinsFile '-OutputDirectory' $aliasOutput 2>&1 | Out-String)
+                $aliasExit = $LASTEXITCODE
+            } finally { $ErrorActionPreference = 'Stop' }
+            $aliasTemps = @(Get-ChildItem -LiteralPath $caseParent -Directory -Force |
+                Where-Object { $_.Name -match '^\.keld-v2-stage-[0-9a-f]{32}$' })
+            if (-not [IO.File]::Exists($sentinel) -or
+                (Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash -cne $sentinelHash) {
+                throw "KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-alias-$child outside sentinel deleted or changed"
+            }
+            if ($aliasExit -eq 0 -or
+                $aliasResult -notmatch 'INJECTED_POST_COPY_ALIAS_FAULT' -or
+                $aliasResult -notmatch 'partial stage retained' -or
+                $aliasResult -match 'KEL270_STAGE_IMAGES_PREPARED' -or
+                (Test-Path -LiteralPath $aliasOutput) -or $aliasTemps.Count -ne 1) {
+                throw "KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-alias-$child exit=$aliasExit output=$aliasResult"
+            }
+            $aliasSlot = Join-Path $aliasTemps[0].FullName $child
+            if (((Get-Item -LiteralPath $aliasSlot -Force).Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -eq 0) {
+                throw "KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-alias-$child substitution absent"
+            }
+            Write-Output "KEL270_STAGE_NEGATIVE_PASS case=postcopy-alias-$child outside_sentinel_unchanged=true"
+        } finally {
+            # Unlink the explicitly injected junction before the outer
+            # fixture cleanup. Never recurse through its target.
+            foreach ($temp in @(Get-ChildItem -LiteralPath $caseParent -Directory -Force |
+                    Where-Object { $_.Name -match '^\.keld-v2-stage-[0-9a-f]{32}$' })) {
+                $slot = Join-Path $temp.FullName $child
+                $item = Get-Item -LiteralPath $slot -Force -ErrorAction SilentlyContinue
+                if ($null -ne $item -and
+                    (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                    [IO.Directory]::Delete($slot, $false)
+                }
+            }
+        }
+    }
     $testOnly = $testOnly.Replace($copyAnchor, $copyAnchor + [Environment]::NewLine + "    throw 'INJECTED_POST_COPY_FAULT'")
     $faultScript = Join-Path $fixture 'fault-stage-copy.ps1'
     [IO.File]::WriteAllText($faultScript, $testOnly, (New-Object System.Text.UTF8Encoding($false)))
@@ -222,10 +293,17 @@ try {
     $leftovers = @(Get-ChildItem -LiteralPath $fixture -Directory -Force |
         Where-Object { $_.Name -match '^\.keld-v2-stage-[0-9a-f]{32}$' })
     if ($faultExit -eq 0 -or $faultResult -notmatch 'INJECTED_POST_COPY_FAULT' -or
-        (Test-Path -LiteralPath $faultOutput) -or $leftovers.Count -ne 0) {
+        $faultResult -notmatch 'partial stage retained' -or
+        $faultResult -match 'KEL270_STAGE_IMAGES_PREPARED' -or
+        (Test-Path -LiteralPath $faultOutput) -or $leftovers.Count -ne 1) {
         throw "KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-cleanup exit=$faultExit temps=$($leftovers.Count) output=$faultResult"
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postcopy-cleanup'
+    $retainedImage = Join-Path $leftovers[0].FullName 'bin/keld-host.exe'
+    if (-not [IO.File]::Exists($retainedImage) -or
+        (Get-FileHash -LiteralPath $retainedImage -Algorithm SHA256).Hash -cne $unsignedPins.images[0].sha256) {
+        throw 'KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-cleanup staged bytes not retained'
+    }
+    Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postcopy-cleanup partial_stage_retained=true'
 
     # An atomic rename does not replace exact published-path readback.
     # In a disposable test-only script, bypass signer verification solely
@@ -351,7 +429,7 @@ try {
     if ((Get-FileHash -LiteralPath $fake -Algorithm SHA256).Hash -cne $hash) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE: source changed during refusals'
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=18 source_unchanged=true positive_signed_release=NOT_RUN'
+    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=21 source_unchanged=true positive_signed_release=NOT_RUN'
 } finally {
     # Only this invocation's newly allocated disposable negative fixture.
     Remove-Item -LiteralPath $fixture -Recurse -Force

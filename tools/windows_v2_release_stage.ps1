@@ -189,45 +189,6 @@ function Read-PinnedImage($Entry, [string]$Role, [string]$Target) {
     }
 }
 
-# Delete only this invocation's known files from its random sibling directory.
-# Refuse unknown files or reparse points rather than recursively deleting an
-# untrusted or substituted tree.
-function Remove-OwnedTemporaryStage([string]$Temporary, [string]$ExpectedParent) {
-    if (-not [IO.Directory]::Exists($Temporary)) { return }
-    if ([IO.Path]::GetDirectoryName($Temporary) -cne $ExpectedParent -or
-        [IO.Path]::GetFileName($Temporary) -cnotmatch '^\.keld-v2-stage-[0-9a-f]{32}$') {
-        Refuse 'temporary cleanup lost its exact owned sibling path'
-    }
-    $null = Require-CanonicalLocalPath $Temporary 'temporary cleanup'
-    foreach ($relative in @(
-        'manifest.json', 'bindings/keld-mcp-stdio.json',
-        'bin/keld-host.exe', 'recovery/keld-host.exe', 'bin/keld.exe',
-        'bin/keld-role-launcher.exe', 'bin/keld-updater-helper.exe'
-    )) {
-        $entry = Join-Path $Temporary $relative
-        $item = Get-Item -LiteralPath $entry -Force -ErrorAction SilentlyContinue
-        if ($null -ne $item) {
-            if ($item -isnot [IO.FileInfo] -or
-                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-                Refuse 'temporary cleanup found an unexpected staged object'
-            }
-            [IO.File]::Delete($entry)
-        }
-    }
-    foreach ($relative in @('bindings', 'recovery', 'bin')) {
-        $directory = Join-Path $Temporary $relative
-        $item = Get-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue
-        if ($null -ne $item) {
-            if ($item -isnot [IO.DirectoryInfo] -or
-                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-                Refuse 'temporary cleanup found a reparse or foreign directory'
-            }
-            [IO.Directory]::Delete($directory, $false)
-        }
-    }
-    [IO.Directory]::Delete($Temporary, $false)
-}
-
 if ($env:OS -cne 'Windows_NT') { Refuse 'requires native Windows' }
 if ([string]::IsNullOrWhiteSpace($PinsFile) -or
     [string]::IsNullOrWhiteSpace($OutputDirectory)) {
@@ -387,11 +348,12 @@ foreach ($entry in $images) {
 } catch {
     $failure = $_
     if ($temporaryCreated) {
-        try {
-            Remove-OwnedTemporaryStage $temporary $parent
-        } catch {
-            throw "KEL270-STAGE: staged temp cleanup refused; original failure: $failure; cleanup failure: $_"
-        }
+        # A random name and path-based reparse checks do not prove ownership
+        # at deletion time. Without retained parent/child identity handles,
+        # even a previously regular directory can be replaced by a junction.
+        # Never traverse or delete the failed stage. Its path is a diagnostic,
+        # not a safe cleanup authorization; retain it for inspection.
+        throw "KEL270-STAGE: partial stage retained for inspection at '$temporary'; automatic cleanup refused without retained filesystem identity; original failure: $failure; no release/install authority granted"
     }
     throw $failure
 }
