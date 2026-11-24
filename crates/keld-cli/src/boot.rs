@@ -614,9 +614,13 @@ fn prepare_macos_dev_root(project_root: &Path, dev_root: &Path) -> Result<(), Bo
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 let mut builder = fs::DirBuilder::new();
                 builder.mode(0o700);
-                builder
-                    .create(&directory)
-                    .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+                match builder.create(&directory) {
+                    Ok(()) => {}
+                    Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(source) => {
+                        return Err(BootCompileError::new("dev root", source.to_string()));
+                    }
+                }
             }
             Err(source) => return Err(BootCompileError::new("dev root", source.to_string())),
         }
