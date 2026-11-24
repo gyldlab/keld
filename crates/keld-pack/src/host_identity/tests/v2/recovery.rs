@@ -2,8 +2,8 @@
 //! canonical directive, installed RecoveryPolicy, or role authority exists.
 
 use super::super::fixture::{
-    self, RAW_SIZE, SECTION_CHARACTERISTICS, VIRTUAL_SIZE, build, data, header_at, put_u32, text,
-    two_section_spec,
+    self, CERTIFICATE_TABLE, RAW_SIZE, SECTION_CHARACTERISTICS, VIRTUAL_SIZE, build, data,
+    header_at, optional_of, put_u32, text, two_section_spec,
 };
 use super::dev::{dev_section, expected_dev};
 use crate::host_identity::v2::{
@@ -18,7 +18,8 @@ const UNQUALIFIED_JSON: &[u8] = br#"{"schema":"keld.windows.recovery-directive/v
 fn rec_section(virtual_address: u32, raw_pointer: u32) -> fixture::Section {
     fixture::Section {
         name: *b".keldrec",
-        virtual_size: UNQUALIFIED_JSON.len() as u32,
+        virtual_size: u32::try_from(UNQUALIFIED_JSON.len())
+            .expect("literal test directive fits its PE field"),
         virtual_address,
         raw_size: 0x200,
         raw_pointer,
@@ -129,6 +130,14 @@ fn recovery_shape_refuses_modified_header_padding_identity_and_legacy() {
     assert!(observe_local_development_recovery_bytes(&image).is_err());
 
     let mut image = recovery_pe();
+    let offset = header_at(&image, 2) + VIRTUAL_SIZE;
+    put_u32(&mut image, offset, 65_537);
+    assert!(
+        observe_local_development_recovery_bytes(&image).is_err(),
+        "an overbound directive cannot reach the unqualified observer"
+    );
+
+    let mut image = recovery_pe();
     image[0x800 + 97] = 1; // Production provider, not DEV.
     assert!(observe_local_development_recovery_bytes(&image).is_err());
 
@@ -143,6 +152,32 @@ fn recovery_shape_refuses_modified_header_padding_identity_and_legacy() {
     });
     super::valid_pe_fixture(&legacy);
     assert!(observe_local_development_recovery_bytes(&legacy).is_err());
+}
+
+#[test]
+fn recovery_shape_refuses_wrong_raw_order_and_certificate_table_overlap() {
+    let wrong_raw_order = build(&fixture::Spec {
+        sections: vec![
+            text(),
+            data(),
+            rec_section(0x3000, 0x800),
+            dev_section(0x4000, 0x600),
+        ],
+        ..two_section_spec()
+    });
+    assert!(
+        observe_local_development_recovery_bytes(&wrong_raw_order).is_err(),
+        "earlier Recovery section cannot be physically after final D4"
+    );
+
+    let mut image = recovery_pe();
+    let certificate_directory = optional_of(&image) + CERTIFICATE_TABLE;
+    put_u32(&mut image, certificate_directory, 0x600);
+    put_u32(&mut image, certificate_directory + 4, 8);
+    assert!(
+        observe_local_development_recovery_bytes(&image).is_err(),
+        "certificate table cannot overlap either role section"
+    );
 }
 
 #[cfg(windows)]
