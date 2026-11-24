@@ -243,11 +243,14 @@ fn accept_before_returns_a_blocking_unix_stream_from_a_nonblocking_listener() {
 #[test]
 fn accept_before_refuses_a_queued_peer_after_the_original_deadline() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("own native listener");
+    listener
+        .set_nonblocking(true)
+        .expect("make the queue check nonblocking");
     let deadline = Instant::now();
     let peer = TcpStream::connect(listener.local_addr().expect("native listener address"))
         .expect("queued native peer");
-    // A blocking listener with a completed connect has a dequeuable peer, so
-    // only the deadline can refuse it.
+    // A completed connect leaves a queued peer. Check with one nonblocking
+    // accept so a regression that consumes it fails instead of hanging.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         accept_before(&listener, deadline)
     }));
