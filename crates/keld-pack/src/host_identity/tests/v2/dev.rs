@@ -174,15 +174,29 @@ fn dev_observer_reads_original_borrowed_file_without_path_reopen() {
 
     let mut file = tempfile::tempfile().expect("isolated native temporary file");
     file.write_all(&dev_pe()).expect("write synthetic DEV PE");
-    let original_cursor = file.seek(SeekFrom::End(0)).expect("cursor at file end");
+    let original_cursor = file
+        .seek(SeekFrom::Start(13))
+        .expect("cursor deliberately not at EOF");
     assert_eq!(
         observe_local_development_v2_handle(&file).expect("read same retained file"),
         expected_dev()
     );
-    expected_refusal(read_ordinary_v2_handle(&file), "v2 provider");
-    assert_eq!(
-        file.stream_position().expect("position unchanged"),
+    // Windows FileExt::seek_read advances the shared cursor to the end of its
+    // last read. The parser's success must NOT depend on or preserve the cursor.
+    assert_ne!(
+        file.stream_position()
+            .expect("cursor after positioned read"),
         original_cursor,
-        "positioned read must not move the borrowed File cursor"
+        "the non-EOF probe must expose Windows cursor movement"
+    );
+    file.seek(SeekFrom::Start(37))
+        .expect("change borrowed cursor before a second independent read");
+    expected_refusal(read_ordinary_v2_handle(&file), "v2 provider");
+    file.seek(SeekFrom::Start(61))
+        .expect("change cursor before repeating DEV observation");
+    assert_eq!(
+        observe_local_development_v2_handle(&file).expect("DEV read independent of cursor"),
+        expected_dev(),
+        "the same original file bytes must parse independently of cursor position"
     );
 }

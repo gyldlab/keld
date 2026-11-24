@@ -154,6 +154,8 @@ pub(super) fn observe_local_development_v2_bytes(
 
 /// Observe DEV bytes on the SAME borrowed Windows file object using positioned
 /// reads. Never opens or reopens a path and never produces signer/role authority.
+/// Windows `FileExt::seek_read` changes this shared handle's cursor. The
+/// caller must serialize access; only the explicit read offsets are stable.
 #[cfg(windows)]
 pub(super) fn observe_local_development_v2_handle(
     image: &std::fs::File,
