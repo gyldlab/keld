@@ -458,6 +458,10 @@ fn rejects_multi_encoded_path_navigation_and_mutable_ref_routes() {
         format!("https://github.com/gyldlab/keld/blob/main/{sha}"),
         format!("https://raw.githubusercontent.com/gyldlab/keld/main/{sha}"),
         format!("https://gitlab.com/org/repo/-/blob/main/docs/-/blob/{sha}/README.md"),
+        format!("https://bitbucket.org/org/repo/src/main/{sha}"),
+        format!("https://bitbucket.org/org/repo/%73rc/main/{sha}"),
+        format!("https://bitbucket.org/{sha}/repo/src/main/README.md"),
+        format!("https://bitbucket.org/org/repo/src/main/docs/src/{sha}/README.md"),
         format!("https://github.com/gyldlab/keld/blob/%2536{}", &sha[1..]),
         format!(
             "https://raw.githubusercontent.com/gyldlab/keld/%2536{}/file.md",

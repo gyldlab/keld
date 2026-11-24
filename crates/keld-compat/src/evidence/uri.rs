@@ -392,6 +392,15 @@ fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
     if has_pinned_provider_ref(host, &segs) {
         return false;
     }
+    // A later SHA-shaped filename or workspace name cannot pin Bitbucket's
+    // source route. The provider ref itself must be immutable.
+    if host == "bitbucket.org"
+        && segs
+            .get(2)
+            .is_some_and(|segment| segment.eq_ignore_ascii_case("src"))
+    {
+        return true;
+    }
     // On an unknown public host, a git object id establishes the immutable
     // location. Route-like directory names after it are file-path data.
     // Named providers keep their existing route-position checks above.
