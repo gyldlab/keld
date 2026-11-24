@@ -408,3 +408,85 @@ fn d23_nonready_history_refuses_before_old_role_reads() {
         MetadataClientRefusal::RecordedGenerationNotReady
     );
 }
+
+// Real scratch files, closed after writing and reopened for each observation.
+// This exercises the existing canonical codec and bounded historical reader,
+// not the protected native owner or a power-loss/restart guarantee. AC28's
+// signed tough candidate (878a64e993) separately owns signature verification.
+#[test]
+fn persisted_d23_history_reopen_detects_corruption_and_never_grants_authority() {
+    use crate::records::{decode_metadata_current, encode_metadata_current};
+    use std::fs::{self, File};
+    use std::io::Write;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let mut prior = generation();
+    prior.utc_floor_millis = 1_700_000_000_000;
+    let (current, generation_bytes) = canonical_current(&prior);
+    let current_bytes = encode_metadata_current(&current).unwrap();
+    let current_path = scratch.path().join("current.json");
+    let generation_path = scratch.path().join("generation.json");
+    let timestamp_path = scratch.path().join("timestamp.json");
+    let snapshot_path = scratch.path().join("snapshot.json");
+    for (path, bytes) in [
+        (&current_path, current_bytes.as_slice()),
+        (&generation_path, generation_bytes.as_slice()),
+        (&timestamp_path, TIMESTAMP),
+        (&snapshot_path, SNAPSHOT),
+    ] {
+        let mut file = File::create(path).unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+    let reopen = || {
+        let current = decode_metadata_current(&fs::read(&current_path).unwrap())
+            .map_err(|_| MetadataClientRefusal::RecordedGenerationMismatch)?;
+        read_unqualified_d23_historical_roles(
+            &current,
+            &fs::read(&generation_path).unwrap(),
+            &mut File::open(&timestamp_path).unwrap(),
+            &mut File::open(&snapshot_path).unwrap(),
+        )
+    };
+    let history = reopen().unwrap();
+    assert_eq!(history.timestamp, TIMESTAMP);
+    assert_eq!(history.snapshot, SNAPSHOT);
+    assert_eq!(history.utc_floor_millis, prior.utc_floor_millis);
+    // No same qualified D90 lease or authenticated TUF root exists in this
+    // fixture. Even matching bytes must still refuse the actual closed intake.
+    assert_eq!(
+        verify_ready_revision_against_recorded_generation(roles(), &prior).unwrap_err(),
+        MetadataClientRefusal::TufClientNotQualified
+    );
+    fs::write(&timestamp_path, b"Timestamp-envelope").unwrap();
+    assert_eq!(
+        reopen().unwrap_err(),
+        MetadataClientRefusal::RecordedRoleMismatch(TufRole::Timestamp)
+    );
+    fs::write(&timestamp_path, TIMESTAMP).unwrap();
+    fs::write(&snapshot_path, b"Snapshot-envelope").unwrap();
+    assert_eq!(
+        reopen().unwrap_err(),
+        MetadataClientRefusal::RecordedRoleMismatch(TufRole::Snapshot)
+    );
+    fs::write(&snapshot_path, SNAPSHOT).unwrap();
+    let mut altered = current.clone();
+    altered.generation_sha256[0] ^= 1;
+    fs::write(&current_path, encode_metadata_current(&altered).unwrap()).unwrap();
+    assert_eq!(
+        reopen().unwrap_err(),
+        MetadataClientRefusal::RecordedGenerationMismatch
+    );
+    fs::write(&current_path, &current_bytes).unwrap();
+    fs::write(
+        &generation_path,
+        &generation_bytes[..generation_bytes.len() - 1],
+    )
+    .unwrap();
+    assert_eq!(
+        reopen().unwrap_err(),
+        MetadataClientRefusal::RecordedGenerationMismatch
+    );
+    fs::write(&generation_path, &generation_bytes).unwrap();
+    assert_eq!(reopen().unwrap(), history);
+}
