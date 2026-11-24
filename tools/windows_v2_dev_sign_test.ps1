@@ -132,6 +132,36 @@ try {
         throw 'retry did not publish the complete signed observation'
     }
     Write-Output 'PASS_FAILURE_THEN_RETRY_SAME_DESTINATION'
+    # Change an ordinary covered byte after the initial copy hash, before
+    # real SignTool invocation. Never execute either disposable image.
+    $substitution = $common.Clone()
+    $substitution.OutputDirectory = Join-Path $EvidenceDirectory 'substituted-output'
+    $injected = Join-Path $EvidenceDirectory 'substitute-before-sign.ps1'
+    $scriptText = [IO.File]::ReadAllText($scriptPath)
+    $anchor = '    & $signTool sign '
+    if ([regex]::Matches($scriptText, [regex]::Escape($anchor)).Count -ne 1) {
+        throw 'signing substitution injection anchor changed'
+    }
+    $mutation = @'
+    $changed = [IO.File]::ReadAllBytes($destination)
+    $nt = [BitConverter]::ToUInt32($changed, 60)
+    $table = $nt + 24 + [BitConverter]::ToUInt16($changed, $nt + 20)
+    $raw = [BitConverter]::ToUInt32($changed, $table + 20)
+    $changed[$raw + 1] = $changed[$raw + 1] -bxor 1
+    [IO.File]::WriteAllBytes($destination, $changed)
+'@
+    $scriptText = $scriptText.Replace($anchor, $mutation + "`r`n" + $anchor)
+    [IO.File]::WriteAllText($injected, $scriptText)
+    $refused = $false
+    try { & $injected @substitution | Out-Null }
+    catch {
+        if (!$_.Exception.Message.Contains('signed bytes differ from reviewed source')) { throw }
+        $refused = $true
+    }
+    if (!$refused -or (Test-Path -LiteralPath $substitution.OutputDirectory)) {
+        throw 'substituted signed image was published'
+    }
+    Write-Output 'PASS_SIGNED_SOURCE_SUBSTITUTION_REFUSED'
     $signedReceipt = Get-Content -Raw -LiteralPath (Join-Path $common.OutputDirectory 'dev-signing-observation.json') | ConvertFrom-Json
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'resign'
     $a.UnsignedImage = Join-Path $common.OutputDirectory $signedReceipt.file; $a.ExpectedUnsignedSha256 = $signedReceipt.signedSha256

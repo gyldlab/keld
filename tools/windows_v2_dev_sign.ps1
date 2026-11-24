@@ -66,6 +66,107 @@ function Get-FileSha256([string]$Path) {
     finally { $sha.Dispose(); $stream.Dispose() }
 }
 
+# DEV signing observation only: exact byte relationship, not Authenticode
+# trust. Deliberately support only the ordinary aligned PE32+ layout.
+# Keep the admitted unsigned and signed streams open for the entire comparison.
+function Read-ExactRange($Stream, [long]$Offset, [int]$Count) {
+    if ($Offset -lt 0 -or $Count -lt 0 -or $Offset -gt ($Stream.Length - $Count)) {
+        Refuse 'unsupported signing PE range'
+    }
+    $bytes = New-Object byte[] $Count
+    $Stream.Position = $Offset
+    $done = 0
+    while ($done -lt $Count) {
+        $n = $Stream.Read($bytes, $done, $Count - $done)
+        if ($n -le 0) { Refuse 'short signing PE read' }
+        $done += $n
+    }
+    return ,$bytes
+}
+
+function Get-SigningLayout($Stream) {
+    $dos = Read-ExactRange $Stream 0 64
+    if ([BitConverter]::ToUInt16($dos, 0) -ne 0x5a4d) { Refuse 'unsupported signing PE DOS header' }
+    $nt = [long][BitConverter]::ToUInt32($dos, 60)
+    if ($nt -lt 64) { Refuse 'unsupported signing PE offset' }
+    $header = Read-ExactRange $Stream $nt 264
+    $count = [BitConverter]::ToUInt16($header, 6)
+    if ([BitConverter]::ToUInt32($header, 0) -ne 0x4550 -or
+        [BitConverter]::ToUInt16($header, 4) -ne 0x8664 -or
+        $count -lt 1 -or $count -gt 96 -or
+        [BitConverter]::ToUInt16($header, 20) -ne 240 -or
+        [BitConverter]::ToUInt16($header, 24) -ne 0x20b -or
+        [BitConverter]::ToUInt32($header, 132) -ne 16) {
+        Refuse 'unsupported signing PE32+ headers'
+    }
+    $alignment = [long][BitConverter]::ToUInt32($header, 60)
+    $headers = [long][BitConverter]::ToUInt32($header, 84)
+    if ($alignment -lt 512 -or $alignment -gt 65536 -or
+        ($alignment -band ($alignment - 1)) -ne 0 -or
+        $headers % $alignment -ne 0 -or $headers -gt $Stream.Length -or
+        ($nt + 264 + 40 * $count) -gt $headers) {
+        Refuse 'unsupported signing PE header geometry'
+    }
+    $sections = Read-ExactRange $Stream ($nt + 264) (40 * $count)
+    $ranges = @()
+    $rawEnd = $headers
+    for ($i = 0; $i -lt $count; $i++) {
+        $size = [long][BitConverter]::ToUInt32($sections, ($i * 40 + 16))
+        $start = [long][BitConverter]::ToUInt32($sections, ($i * 40 + 20))
+        if ($size -eq 0 -and $start -eq 0) { continue }
+        if ($size -eq 0 -or $start -lt $headers -or $start % $alignment -ne 0 -or
+            $size % $alignment -ne 0 -or ($start + $size) -gt $Stream.Length) {
+            Refuse 'unsupported signing PE section range'
+        }
+        foreach ($range in $ranges) {
+            if ($start -lt $range.End -and ($start + $size) -gt $range.Start) {
+                Refuse 'overlapping signing PE sections'
+            }
+        }
+        $ranges += @{ Start = $start; End = $start + $size }
+        $rawEnd = [Math]::Max($rawEnd, ($start + $size))
+    }
+    return @{ Nt = $nt; RawEnd = $rawEnd; Certificate = [long][BitConverter]::ToUInt32($header, 168);
+        CertificateSize = [long][BitConverter]::ToUInt32($header, 172) }
+}
+
+function Require-SignedSourceRelation($Unsigned, $Signed) {
+    $before = Get-SigningLayout $Unsigned
+    $after = Get-SigningLayout $Signed
+    if ($before.Certificate -ne 0 -or $before.CertificateSize -ne 0 -or
+        $before.RawEnd -ne $Unsigned.Length -or $after.RawEnd -ne $before.RawEnd -or
+        $before.Nt -ne $after.Nt -or $after.Certificate -ne $Unsigned.Length -or
+        $after.Certificate % 8 -ne 0 -or $after.CertificateSize -le 8 -or
+        $after.CertificateSize -gt 1048576 -or $after.CertificateSize % 8 -ne 0 -or
+        ($after.Certificate + $after.CertificateSize) -ne $Signed.Length) {
+        Refuse 'unsupported signing certificate or overlay geometry'
+    }
+    $certificate = Read-ExactRange $Signed $after.Certificate 8
+    if ([BitConverter]::ToUInt32($certificate, 0) -ne $after.CertificateSize -or
+        [BitConverter]::ToUInt16($certificate, 4) -ne 0x0200 -or
+        [BitConverter]::ToUInt16($certificate, 6) -ne 2) {
+        Refuse 'unsupported signing certificate entry'
+    }
+    # Compare all original bytes, including any debug bytes and internal gaps.
+    # Only the two documented signing-owned fields are excluded.
+    $checksum = $before.Nt + 88
+    $security = $before.Nt + 168
+    foreach ($range in @(
+        @{ Start = 0; End = $checksum },
+        @{ Start = $checksum + 4; End = $security },
+        @{ Start = $security + 8; End = $Unsigned.Length }
+    )) {
+        for ($offset = [long]$range.Start; $offset -lt $range.End; $offset += $take) {
+            $take = [int][Math]::Min(65536, ($range.End - $offset))
+            $a = Read-ExactRange $Unsigned $offset $take
+            $b = Read-ExactRange $Signed $offset $take
+            if ([Convert]::ToBase64String($a) -cne [Convert]::ToBase64String($b)) {
+                Refuse 'signed bytes differ from reviewed source'
+            }
+        }
+    }
+}
+
 function Get-ObservedAuthenticode([string]$Path) {
     $manifest = [IO.Path]::Combine($PSHOME, 'Modules',
         'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Security.psd1')
@@ -203,6 +304,9 @@ try {
     finally { $rootCopy.Dispose() }
     & $signTool sign /s My /sha1 $leaf.Thumbprint /fd SHA256 /ac $publicRoot /d ('keld.app-id/v1:' + $AppId) $destination
     if ($LASTEXITCODE -ne 0) { Refuse 'SignTool failed' }
+    $signedStream = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+    Require-SignedSourceRelation $source $signedStream
     $observed = Get-ObservedAuthenticode $destination
     if ($null -eq $observed.SignerCertificate -or
         (Get-Sha256 $observed.SignerCertificate.RawData) -cne (Get-Sha256 $leaf.RawData) -or
@@ -210,14 +314,19 @@ try {
         $observed.Status.ToString() -cnotin @('Valid', 'UnknownError', 'NotTrusted')) {
         Refuse 'signed copy does not contain expected embedded signer'
     }
+    $signedStream.Position = 0
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $signedHash = [BitConverter]::ToString($sha.ComputeHash($signedStream)).Replace('-', '') }
+    finally { $sha.Dispose() }
     $receipt = [ordered]@{
         schema = 'keld.dev-signing-observation/v1'; scope = 'DEVELOPMENT_ONLY_NONAUTHORIZING'
         role = $Role; appId = $AppId; unsignedSha256 = $sourcePin
-        signedSha256 = Get-FileSha256 $destination
+        signedSha256 = $signedHash
         leafCertificateSha256 = Get-Sha256 $leaf.RawData
         rootCertificateSha256 = Get-Sha256 $root.RawData
         osPathObservation = [string]$observed.Status; file = [IO.Path]::GetFileName($destination)
     }
+    } finally { $signedStream.Dispose() }
     $receiptPath = Join-Path $temporary 'dev-signing-observation.json'
     $record = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Compress))
     $recordFile = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
