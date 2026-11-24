@@ -1,5 +1,6 @@
+#[cfg(test)]
 use crate::support::EVENT_DEADLINE;
-use crate::support::control::{ReapOnDrop, wait_owned_child_output_observing};
+use crate::support::control::ReapOnDrop;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -83,7 +84,7 @@ let args = CommandLine.arguments
 guard args.count >= 4, let target = Int32(args[1]), target > 0,
       let rootCount = Int(args[2]), (1...3).contains(rootCount),
       args.count >= 3 + rootCount else { invalidArguments() }
-let prefix = "kb-" + String(target, radix: 16) + "-"
+let prefix = ("kb-" + String(target, radix: 16) + "-").utf8
 let roots = args[3..<(3 + rootCount)]
 let baselines = args.dropFirst(3 + rootCount)
 guard roots.allSatisfy({ $0.hasPrefix("/") && !$0.utf8.contains(10) && !$0.utf8.contains(13) }),
@@ -101,7 +102,7 @@ func isBaselineKey(_ key: String) -> Bool {
   return fields.count == 7 && UInt64(fields[0]) != nil && UInt64(fields[1]) != nil
     && Int64(fields[2]) != nil && UInt32(fields[3]).map { $0 < 1_000_000_000 } == true
     && UInt64(fields[4]) != nil && UInt32(fields[5]).map { $0 < 1_000_000_000 } == true
-    && fields[6].hasPrefix(prefix) && !fields[6].contains("/")
+    && fields[6].utf8.starts(with: prefix) && !fields[6].utf8.contains(47)
 }
 guard baselines.allSatisfy(isBaselineKey) else { invalidArguments() }
 let staleSessions = Set(baselines.map { Data($0.utf8) })
@@ -136,6 +137,16 @@ func sessionNames(_ root: String, optional: Bool) -> [String] {
   }
 }
 
+func processCensusFailure(_ reason: String) -> Never {
+  FileHandle.standardError.write(Data("native absence watcher process census failed: \(reason)\n".utf8))
+  exit(4)
+}
+
+func parseProcessID(_ field: Substring) -> Int32? {
+  guard !field.isEmpty, field.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+  return Int32(field)
+}
+
 func sample() {
   let rows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
   for row in rows {
@@ -145,7 +156,7 @@ func sample() {
     }
   }
   for (index, root) in roots.enumerated() {
-    for name in sessionNames(root, optional: index != 0) where name.hasPrefix(prefix) {
+    for name in sessionNames(root, optional: index != 0) where name.utf8.starts(with: prefix) {
       let path = root + "/" + name
       // A matching name was observed. Even if it vanishes before lstat, do
       // not erase that transient evidence unless its identity was proven.
@@ -158,24 +169,57 @@ func sample() {
   let pipe = Pipe()
   task.standardOutput = pipe
   task.standardError = FileHandle.nullDevice
-  try! task.run()
+  do {
+    try task.run()
+  } catch {
+    processCensusFailure("could not launch ps: \(error)")
+  }
+  // Drain ps before waiting: its output may exceed the pipe capacity.
+  let output = pipe.fileHandleForReading.readDataToEndOfFile()
   task.waitUntilExit()
-  let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)!
-  for line in text.split(separator: "\n") {
+  guard task.terminationReason == .exit, task.terminationStatus == 0 else {
+    processCensusFailure("ps did not exit successfully (status \(task.terminationStatus))")
+  }
+  guard let text = String(data: output, encoding: .utf8), text.last == "\n" else {
+    processCensusFailure("invalid process census encoding or incomplete output")
+  }
+  // This is a sample, not an exhaustive lifecycle trace.
+  for line in text.dropLast().split(separator: "\n", omittingEmptySubsequences: false) {
     let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-    if fields.count == 2, Int(fields[0]) == Int(target), let child = Int(fields[1]) {
-      children.insert(child)
+    guard fields.count == 2, let parent = parseProcessID(fields[0]), let child = parseProcessID(fields[1]) else {
+      processCensusFailure("invalid process census row")
     }
+    if parent == target { children.insert(Int(child)) }
+  }
+}
+
+// The Rust parent owns the stopped child, its resume, and the terminal
+// observation. stdin carries exactly one final-sample request, never a PID.
+func finalSampleRequested() -> Bool {
+  var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+  while true {
+    let result = Darwin.poll(&descriptor, 1, 0)
+    if result == 0 { return false }
+    if result < 0 && errno == EINTR { continue }
+    guard result == 1, (descriptor.revents & Int16(POLLIN)) != 0 else {
+      FileHandle.standardError.write(Data("native absence watcher lost final-sample control\n".utf8))
+      exit(5)
+    }
+    var command: UInt8 = 0
+    let bytes = Darwin.read(STDIN_FILENO, &command, 1)
+    if bytes < 0 && errno == EINTR { continue }
+    guard bytes == 1, command == 70 else {
+      FileHandle.standardError.write(Data("native absence watcher invalid final-sample control\n".utf8))
+      exit(5)
+    }
+    return true
   }
 }
 
 sample()
 print("READY")
 fflush(stdout)
-_ = kill(target, SIGCONT)
-while kill(target, 0) == 0 {
-  sample()
-}
+while !finalSampleRequested() { sample() }
 sample()
 for value in windows.sorted() { print("WINDOW \(value)") }
 for value in children.sorted() { print("CHILD \(value)") }
@@ -185,9 +229,13 @@ print("DONE")
 
 impl NativeAbsenceWatcher {
     pub(crate) fn compile(root: &Path) -> Self {
+        Self::compile_source(root, NATIVE_ABSENCE_SOURCE)
+    }
+
+    fn compile_source(root: &Path, swift: &str) -> Self {
         let source = root.join("kel96-native-absence.swift");
         let executable = root.join("kel96-native-absence");
-        fs::write(&source, NATIVE_ABSENCE_SOURCE).expect("write native absence watcher");
+        fs::write(&source, swift).expect("write native absence watcher");
         let output = Command::new("/usr/bin/xcrun")
             .args([
                 "swiftc",
@@ -208,6 +256,7 @@ impl NativeAbsenceWatcher {
                 .arg(pid.to_string())
                 .args(roots)
                 .args(baseline)
+                .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -216,27 +265,9 @@ impl NativeAbsenceWatcher {
     }
 }
 
-/// Detect an observation failure while the host may still be suspended.
-pub(crate) fn assert_watcher_not_failed(watcher: &mut Option<ReapOnDrop>, case: &str) {
-    if watcher
-        .as_mut()
-        .expect("owned native watcher")
-        .0
-        .try_wait()
-        .expect("inspect watcher exit")
-        .is_some_and(|status| !status.success())
-    {
-        let output = wait_owned_child_output_observing(
-            watcher.take().expect("owned native watcher"),
-            EVENT_DEADLINE,
-            || {},
-        );
-        panic!("{case}: watcher failed before host completion: {output:?}");
-    }
-}
-
 #[test]
 fn native_absence_watcher_reports_only_post_census_session_directories() {
+    use crate::support::control::observe_owned_stopped_child;
     use crate::support::process::{SessionDirCensus, await_process_state};
 
     let fixture = tempfile::tempdir().expect("create native watcher fixture");
@@ -248,27 +279,25 @@ fn native_absence_watcher_reports_only_post_census_session_directories() {
     await_process_state(pid, 'T');
 
     let stale = fixture.path().join(format!("kb-{pid:x}-prelaunch"));
-    let new = fixture.path().join(format!("kb-{pid:x}-post-census"));
+    let stale_unicode = fixture
+        .path()
+        .join(format!("kb-{pid:x}-\u{0301} prelaunch"));
+    let new = fixture
+        .path()
+        .join(format!("kb-{pid:x}-\u{0301} post-census"));
     fs::create_dir(&stale).expect("plant the ordinary prelaunch directory");
+    fs::create_dir(&stale_unicode).expect("plant the Unicode prelaunch directory");
     let census = SessionDirCensus::before_launch_in(vec![fixture.path().to_path_buf()]);
     let roots = census
         .watcher_roots()
         .expect("encode the private fixture root");
     fs::create_dir(&new).expect("plant the ordinary post-census directory");
 
-    // The watcher samples synchronously before it resumes the fixture.
-    let mut native = Some(watcher.spawn(pid, &roots, census.watcher_baseline(pid)));
-    let output = wait_owned_child_output_observing(child, EVENT_DEADLINE, || {
-        assert_watcher_not_failed(&mut native, "native watcher regression");
-    });
+    let native = watcher.spawn(pid, &roots, census.watcher_baseline(pid));
+    let (child_output, output) = observe_owned_stopped_child(child, native, EVENT_DEADLINE, || {});
     assert!(
-        output.status.success(),
-        "fixture process failed: {output:?}"
-    );
-    let output = wait_owned_child_output_observing(
-        native.expect("owned native watcher"),
-        EVENT_DEADLINE,
-        || {},
+        child_output.status.success(),
+        "fixture process failed: {child_output:?}"
     );
     assert!(output.status.success(), "native watcher failed: {output:?}");
     let observations = String::from_utf8(output.stdout).expect("watcher output UTF-8");
@@ -276,4 +305,81 @@ fn native_absence_watcher_reports_only_post_census_session_directories() {
         observations,
         format!("READY\nSESSION {}\nDONE\n", new.display())
     );
+}
+
+#[test]
+fn native_absence_watcher_rejects_incomplete_process_census() {
+    use crate::support::control::wait_owned_child_output_observing;
+    use crate::support::process::{SessionDirCensus, await_process_state};
+    use std::io::Write as _;
+
+    let fixture = tempfile::tempdir().expect("create private census fixture");
+    let source = NATIVE_ABSENCE_SOURCE
+        .replace("/bin/ps", "/bin/sh")
+        .replace(
+            r#"task.arguments = ["-axo", "ppid=,pid="]"#,
+            r#"task.arguments = ["-c", "/bin/cat \"$1\"; exit \"$(/bin/cat \"$2\")\"", "sample-fixture", roots.first! + "/rows", roots.first! + "/status"]"#,
+        );
+    assert!(
+        source.contains("sample-fixture"),
+        "inject only the ps invocation"
+    );
+    let watcher = NativeAbsenceWatcher::compile_source(fixture.path(), &source);
+    // The synthetic ps fixture never controls a process. An owned stopped
+    // shell supplies the real PID for independent window/directory sampling.
+    let target = ReapOnDrop(
+        Command::new("/bin/sh")
+            .args(["-c", "kill -STOP $$"])
+            .spawn()
+            .expect("start inert census target"),
+    );
+    let pid = target.0.id();
+    await_process_state(pid, 'T');
+    let roots = SessionDirCensus::before_launch_in(vec![fixture.path().to_path_buf()])
+        .watcher_roots()
+        .expect("encode the private fixture root");
+    let unrelated = format!(" 0 {pid}\n");
+    let observed_child = format!(" 0 {pid}\n {pid} 174\n");
+    let malformed = format!(" 0 {pid}\n malformed\n");
+    let incomplete = format!(" 0 {pid}");
+    for (rows, status, expected) in [
+        (unrelated.as_bytes(), "0", Some(b"READY\nDONE\n".as_slice())),
+        (
+            observed_child.as_bytes(),
+            "0",
+            Some(b"READY\nCHILD 174\nDONE\n"),
+        ),
+        (observed_child.as_bytes(), "1", None),
+        (malformed.as_bytes(), "0", None),
+        (incomplete.as_bytes(), "0", None),
+        (b"", "0", None),
+        (b"\xff\n", "0", None),
+    ] {
+        fs::write(fixture.path().join("rows"), rows).expect("write sample bytes");
+        fs::write(fixture.path().join("status"), status).expect("write sample status");
+        let mut child = watcher.spawn(pid, &roots, Vec::new());
+        if expected.is_some() {
+            child
+                .0
+                .stdin
+                .as_mut()
+                .expect("owned sampler control input")
+                .write_all(b"F")
+                .expect("request final sample");
+        }
+        let output = wait_owned_child_output_observing(child, EVENT_DEADLINE, || {});
+        if let Some(expected) = expected {
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(output.stdout, expected);
+        } else {
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            assert!(output.stdout.is_empty(), "partial sample was reported");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("process census failed"),
+                "{output:?}"
+            );
+        }
+    }
+    // No watcher owns this PID or resumes the synthetic census target.
+    await_process_state(pid, 'T');
 }

@@ -801,9 +801,13 @@ impl ProcessExitObserver {
         self.wait_before(Instant::now() + PROCESS_DEADLINE)
     }
 
+    /// Poll without consuming the child's wait status or allowing PID reuse.
+    pub(crate) fn try_exit_status(&self) -> Option<std::process::ExitStatus> {
+        self.observe(std::time::Duration::ZERO)
+    }
+
     /// Wait for the kernel exit status until the caller's original deadline.
     pub(crate) fn wait_before(self, deadline: Instant) -> std::process::ExitStatus {
-        use std::os::fd::AsRawFd as _;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
@@ -811,59 +815,85 @@ impl ProcessExitObserver {
                 "no kernel exit status for PID {}",
                 self.pid
             );
-            let timeout = ProcessKeventTimeout {
-                seconds: remaining.as_secs().try_into().expect("bounded seconds"),
-                nanoseconds: remaining.subsec_nanos().into(),
-            };
-            let mut event = ProcessKevent::default();
-            // SAFETY: the owned queue, writable one-event repr(C) buffer and
-            // SDK-matched timespec stay live. Null changelist/count zero makes
-            // this a read-only wait for an already registered PID event. This
-            // consumes a census event, never the guardian's child wait status.
-            let observed = unsafe {
-                kevent64(
-                    self.queue.as_raw_fd(),
-                    std::ptr::null(),
-                    0,
-                    &raw mut event,
-                    1,
-                    0,
-                    &raw const timeout,
-                )
-            };
-            if observed < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                panic!("kernel exit census for {} failed: {error}", self.pid);
+            if let Some(status) = self.observe(remaining) {
+                return status;
             }
-            // The kevent wait itself reached the deadline: same outcome.
-            assert!(observed != 0, "no kernel exit status for PID {}", self.pid);
-            assert_eq!(
-                observed, 1,
-                "kernel exit census event count for {}",
-                self.pid
-            );
-            assert_eq!(event.ident, u64::from(self.pid));
-            assert_eq!(event.filter, Self::FILTER);
-            assert_eq!(
-                event.flags & Self::ERROR_FLAG,
-                0,
-                "exit event errno {}",
-                event.data
-            );
-            assert_eq!(event.fflags & Self::EXIT_FLAGS, Self::EXIT_FLAGS);
-            let raw = i32::try_from(event.data).expect("kernel wait status fits i32");
-            let status = std::process::ExitStatus::from_raw(raw);
-            eprintln!(
-                "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent={}",
-                self.pid,
-                status.code(),
-                status.signal(),
-                self.observer_is_parent
-            );
-            return status;
         }
     }
+
+    fn observe(&self, remaining: std::time::Duration) -> Option<std::process::ExitStatus> {
+        use std::os::fd::AsRawFd as _;
+        let timeout = ProcessKeventTimeout {
+            seconds: remaining.as_secs().try_into().expect("bounded seconds"),
+            nanoseconds: remaining.subsec_nanos().into(),
+        };
+        let mut event = ProcessKevent::default();
+        // SAFETY: the owned queue, writable one-event repr(C) buffer and
+        // SDK-matched timespec stay live. The null changelist makes this a
+        // read-only wait for an already registered PID event, never waitpid.
+        let observed = unsafe {
+            kevent64(
+                self.queue.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                &raw mut event,
+                1,
+                0,
+                &raw const timeout,
+            )
+        };
+        if observed < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                return None;
+            }
+            panic!("kernel exit census for {} failed: {error}", self.pid);
+        }
+        if observed == 0 {
+            return None;
+        }
+        assert_eq!(
+            observed, 1,
+            "kernel exit census event count for {}",
+            self.pid
+        );
+        assert_eq!(event.ident, u64::from(self.pid));
+        assert_eq!(event.filter, Self::FILTER);
+        assert_eq!(
+            event.flags & Self::ERROR_FLAG,
+            0,
+            "exit event errno {}",
+            event.data
+        );
+        assert_eq!(event.fflags & Self::EXIT_FLAGS, Self::EXIT_FLAGS);
+        let raw = i32::try_from(event.data).expect("kernel wait status fits i32");
+        let status = std::process::ExitStatus::from_raw(raw);
+        eprintln!(
+            "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent={}",
+            self.pid,
+            status.code(),
+            status.signal(),
+            self.observer_is_parent
+        );
+        Some(status)
+    }
+}
+
+/// Resume only the stopped child retained by this test; never a discovered PID.
+pub(crate) fn resume_owned_child(child: &std::process::Child) {
+    const SIGCONT: i32 = 19; // Darwin sys/signal.h
+    let pid = i32::try_from(child.id()).expect("owned PID fits Darwin pid_t");
+    assert!(
+        pid > 1 && pid != i32::try_from(std::process::id()).expect("test PID fits"),
+        "owned fixture child PID"
+    );
+    // SAFETY: the caller retained the spawned, stopped child and has not reaped
+    // it. This positive PID cannot have been recycled, even if the child exited.
+    let status = unsafe { kill_process(pid, SIGCONT) };
+    assert_eq!(
+        status,
+        0,
+        "resume owned child: {}",
+        std::io::Error::last_os_error()
+    );
 }
