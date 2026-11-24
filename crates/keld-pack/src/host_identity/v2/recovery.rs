@@ -72,10 +72,10 @@ fn read_recovery(source: &impl ImageSource) -> Result<UnqualifiedDevRecovery, Pa
     }
     if expected_index < 2
         || expected_index + 1 != sections.len()
-        || directive_index + 1 != expected_index
+        || directive_index >= expected_index
     {
         return Err(container_invalid(
-            "recovery directive must immediately precede final D4 section",
+            "recovery directive must precede final D4 section",
         ));
     }
     let directive_bytes = read_bounded_directive(source, directive_section, layout.file_alignment)?;

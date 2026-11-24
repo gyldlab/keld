@@ -91,7 +91,7 @@ fn one_original_pe_can_be_observed_without_granting_any_recovery_authority() {
 }
 
 #[test]
-fn recovery_shape_refuses_missing_duplicate_swapped_and_nonadjacent_sections() {
+fn recovery_shape_refuses_missing_duplicate_and_swapped_sections() {
     let missing = build(&fixture::Spec {
         sections: vec![text(), data(), dev_section(0x3000, 0x600)],
         ..two_section_spec()
@@ -121,7 +121,10 @@ fn recovery_shape_refuses_missing_duplicate_swapped_and_nonadjacent_sections() {
     });
     super::valid_pe_fixture(&swapped);
     assert!(observe_local_development_recovery_bytes(&swapped).is_err());
+}
 
+#[test]
+fn recovery_shape_allows_an_ordinary_section_between_directive_and_final_identity() {
     let nonadjacent_data = fixture::Section {
         virtual_address: 0x3000,
         raw_pointer: 0x600,
@@ -137,7 +140,12 @@ fn recovery_shape_refuses_missing_duplicate_swapped_and_nonadjacent_sections() {
         ..two_section_spec()
     });
     super::valid_pe_fixture(&nonadjacent);
-    assert!(observe_local_development_recovery_bytes(&nonadjacent).is_err());
+    let observed = observe_local_development_recovery_bytes(&nonadjacent)
+        .expect("D-4 and D-62 require order, not adjacency");
+    assert_eq!(observed.expected_destination, expected_dev());
+    assert_eq!(observed.directive_bytes, UNQUALIFIED_JSON);
+    assert!(observe_local_development_v2_bytes(&nonadjacent).is_err());
+    assert!(read_host_identity_bytes(&nonadjacent).is_err());
 }
 
 #[test]
