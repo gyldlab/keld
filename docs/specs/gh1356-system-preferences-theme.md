@@ -28,8 +28,8 @@ FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) se
 ### AC-1: Record the reference behavior
 
 - **Given:** Electron 44.4.5 runs a main-process fixture.
-- **When:** Register two callbacks. Deliver a notification, remove one live ID and an unknown ID, then deliver another notification.
-- **Then:** Record distinct numeric IDs and each callback's argument shape. Both registrations receive the first delivery; only the survivor receives the second.
+- **When:** Register the same callback object twice. Deliver a notification, remove one live ID and an unknown ID, then deliver another notification.
+- **Then:** Record two distinct numeric IDs and the callback's arguments on both initial invocations. After removal, the second delivery invokes it once.
 - Read accent color separately and record RGBA output for that operation.
 - **Negative control:**
   - **Single fault:** Store only the first of two subscriptions in the reference fixture.
@@ -202,6 +202,8 @@ These are implementation acceptance controls, not evidence of executed native be
 For AC-8, retain the observed registration, OS-transition, capture, baseline-apply and callback order.
 Also run registration without an OS change, change after capture, two opposite changes before seed, and unsubscribe before delivery.
 Require zero callbacks for unchanged seed and removed registrations. Require ordered callbacks for both retained transitions, despite identical initial/final values.
+For the eligibility control, register A, commit light-to-dark, then register B before capture. Baseline application sends neither a callback.
+Replay sends the dark callback once to A only; a later dark-to-light change reaches both. A replay that uses only the table at delivery must fail this control.
 Fence queued records on generation replacement. A successor cannot receive old registrations' events.
 Use the approved overflow and deadline controls from B-2. Do not report an accepted stream after silently losing a transition.
 
