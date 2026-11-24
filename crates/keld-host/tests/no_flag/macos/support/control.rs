@@ -86,8 +86,8 @@ pub(crate) fn accept_before_observing<L: FixtureListener>(
     }
 }
 
-/// Accept the next queued peer, retrying only an empty queue until the
-/// caller's ORIGINAL deadline. The deadline is checked before every native
+/// Accept the next queued peer, retrying an empty or interrupted accept
+/// until the caller's ORIGINAL deadline. The deadline is checked before every native
 /// attempt, so no attempt starts after it. A peer dequeued by the last
 /// attempt that started before the deadline is accepted even if that one
 /// `accept` syscall returns just after it; that window is one syscall wide.
@@ -107,13 +107,11 @@ pub(crate) fn try_accept_before_observing<L: FixtureListener>(
                 L::normalize_blocking(&stream).map_err(AcceptFailure::Normalize)?;
                 return Ok(stream);
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 on_empty();
+                thread::yield_now();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 thread::yield_now();
             }
             Err(error) => return Err(AcceptFailure::Accept(error)),
@@ -138,6 +136,41 @@ pub(crate) fn file_status_flags(descriptor: &impl AsRawFd) -> std::ffi::c_int {
         std::io::Error::last_os_error()
     );
     flags
+}
+
+#[test]
+fn accept_before_retries_interruption_without_observing_an_empty_queue() {
+    use std::cell::Cell;
+    use std::io::{ErrorKind, Result};
+
+    struct ScriptedListener(Cell<u8>);
+
+    impl FixtureListener for ScriptedListener {
+        type Stream = ();
+
+        fn accept_stream(&self) -> Result<()> {
+            let attempt = self.0.get() + 1;
+            self.0.set(attempt);
+            match attempt {
+                1 => Err(ErrorKind::Interrupted.into()),
+                2 => Err(ErrorKind::WouldBlock.into()),
+                3 => Ok(()),
+                _ => panic!("unexpected accept attempt"),
+            }
+        }
+
+        fn normalize_blocking(_stream: &()) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let listener = ScriptedListener(Cell::new(0));
+    let mut empty_attempts = Vec::new();
+    accept_before_observing(&listener, Instant::now() + super::EVENT_DEADLINE, || {
+        empty_attempts.push(listener.0.get());
+    });
+    assert_eq!(listener.0.get(), 3);
+    assert_eq!(empty_attempts, [2]);
 }
 
 #[test]

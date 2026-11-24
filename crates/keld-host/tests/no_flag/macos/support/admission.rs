@@ -404,6 +404,83 @@ fn native_absence_watcher_rejects_incomplete_process_census() {
 }
 
 #[test]
+fn native_absence_watcher_requires_a_complete_final_process_census() {
+    use crate::support::control::wait_owned_child_output_observing;
+    use crate::support::process::{SessionDirCensus, await_process_state};
+    use std::io::Write as _;
+
+    let fixture = tempfile::tempdir().expect("create private terminal census fixture");
+    // Disable intervening samples only. The real Swift census runs before
+    // READY and after F; the fixture selects distinct data for those calls.
+    let loop_source = "while !finalSampleRequested() { sample() }";
+    let ps_source = r#"task.arguments = ["-axo", "ppid=,pid="]"#;
+    assert_eq!(NATIVE_ABSENCE_SOURCE.matches(loop_source).count(), 1);
+    assert_eq!(NATIVE_ABSENCE_SOURCE.matches(ps_source).count(), 1);
+    let source = NATIVE_ABSENCE_SOURCE
+        .replace(loop_source, "guard getchar() == 70 else { invalidArguments() }")
+        .replace("/bin/ps", "/bin/sh")
+        .replace(
+            ps_source,
+            r#"task.arguments = ["-c", "set -eu; if [ ! -e \"$1/initial-read\" ]; then : > \"$1/initial-read\"; exec /bin/cat \"$1/initial\"; fi; /bin/cat \"$1/final\"; exit \"$(/bin/cat \"$1/status\")\"", "terminal-census-fixture", roots.first!]"#,
+        );
+    let watcher = NativeAbsenceWatcher::compile_source(fixture.path(), &source);
+    let target = ReapOnDrop(
+        Command::new("/bin/sh")
+            .args(["-c", "kill -STOP $$"])
+            .spawn()
+            .expect("start inert terminal census target"),
+    );
+    let pid = target.0.id();
+    await_process_state(pid, 'T');
+    let roots = SessionDirCensus::before_launch_in(vec![fixture.path().to_path_buf()])
+        .watcher_roots()
+        .expect("encode the private fixture root");
+    fs::write(fixture.path().join("initial"), format!(" 0 {pid}\n"))
+        .expect("write initial census with the stopped target");
+    // This synthetic terminal table deliberately omits the target row.
+    // Its distinct child row must appear only in the final sample.
+    let final_child = pid + 1;
+    fs::write(
+        fixture.path().join("final"),
+        format!(" {pid} {final_child}\n"),
+    )
+    .expect("write final-only child row");
+
+    for status in ["0", "1"] {
+        fs::write(fixture.path().join("status"), status).expect("write final census status");
+        let mut watcher = watcher.spawn(pid, &roots, Vec::new());
+        watcher
+            .0
+            .stdin
+            .as_mut()
+            .expect("owned sampler control input")
+            .write_all(b"F")
+            .expect("request final sample");
+        let output = wait_owned_child_output_observing(watcher, EVENT_DEADLINE, || {});
+        if status == "0" {
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(
+                output.stdout,
+                format!("READY\nCHILD {final_child}\nDONE\n").as_bytes()
+            );
+        } else {
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            assert_eq!(
+                output.stdout, b"READY\n",
+                "late failure published observations"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("process census failed: ps did not exit successfully (status 1)"),
+                "{output:?}"
+            );
+        }
+        fs::remove_file(fixture.path().join("initial-read")).expect("reset census fixture");
+    }
+    await_process_state(pid, 'T');
+}
+
+#[test]
 fn native_absence_samples_do_not_claim_between_sample_directory_coverage() {
     use crate::support::control::observe_owned_stopped_child;
     use crate::support::process::{FixtureDirectoryWrites, SessionDirCensus, await_process_state};
