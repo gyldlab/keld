@@ -105,6 +105,33 @@ try {
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'production-app'
     $a.AppId = 'com.keld.production'; Require-Refusal $a 'development-only app ID' 'production-app-id'
     $a = $common.Clone(); Require-Refusal $a 'absent output directory' 'existing-output'
+    # Inject a deterministic failure after the real signed-copy observation but
+    # before the receipt is written. The test-only script copy is never shipped.
+    $retry = $common.Clone()
+    $retry.OutputDirectory = Join-Path $EvidenceDirectory 'retry-output'
+    $injected = Join-Path $EvidenceDirectory 'fail-before-receipt.ps1'
+    $scriptText = [IO.File]::ReadAllText($scriptPath)
+    $anchor = '    $receiptPath = Join-Path '
+    if ([regex]::Matches($scriptText, [regex]::Escape($anchor)).Count -ne 1) {
+        throw 'receipt failure injection anchor changed'
+    }
+    $scriptText = $scriptText.Replace($anchor, "    throw 'CONTROLLED_RECEIPT_FAILURE'`r`n" + $anchor)
+    [IO.File]::WriteAllText($injected, $scriptText)
+    $refused = $false
+    try { & $injected @retry | Out-Null }
+    catch {
+        if (!$_.Exception.Message.Contains('CONTROLLED_RECEIPT_FAILURE')) { throw }
+        $refused = $true
+    }
+    if (!$refused -or (Test-Path -LiteralPath $retry.OutputDirectory)) {
+        throw 'failed signing attempt published partial final output'
+    }
+    & $scriptPath @retry
+    $retryReceipt = Get-Content -Raw -LiteralPath (Join-Path $retry.OutputDirectory 'dev-signing-observation.json') | ConvertFrom-Json
+    if ((Get-FileHash -LiteralPath (Join-Path $retry.OutputDirectory $retryReceipt.file) -Algorithm SHA256).Hash -cne $retryReceipt.signedSha256) {
+        throw 'retry did not publish the complete signed observation'
+    }
+    Write-Output 'PASS_FAILURE_THEN_RETRY_SAME_DESTINATION'
     $signedReceipt = Get-Content -Raw -LiteralPath (Join-Path $common.OutputDirectory 'dev-signing-observation.json') | ConvertFrom-Json
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'resign'
     $a.UnsignedImage = Join-Path $common.OutputDirectory $signedReceipt.file; $a.ExpectedUnsignedSha256 = $signedReceipt.signedSha256

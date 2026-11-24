@@ -169,6 +169,7 @@ if ((Get-FileSha256 $signTool) -cne $signToolSha) {
 }
 
 $source = [IO.File]::Open($inputPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$temporary = $null
 try {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $actual = [BitConverter]::ToString($sha.ComputeHash($source)).Replace('-', '') }
@@ -177,15 +178,26 @@ try {
     if ((Get-ObservedAuthenticode $inputPath).Status -ne 'NotSigned') {
         Refuse 'source image already carries a signature or cannot be inspected'
     }
-    New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
-    $destination = Join-Path $output ('dev-' + $Role.ToLowerInvariant() + '-' + [IO.Path]::GetFileName($inputPath))
+    # Stage in a unique sibling, never write directly into the final slot.
+    # Path observations are not native directory custody. On failure retain
+    # ambiguous staging rather than delete through an unretained pathname.
+    $candidate = Join-Path $parent ('.keld-dev-sign-' + [guid]::NewGuid().ToString('N'))
+    $null = Require-LocalPath $parent
+    if (Test-Path -LiteralPath $candidate) { Refuse 'temporary signing sibling already exists' }
+    New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
+    $temporary = $candidate
+    $null = Require-LocalPath $temporary
+    if (@(Get-ChildItem -LiteralPath $temporary -Force).Count -ne 0) {
+        Refuse 'temporary signing sibling is not empty'
+    }
+    $destination = Join-Path $temporary ('dev-' + $Role.ToLowerInvariant() + '-' + [IO.Path]::GetFileName($inputPath))
     $copy = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $source.Position = 0; $source.CopyTo($copy); $copy.Flush($true) }
     finally { $copy.Dispose() }
     if ((Get-FileSha256 $destination) -cne $sourcePin) {
         Refuse 'copy differs from reviewed source'
     }
-    $publicRoot = Join-Path $output 'dev-root-public.cer'
+    $publicRoot = Join-Path $temporary 'dev-root-public.cer'
     $rootCopy = [IO.File]::Open($publicRoot, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $rootCopy.Write($root.RawData, 0, $root.RawData.Length); $rootCopy.Flush($true) }
     finally { $rootCopy.Dispose() }
@@ -206,10 +218,44 @@ try {
         rootCertificateSha256 = Get-Sha256 $root.RawData
         osPathObservation = [string]$observed.Status; file = [IO.Path]::GetFileName($destination)
     }
-    $receiptPath = Join-Path $output 'dev-signing-observation.json'
+    $receiptPath = Join-Path $temporary 'dev-signing-observation.json'
     $record = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Compress))
     $recordFile = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $recordFile.Write($record, 0, $record.Length); $recordFile.Flush($true) }
     finally { $recordFile.Dispose() }
+    $recordHash = Get-Sha256 $record
+    $null = Require-LocalPath $parent
+    $null = Require-LocalPath $temporary
+    foreach ($entry in @(
+        @{ Name = $receipt.file; Hash = $receipt.signedSha256 },
+        @{ Name = 'dev-root-public.cer'; Hash = $receipt.rootCertificateSha256 },
+        @{ Name = 'dev-signing-observation.json'; Hash = $recordHash }
+    )) {
+        $path = Require-LocalPath (Join-Path $temporary $entry.Name)
+        if ((Get-FileSha256 $path) -cne $entry.Hash) {
+            Refuse 'staged signing artifact changed before publication'
+        }
+    }
+    if (Test-Path -LiteralPath $output) { Refuse 'destination appeared before publication' }
+    [IO.Directory]::Move($temporary, $output)
+    $temporary = $null
+    # Publication is not a native custody proof. Recheck final paths and retain
+    # any ambiguous publication for inspection without reporting success.
+    $null = Require-LocalPath $output
+    foreach ($entry in @(
+        @{ Name = $receipt.file; Hash = $receipt.signedSha256 },
+        @{ Name = 'dev-root-public.cer'; Hash = $receipt.rootCertificateSha256 },
+        @{ Name = 'dev-signing-observation.json'; Hash = $recordHash }
+    )) {
+        $path = Require-LocalPath (Join-Path $output $entry.Name)
+        if ((Get-FileSha256 $path) -cne $entry.Hash) {
+            Refuse 'published signing artifact changed after rename'
+        }
+    }
     Write-Output 'KEL270_DEV_SIGNED_COPY_ONLY: no native trust, admission, or release qualification claimed'
+} catch {
+    if ($null -ne $temporary) {
+        Write-Warning "Signing attempt failed; staging retained without path-based cleanup: $temporary"
+    }
+    throw
 } finally { $source.Dispose() }
