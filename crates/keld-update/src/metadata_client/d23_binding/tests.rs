@@ -413,6 +413,7 @@ fn d23_nonready_history_refuses_before_old_role_reads() {
 // This exercises the existing canonical codec and bounded historical reader,
 // not the protected native owner or a power-loss/restart guarantee. AC28's
 // signed tough candidate (878a64e993) separately owns signature verification.
+#[cfg(windows)]
 #[test]
 fn persisted_d23_history_reopen_detects_corruption_and_never_grants_authority() {
     use crate::records::{decode_metadata_current, encode_metadata_current};
