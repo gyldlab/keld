@@ -245,11 +245,18 @@ pub(crate) fn wait_child_output(child: Child, timeout: Duration) -> Output {
 pub(crate) fn wait_child_output_observing(
     child: Child,
     timeout: Duration,
+    observe: impl FnMut(),
+) -> Output {
+    // Rust's Child alone does not kill/reap on Drop.
+    wait_owned_child_output_observing(ReapOnDrop(child), timeout, observe)
+}
+
+/// Preserve a caller's existing custody through the bounded output wait.
+pub(crate) fn wait_owned_child_output_observing(
+    mut child: ReapOnDrop,
+    timeout: Duration,
     mut observe: impl FnMut(),
 ) -> Output {
-    // Install custody before pipe setup or callbacks can fail. Rust's Child
-    // alone does not kill/reap on Drop.
-    let mut child = ReapOnDrop(child);
     let mut stdout = PipeCapture::new(child.0.stdout.take());
     let mut stderr = PipeCapture::new(child.0.stderr.take());
     let deadline = Instant::now() + timeout;
