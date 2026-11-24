@@ -104,16 +104,11 @@ An app patch must appear in that artifact record.
   statement. The shared `DialogReplyV1::Message { response, checkbox_checked }` retains both the clicked button
   index and the checkbox's **actual final native state**. A Message without a checkbox reports `false` in that
   shared field. The unchanged dirty-close consumer still receives only its primitive button index.
-- **Negative controls:**
-  - **Single fault:** use the macOS Cancel/Discard index mapping.
-    **At-risk precondition:** the operator selects Windows Discard Changes.
-    **Expected RED:** the observed index or resulting application continuation is wrong.
-  - **Single fault:** always set the shared `checkbox_checked` reply to `false`.
-    **At-risk precondition:** the native labeled checkbox starts unchecked and the user checks it.
-    **Expected RED:** the shared reply disagrees with the independently observed checked state.
-  - **Single fault:** ignore `checkbox_checked` without a valid `checkbox_label`.
-    **At-risk precondition:** the shared validator receives that invalid option combination.
-    **Expected RED:** a native panel appears instead of a typed pre-presentation refusal.
+- **Negative control:** Run cases A, B, and C separately.
+  - **Single fault:** (A) use the macOS Cancel/Discard index mapping. (B) always set the shared `checkbox_checked` reply to `false`. (C) ignore `checkbox_checked` without a valid `checkbox_label`.
+  - **At-risk precondition:** (A) the operator selects Windows Discard Changes. (B) the native labeled checkbox starts unchecked and the user checks it. (C) the shared validator receives that invalid option combination.
+  - **Expected RED:** (A) the observed index or resulting application continuation is wrong. (B) the shared reply disagrees with the independently observed checked state. (C) a native panel appears instead of a typed pre-presentation refusal.
+
 
 ### AC-6: synchronous park preserves event semantics
 
