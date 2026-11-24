@@ -12,6 +12,7 @@ if (-not [string]::IsNullOrWhiteSpace($StageToolOverride)) {
 $powershell = Join-Path $PSHOME 'powershell.exe'
 $fixture = Join-Path $env:TEMP ('keld270-stage-negative-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $fixture
+$fixtureCleanupReady = $false
 
 function Require-Refusal([string]$Case, $Pins, [string]$Fragment) {
     $pinFile = Join-Path $fixture 'pins.json'
@@ -191,6 +192,8 @@ try {
     $junction = Join-Path $fixture 'via-junction'
     $null = New-Item -ItemType Junction -Path $junction -Target $fixture -ErrorAction Stop
     Require-PathRefusal 'reparse-ancestor-pins' (Join-Path $junction 'pins.json') (Join-Path $fixture 'no-stage') 'reparse-point path or ancestor'
+    # This is a deliberate test-created junction, not a recursively owned tree.
+    [IO.Directory]::Delete($junction, $false)
 
     # Exercise cleanup at a post-copy cut. This uses a private TEST COPY of
     # the script with signer validation removed ONLY to reach the cut with
@@ -239,6 +242,7 @@ try {
         $validPinsFile = Join-Path $fixture 'pins.json'
         [IO.File]::WriteAllText($validPinsFile, ($unsignedPins | ConvertTo-Json -Depth 6))
         $aliasOutput = Join-Path $caseParent 'output'
+        $aliasCasePassed = $false
         try {
             $ErrorActionPreference = 'Continue'
             try {
@@ -264,17 +268,12 @@ try {
                 throw "KEL270_STAGE_NEGATIVE_FAILURE case=postcopy-alias-$child substitution absent"
             }
             Write-Output "KEL270_STAGE_NEGATIVE_PASS case=postcopy-alias-$child outside_sentinel_unchanged=true"
+            $aliasCasePassed = $true
         } finally {
-            # Unlink the explicitly injected junction before the outer
-            # fixture cleanup. Never recurse through its target.
-            foreach ($temp in @(Get-ChildItem -LiteralPath $caseParent -Directory -Force |
-                    Where-Object { $_.Name -match '^\.keld-v2-stage-[0-9a-f]{32}$' })) {
-                $slot = Join-Path $temp.FullName $child
-                $item = Get-Item -LiteralPath $slot -Force -ErrorAction SilentlyContinue
-                if ($null -ne $item -and
-                    (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-                    [IO.Directory]::Delete($slot, $false)
-                }
+            # Unlink only the exact junction established by the successful
+            # oracle. On any failure the outer finally must retain the fixture.
+            if ($aliasCasePassed) {
+                [IO.Directory]::Delete($aliasSlot, $false)
             }
         }
     }
@@ -391,6 +390,7 @@ try {
         (New-Object System.Text.UTF8Encoding($false)))
     $aliasOutput = Join-Path $fixture 'postmove-junction-output'
     $aliasLink = Join-Path $aliasOutput 'bindings'
+    $aliasCasePassed = $false
     try {
         $ErrorActionPreference = 'Continue'
         try {
@@ -417,20 +417,23 @@ try {
             throw "KEL270_STAGE_NEGATIVE_FAILURE case=postmove-samebytes-reparse exit=$aliasExit sameDigest=$aliasDigestMatches output=$aliasResult"
         }
         Write-Output 'KEL270_STAGE_NEGATIVE_PASS case=postmove-samebytes-reparse'
+        $aliasCasePassed = $true
     } finally {
-        # Delete only the self-created junction, never its target. The outer
-        # owned fixture cleanup removes remaining regular files afterwards.
-        $item = Get-Item -LiteralPath $aliasLink -Force -ErrorAction SilentlyContinue
-        if ($null -ne $item -and
-            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        # Never attempt recursive fixture cleanup if this unlink fails.
+        if ($aliasCasePassed) {
             [IO.Directory]::Delete($aliasLink, $false)
         }
     }
     if ((Get-FileHash -LiteralPath $fake -Algorithm SHA256).Hash -cne $hash) {
         throw 'KEL270_STAGE_NEGATIVE_FAILURE: source changed during refusals'
     }
-    Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=21 source_unchanged=true positive_signed_release=NOT_RUN'
+    $fixtureCleanupReady = $true
 } finally {
-    # Only this invocation's newly allocated disposable negative fixture.
-    Remove-Item -LiteralPath $fixture -Recurse -Force
+    if ($fixtureCleanupReady) {
+        # Only after every test and deliberate junction unlink succeeded.
+        Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction Stop
+    } else {
+        Write-Warning "KEL270_STAGE_TEST_FIXTURE_RETAINED: $fixture; test or junction cleanup failed"
+    }
 }
+Write-Output 'KEL270_STAGE_NEGATIVE_SUITE_PASS count=21 source_unchanged=true positive_signed_release=NOT_RUN'
