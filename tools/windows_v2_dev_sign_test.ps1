@@ -79,6 +79,38 @@ try {
         }
         Write-Output "PASS_POSITIVE $role"
     }
+    # Bind the signer to the retained signed image rather than a separately
+    # resolved pathname. Read only the exact verifier functions from this
+    # script; this test never invokes the signing entrypoint or grants trust.
+    $tokens = $null; $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $scriptPath, [ref]$tokens, [ref]$parseErrors)
+    if (@($parseErrors).Count -ne 0) { throw 'DEV signer source cannot be parsed' }
+    foreach ($name in @('Refuse', 'Get-Sha256', 'Read-ExactRange',
+            'Get-SigningLayout', 'Require-RetainedDevSigner')) {
+        $definitions = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $name
+        }, $true))
+        if ($definitions.Count -ne 1) { throw "missing or duplicate retained signer helper $name" }
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+    }
+    $recoverySigned = Join-Path $EvidenceDirectory 'recovery-output/dev-recovery-'
+    $recoverySigned += [IO.Path]::GetFileName($UnsignedFixture)
+    $retained = [IO.File]::Open($recoverySigned,
+        [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        Require-RetainedDevSigner $retained $owned['RECOVERY']
+        $foreignRefused = $false
+        try { Require-RetainedDevSigner $retained $owned['APP'] }
+        catch {
+            if (!$_.Exception.Message.Contains('retained signed image has a foreign DEV role signer')) { throw }
+            $foreignRefused = $true
+        }
+        if (!$foreignRefused) { throw 'foreign embedded role was accepted from retained hFile' }
+    } finally { $retained.Dispose() }
+    Write-Output 'PASS_RETAINED_HFILE_FOREIGN_SIGNER_REFUSED'
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'bad-source'
     $a.ExpectedUnsignedSha256 = '0' * 64; Require-Refusal $a 'unsigned image differs' 'source-pin-mismatch'
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'bad-cert'

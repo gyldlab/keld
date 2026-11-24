@@ -167,6 +167,35 @@ function Require-SignedSourceRelation($Unsigned, $Signed) {
     }
 }
 
+# Read the selected PKCS#7 signer from the same retained signed stream that
+# passed the byte relationship. This proves the DEV leaf observation belongs
+# to those bytes, not to a different image selected by an ambient path lookup.
+# SignedCms signature-only validation is NOT a WinTrust chain or Authenticode
+# PE-indirect-digest policy grant; the product Guard remains the trust owner.
+function Require-RetainedDevSigner($Signed, $ExpectedLeaf) {
+    $layout = Get-SigningLayout $Signed
+    if ($layout.CertificateSize -le 8 -or $layout.CertificateSize -gt 1048576) {
+        Refuse 'unsupported retained signing certificate size'
+    }
+    $blob = Read-ExactRange $Signed ($layout.Certificate + 8) ([int]($layout.CertificateSize - 8))
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+        $cms = New-Object System.Security.Cryptography.Pkcs.SignedCms
+        $cms.Decode($blob)
+        if ($cms.SignerInfos.Count -ne 1) {
+            Refuse 'expected one retained DEV signing identity'
+        }
+        $cms.CheckSignature($true)
+        $actual = $cms.SignerInfos[0].Certificate
+    } catch {
+        Refuse 'retained signed image has an invalid embedded PKCS7 signature'
+    }
+    if ($null -eq $actual -or
+        (Get-Sha256 $actual.RawData) -cne (Get-Sha256 $ExpectedLeaf.RawData)) {
+        Refuse 'retained signed image has a foreign DEV role signer'
+    }
+}
+
 function Get-ObservedAuthenticode([string]$Path) {
     $manifest = [IO.Path]::Combine($PSHOME, 'Modules',
         'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Security.psd1')
@@ -307,6 +336,7 @@ try {
     $signedStream = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
     Require-SignedSourceRelation $source $signedStream
+    Require-RetainedDevSigner $signedStream $leaf
     $observed = Get-ObservedAuthenticode $destination
     if ($null -eq $observed.SignerCertificate -or
         (Get-Sha256 $observed.SignerCertificate.RawData) -cne (Get-Sha256 $leaf.RawData) -or
