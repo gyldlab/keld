@@ -10,6 +10,8 @@ use crate::expected_identity_v2::{ExpectedAppIdentityV2, V2IdentityFields, V2Sig
 use crate::host_identity::v2::{embed_ordinary_v2, read_ordinary_v2_bytes};
 use crate::{ExpectedAppIdentityPayload, PackError, embed_host_identity, read_host_identity_bytes};
 
+mod dev;
+
 fn payload() -> ExpectedAppIdentityV2 {
     ExpectedAppIdentityV2::new(V2IdentityFields {
         app_id: "com.example.app",
@@ -23,53 +25,6 @@ fn payload() -> ExpectedAppIdentityV2 {
         discovery_policy_sha256: [0x55; 32],
     })
     .expect("independent synthetic v2 bytes")
-}
-
-#[test]
-fn ordinary_production_pe_reader_refuses_development_provider() {
-    // Build a real provider-2 section from independent literal D-4 wire bytes.
-    // The production writer must refuse DEV on its own readback and cannot
-    // construct this negative fixture; it is deliberately not used here.
-    let mut dev_bytes = b"keld.expected-app-identity/v2\0\
-        \x0fcom.example.app\
-        \x06stable\
-        \x0bwindows-x64"
-        .to_vec();
-    dev_bytes.extend_from_slice(&[0x11; 32]);
-    dev_bytes.push(0x02); // DEV provider, not Public Trust.
-    dev_bytes.extend_from_slice(b"\x00\x40");
-    dev_bytes
-        .extend_from_slice(b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
-    dev_bytes.extend_from_slice(&[0x22; 32]); // Issuer policy.
-    dev_bytes.extend_from_slice(&[0x33; 32]); // Repository identity.
-    dev_bytes.extend_from_slice(&[0x44; 32]); // Repository policy.
-    dev_bytes.extend_from_slice(&[0x55; 32]); // Discovery policy.
-    dev_bytes.extend_from_slice(&[1, 1, 1, 3]); // Direct, per-user, strict, DEV root.
-    assert_eq!(dev_bytes.len(), 296, "independent D-4 DEV fixture");
-    let image = build(&fixture::Spec {
-        sections: vec![
-            text(),
-            data(),
-            fixture::Section {
-                name: *b".keldea2",
-                virtual_size: 296,
-                virtual_address: 0x3000,
-                raw_size: 0x200,
-                raw_pointer: 0x600,
-                characteristics: 0x4000_0040,
-                content: dev_bytes,
-            },
-        ],
-        ..two_section_spec()
-    });
-    valid_pe_fixture(&image);
-    assert!(matches!(
-        read_ordinary_v2_bytes(&image),
-        Err(PackError::ExpectedIdentityInvalid {
-            detail: "v2 provider"
-        })
-    ));
-    assert!(read_host_identity_bytes(&image).is_err());
 }
 
 fn canonical() -> Vec<u8> {

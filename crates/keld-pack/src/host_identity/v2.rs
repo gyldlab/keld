@@ -19,6 +19,14 @@ use crate::expected_identity_v2::{ExpectedAppIdentityV2, MAX_PAYLOAD_BYTES, MIN_
 const SECTION_V2: [u8; 8] = *b".keldea2";
 const RECOVERY_SECTION: [u8; 8] = *b".keldrec";
 
+/// Private codec selection fixed by the caller's compiled entry point, never
+/// by the PE, a request, an argv flag, or an observed signature.
+#[derive(Clone, Copy)]
+enum V2ByteReader {
+    Production,
+    LocalDevelopmentObservation,
+}
+
 /// Add only an ordinary v2 section to an unsigned, unmodified prebuilt PE.
 /// The existing v1 writer remains byte-for-byte unchanged.
 pub(super) fn embed_ordinary_v2(
@@ -131,7 +139,32 @@ pub(super) fn read_ordinary_v2_handle(
     read_ordinary_v2(&Handle(image))
 }
 
+/// Observe only the DEV APP identity from synthetic or already-retained bytes.
+/// This parses a container, not an Authenticode signature or trusted publisher.
+/// The caller must independently retain and authenticate its source and policy.
+pub(super) fn observe_local_development_v2_bytes(
+    image: &[u8],
+) -> Result<ExpectedAppIdentityV2, PackError> {
+    read_v2(&Bytes(image), V2ByteReader::LocalDevelopmentObservation)
+}
+
+/// Observe DEV bytes on the SAME borrowed Windows file object using positioned
+/// reads. Never opens or reopens a path and never produces signer/role authority.
+#[cfg(windows)]
+pub(super) fn observe_local_development_v2_handle(
+    image: &std::fs::File,
+) -> Result<ExpectedAppIdentityV2, PackError> {
+    read_v2(&Handle(image), V2ByteReader::LocalDevelopmentObservation)
+}
+
 fn read_ordinary_v2(source: &impl ImageSource) -> Result<ExpectedAppIdentityV2, PackError> {
+    read_v2(source, V2ByteReader::Production)
+}
+
+fn read_v2(
+    source: &impl ImageSource,
+    byte_reader: V2ByteReader,
+) -> Result<ExpectedAppIdentityV2, PackError> {
     let layout = admit_structure(source)?;
     let sections = layout.sections();
     // Cross-version and recovery-role ambiguity always refuses, even if a
@@ -213,7 +246,7 @@ fn read_ordinary_v2(source: &impl ImageSource) -> Result<ExpectedAppIdentityV2, 
             "certificate table overlaps or follows image end",
         ));
     }
-    read_v2_payload_and_padding(source, raw_start, raw_end, length)
+    read_v2_payload_and_padding(source, raw_start, raw_end, length, byte_reader)
 }
 
 /// Reads only the v2 raw payload and zero padding, never a certificate table.
@@ -222,6 +255,7 @@ fn read_v2_payload_and_padding(
     raw_start: u64,
     raw_end: u64,
     length: usize,
+    byte_reader: V2ByteReader,
 ) -> Result<ExpectedAppIdentityV2, PackError> {
     let mut payload = [0_u8; MAX_PAYLOAD_BYTES];
     let (payload, _) = payload.split_at_mut(length);
@@ -251,5 +285,10 @@ fn read_v2_payload_and_padding(
         }
         offset += step as u64;
     }
-    ExpectedAppIdentityV2::decode(payload)
+    match byte_reader {
+        V2ByteReader::Production => ExpectedAppIdentityV2::decode(payload),
+        V2ByteReader::LocalDevelopmentObservation => {
+            ExpectedAppIdentityV2::decode_local_development(payload)
+        }
+    }
 }

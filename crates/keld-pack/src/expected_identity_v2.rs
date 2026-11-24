@@ -159,10 +159,10 @@ impl ExpectedAppIdentityV2 {
         Self::decode_for_provider(bytes, PROVIDER_PUBLIC_TRUST)
     }
 
-    /// Private, nonauthorizing local-development byte observer. No Host,
-    /// WinTrust, issuer-policy or installation-permit owner consumes its output.
+    /// Private, nonauthorizing local-development byte decoder for the retained
+    /// PE observer. It is compiled only in the opt-in D-WIRE module or tests;
+    /// no Host, WinTrust, issuer-policy, or permit owner consumes its output.
     /// Production PE readers continue to call `decode` only.
-    #[cfg(test)]
     pub(crate) fn decode_local_development(bytes: &[u8]) -> Result<Self, PackError> {
         Self::decode_for_provider(bytes, PROVIDER_LOCAL_DEVELOPMENT)
     }
