@@ -59,6 +59,23 @@ function Get-TrustedFileSha256([string]$Path) {
     }
 }
 
+# Expected generated metadata hashes must come from the intended serialized
+# bytes, not from a first read of the writable staging path.
+function Get-TrustedBytesSha256([byte[]]$Bytes) {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString($sha256.ComputeHash($Bytes)).Replace('-', '')
+    } finally { $sha256.Dispose() }
+}
+
+function Write-NewStageBytes([string]$Path, [byte[]]$Bytes) {
+    $null = Require-CanonicalLocalPath $Path 'generated stage metadata'
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($Bytes, 0, $Bytes.Length) }
+    finally { $stream.Dispose() }
+}
+
 # Use the actual PSHOME module manifest and its exported binary CmdletInfo,
 # independent of command discovery through PATH, aliases or PSModulePath.
 function Get-TrustedAuthenticodeSignature([string]$Path) {
@@ -146,6 +163,45 @@ function Require-Amd64Pe([string]$Path, [string]$Role) {
         }
     } finally {
         $stream.Dispose()
+    }
+}
+
+# A closed inventory is an exact observation at this cut, not immutable
+# native directory custody. Do not recurse through arbitrary child paths.
+function Require-StageInventory([string]$Root, [object[]]$Images, [string]$Where) {
+    $null = Require-CanonicalLocalPath $Root "$Where directory"
+    $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+    if ($rootItem -isnot [IO.DirectoryInfo]) { Refuse "$Where inventory root is not a directory" }
+    $directories = @('bin', 'recovery', 'bindings')
+    $rootEntries = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop)
+    if ($rootEntries.Count -ne ($directories.Count + 1)) {
+        Refuse "$Where inventory has missing or foreign root entries"
+    }
+    foreach ($item in $rootEntries) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($item.Name -ceq 'manifest.json' -and $item -isnot [IO.FileInfo]) -or
+            ($directories -ccontains $item.Name -and $item -isnot [IO.DirectoryInfo]) -or
+            ($item.Name -cne 'manifest.json' -and $directories -cnotcontains $item.Name)) {
+            Refuse "$Where inventory has an unexpected root entry"
+        }
+    }
+    foreach ($directory in $directories) {
+        $path = Join-Path $Root $directory
+        $null = Require-CanonicalLocalPath $path "$Where inventory $directory"
+        $expected = @($Images | Where-Object {
+            $_.destination.StartsWith(($directory + '/'), [StringComparison]::Ordinal)
+        } | ForEach-Object { [IO.Path]::GetFileName($_.destination) })
+        if ($directory -ceq 'bindings') { $expected += 'keld-mcp-stdio.json' }
+        $children = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop)
+        if ($children.Count -ne $expected.Count) {
+            Refuse "$Where inventory has missing or foreign $directory entries"
+        }
+        foreach ($item in $children) {
+            if ($item -isnot [IO.FileInfo] -or $expected -cnotcontains $item.Name -or
+                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                Refuse "$Where inventory has an unexpected $directory entry"
+            }
+        }
     }
 }
 
@@ -278,8 +334,9 @@ $provider = [ordered]@{
     arguments = @('mcp', 'serve')
 }
 $recipePath = Join-Path $temporary 'bindings/keld-mcp-stdio.json'
-[IO.File]::WriteAllText($recipePath, ($provider | ConvertTo-Json -Depth 4) + "`n", $utf8)
-$recipeDigest = Get-TrustedFileSha256 $recipePath
+$recipeBytes = $utf8.GetBytes(($provider | ConvertTo-Json -Depth 4) + "`n")
+$recipeDigest = Get-TrustedBytesSha256 $recipeBytes
+Write-NewStageBytes $recipePath $recipeBytes
 $manifestImages = @($images | ForEach-Object {
     [ordered]@{
         role = $_.role
@@ -299,7 +356,9 @@ $manifest = [ordered]@{
     nativeKeldProfileAndInstallationAuthority = 'NOT_VERIFIED'
 }
 $manifestPath = Join-Path $temporary 'manifest.json'
-[IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8) + "`n", $utf8)
+$manifestBytes = $utf8.GetBytes(($manifest | ConvertTo-Json -Depth 8) + "`n")
+$manifestSha256 = Get-TrustedBytesSha256 $manifestBytes
+Write-NewStageBytes $manifestPath $manifestBytes
 foreach ($entry in $images) {
     if ((Get-TrustedFileSha256 (Join-Path $temporary $entry.destination)) -cne $entry.sha256) {
         Refuse "staged $($entry.role) changed before manifest closeout"
@@ -308,12 +367,15 @@ foreach ($entry in $images) {
 if ((Get-TrustedFileSha256 $recipePath) -cne $recipeDigest) {
     Refuse 'CLI/provider recipe changed before manifest closeout'
 }
-$manifestSha256 = Get-TrustedFileSha256 $manifestPath
+if ((Get-TrustedFileSha256 $manifestPath) -cne $manifestSha256) {
+    Refuse 'staged manifest changed before publication'
+}
 $null = Require-CanonicalLocalPath $parent 'destination parent'
 $null = Require-CanonicalLocalPath $temporary 'temporary stage'
 if (Test-Path -LiteralPath $OutputDirectory) {
     Refuse 'destination appeared during stage preparation'
 }
+Require-StageInventory $temporary $images 'temporary stage'
 [IO.Directory]::Move($temporary, $OutputDirectory)
 $temporaryCreated = $false
 
@@ -345,6 +407,7 @@ foreach ($entry in $images) {
         Refuse "published image $($entry.role) changed after atomic rename"
     }
 }
+Require-StageInventory $OutputDirectory $images 'published stage'
 } catch {
     $failure = $_
     if ($temporaryCreated) {
