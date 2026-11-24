@@ -235,8 +235,9 @@ fn original_initial_install_flag_without_feature_refuses_before_boot() {
 }
 
 /// The original Host role is deliberately NOT enabled as an installer. An
-/// exact syntactically valid role still refuses before reading its locator or
-/// creating anything, even when the private role feature is compiled.
+/// exact syntactically valid role still reports uncommissioned authority and
+/// leaves the test-owned request directory empty, even with the feature compiled.
+/// This checks refusal and publication, not attempted file opens.
 #[cfg(all(windows, feature = "windows-initial-install"))]
 #[test]
 fn original_exact_initial_install_role_refuses_uncommissioned_authority() {
@@ -254,14 +255,14 @@ fn original_exact_initial_install_role_refuses_uncommissioned_authority() {
     assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
     assert!(
         !request.exists(),
-        "refusal must not create or open a missing untrusted request"
+        "refusal must not create the missing untrusted request"
     );
     assert_eq!(
         std::fs::read_dir(fixture.path())
             .expect("inspect test-owned refusal directory")
             .count(),
         0,
-        "original role refusal must not publish any artifact"
+        "original role refusal must leave the test-owned directory empty"
     );
 }
 
