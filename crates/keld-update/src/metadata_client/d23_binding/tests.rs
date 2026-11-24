@@ -416,7 +416,9 @@ fn d23_nonready_history_refuses_before_old_role_reads() {
 #[cfg(windows)]
 #[test]
 fn persisted_d23_history_reopen_detects_corruption_and_never_grants_authority() {
-    use crate::records::{decode_metadata_current, encode_metadata_current};
+    use crate::records::{
+        decode_metadata_current, decode_metadata_generation, encode_metadata_current,
+    };
     use std::fs::{self, File};
     use std::io::Write;
 
@@ -429,11 +431,15 @@ fn persisted_d23_history_reopen_detects_corruption_and_never_grants_authority() 
     let generation_path = scratch.path().join("generation.json");
     let timestamp_path = scratch.path().join("timestamp.json");
     let snapshot_path = scratch.path().join("snapshot.json");
+    let root_path = scratch.path().join("root.json");
+    let targets_path = scratch.path().join("targets.json");
     for (path, bytes) in [
         (&current_path, current_bytes.as_slice()),
         (&generation_path, generation_bytes.as_slice()),
         (&timestamp_path, TIMESTAMP),
         (&snapshot_path, SNAPSHOT),
+        (&root_path, ROOT),
+        (&targets_path, TARGETS),
     ] {
         let mut file = File::create(path).unwrap();
         file.write_all(bytes).unwrap();
@@ -456,7 +462,16 @@ fn persisted_d23_history_reopen_detects_corruption_and_never_grants_authority() 
     // No same qualified D90 lease or authenticated TUF root exists in this
     // fixture. Even matching bytes must still refuse the actual closed intake.
     assert_eq!(
-        verify_ready_revision_against_recorded_generation(roles(), &prior).unwrap_err(),
+        verify_ready_revision_against_recorded_generation(
+            SignedRoleBytes {
+                root: &fs::read(&root_path).unwrap(),
+                timestamp: &history.timestamp,
+                snapshot: &history.snapshot,
+                targets: &fs::read(&targets_path).unwrap(),
+            },
+            &decode_metadata_generation(&fs::read(&generation_path).unwrap()).unwrap(),
+        )
+        .unwrap_err(),
         MetadataClientRefusal::TufClientNotQualified
     );
     fs::write(&timestamp_path, b"Timestamp-envelope").unwrap();
