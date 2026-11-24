@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::{self, ErrorKind};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
@@ -14,6 +15,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::thread;
 use std::time::Instant;
+use std::time::UNIX_EPOCH;
 
 unsafe extern "C" {
     #[link_name = "kill"]
@@ -176,6 +178,39 @@ fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
     // behind still fails the cleanup assertions.
     let owned = PlantedSessionDir::create(pid, "left-by-this-host");
     assert_eq!(census.dirs_for(pid), [owned.path().to_path_buf()]);
+}
+
+fn leftover_fixture_pid(process_id: u32) -> u32 {
+    0x8000_0000 | process_id
+}
+
+#[test]
+fn leftover_fixture_cleanup_is_independent_between_processes() {
+    let root = tempfile::tempdir().expect("isolated shared session root");
+    let path_for = |pid| root.path().join(format!("kb-{pid:x}-stale-before-launch"));
+    let first = path_for(leftover_fixture_pid(41));
+    let second = path_for(leftover_fixture_pid(42));
+    fs::create_dir_all(&first).expect("first process leaves its fixture");
+    fs::create_dir_all(&second).expect("second process leaves its fixture");
+    fs::remove_dir(&first).expect("first process cleans its fixture");
+    assert!(
+        second.is_dir(),
+        "first cleanup removed the second process fixture"
+    );
+    fs::remove_dir(&second).expect("second process cleans its fixture");
+
+    // Old fixed-PID setup permits two runs to share one path. Schedule the
+    // first cleanup before the second: the second deterministically fails.
+    let shared = path_for(0xdead_beef_u32);
+    fs::create_dir_all(&shared).expect("old first process fixture");
+    fs::create_dir_all(&shared).expect("old second process shared fixture");
+    fs::remove_dir(&shared).expect("old first process cleanup");
+    assert_eq!(
+        fs::remove_dir(&shared)
+            .expect_err("old shared-path cleanup must collide")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
 }
 
 #[test]
@@ -362,6 +397,72 @@ pub(crate) fn process_state(pid: u32) -> String {
     }
 }
 
+#[test]
+fn session_census_exempts_only_the_same_ordinary_prelaunch_object() {
+    let root = tempfile::tempdir().expect("scan root");
+    let stale = root.path().join("kb-deadbef0-before launch");
+    let alias = root.path().join("kb-deadbef0-symlink");
+    fs::create_dir(&stale).expect("create stale directory");
+    std::os::unix::fs::symlink(&stale, &alias).expect("create matching symlink");
+    let census = SessionDirCensus::before_launch_in(vec![root.path().to_path_buf()]);
+    let baseline = census.watcher_baseline(0xdead_bef0);
+    assert_eq!(baseline.len(), 1);
+    assert!(baseline[0].ends_with(" kb-deadbef0-before launch"));
+    assert_eq!(census.dirs_for(0xdead_bef0), std::slice::from_ref(&alias));
+
+    // Hold the old object under a different name so its inode cannot be reused.
+    fs::rename(&stale, root.path().join("retired")).expect("move prelaunch object");
+    fs::create_dir(&stale).expect("create a new directory at the same name");
+    let mut observed = census.dirs_for(0xdead_bef0);
+    observed.sort();
+    assert_eq!(observed, [stale, alias]);
+}
+
+#[test]
+fn watcher_roots_preserve_the_frozen_census_roots_and_aliases() {
+    let temp = tempfile::tempdir().expect("scan parent");
+    let root = temp.path().join("configured tmpdir");
+    let alias = temp.path().join("root alias");
+    fs::create_dir(&root).expect("create configured root");
+    std::os::unix::fs::symlink(&root, &alias).expect("alias configured root");
+    let name = "kb-deadbef0-ordinary";
+    fs::create_dir(root.join(name)).expect("plant ordinary directory");
+    let census = SessionDirCensus::before_launch_in(vec![root.clone(), alias.clone()]);
+
+    let roots = census.watcher_roots().expect("watcher roots");
+    assert_eq!(
+        roots,
+        ["2", root.to_str().unwrap(), alias.to_str().unwrap()]
+    );
+    let keys = census.watcher_baseline(0xdead_bef0);
+    assert_eq!(keys.len(), 1, "alias must not duplicate the fingerprint");
+    assert!(keys[0].ends_with(name));
+    assert_eq!(census.watcher_baseline(1), [] as [&str; 0]);
+}
+
+#[test]
+fn watcher_roots_refuse_unrepresentable_arguments_before_launch() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    for roots in [
+        vec![],
+        vec![PathBuf::from("/tmp"); 4],
+        vec![PathBuf::from("relative root")],
+        vec![PathBuf::from("/bad\nroot")],
+        vec![PathBuf::from("/bad\rroot")],
+        vec![PathBuf::from("/bad\0root")],
+        vec![PathBuf::from(OsString::from_vec(vec![b'/', 0xff]))],
+        vec![PathBuf::from(format!("/{}", "x".repeat(8191)))],
+    ] {
+        let census = SessionDirCensus {
+            roots,
+            existing: HashSet::new(),
+        };
+        assert_eq!(census.watcher_roots(), None);
+    }
+}
+
 /// The `kb-*` bootstrap session directories that existed before a host launch.
 ///
 /// The bootstrap names each session directory `kb-<pid hex>-<nonce>` in one of
@@ -373,7 +474,7 @@ pub(crate) fn process_state(pid: u32) -> String {
 /// one that this host leaves behind.
 pub(crate) struct SessionDirCensus {
     roots: Vec<PathBuf>,
-    existing: HashSet<(PathBuf, u64, u64)>,
+    existing: HashSet<String>,
 }
 
 impl SessionDirCensus {
@@ -388,49 +489,186 @@ impl SessionDirCensus {
     }
 
     /// Records the session directories under `roots`.
-    fn before_launch_in(roots: Vec<PathBuf>) -> Self {
-        let existing = session_dir_entries(&roots, |_| true).collect();
+    pub(super) fn before_launch_in(roots: Vec<PathBuf>) -> Self {
+        let existing = session_dir_entries(&roots, |_| true)
+            .expect("complete prelaunch session directory census")
+            .into_iter()
+            .filter_map(|(path, metadata)| session_dir_key(&path, &metadata.ok()?))
+            .collect();
         Self { roots, existing }
     }
 
-    /// Session directories for `pid` that did not exist at the census, each
-    /// reported once even when the scan roots overlap.
+    /// Validate and encode the frozen roots before launching the host.
+    pub(crate) fn watcher_roots(&self) -> Option<Vec<String>> {
+        if !(1..=3).contains(&self.roots.len()) {
+            return None;
+        }
+        let mut args = vec![self.roots.len().to_string()];
+        let mut bytes = 0;
+        for root in &self.roots {
+            let encoded = root.to_str()?;
+            if !root.is_absolute() || encoded.contains(['\n', '\r', '\0']) {
+                return None;
+            }
+            bytes += encoded.len() + 1;
+            if bytes > 8192 {
+                return None;
+            }
+            args.push(encoded.to_owned());
+        }
+        Some(args)
+    }
+
+    /// Ordinary prelaunch objects for this PID, encoded for the native watcher.
+    pub(crate) fn watcher_baseline(&self, pid: u32) -> Vec<&str> {
+        let prefix = format!("kb-{pid:x}-");
+        let mut bytes = 0;
+        let mut entries = Vec::new();
+        for entry in &self.existing {
+            // The basename is the last field. The preceding fields are numeric.
+            if entry
+                .splitn(7, ' ')
+                .nth(6)
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
+                bytes += entry.len() + 1;
+                if bytes > 8192 {
+                    // Do not treat a truncated baseline as complete. With no
+                    // exemptions, any matching observed name fails the test.
+                    return Vec::new();
+                }
+                entries.push(entry.as_str());
+            }
+        }
+        entries
+    }
+
+    /// Matching paths that are new or could not be verified, reported once
+    /// when scan roots overlap and the identity is known.
     pub(crate) fn dirs_for(&self, pid: u32) -> Vec<PathBuf> {
         let prefix = format!("kb-{pid:x}-");
+        let mut seen = HashSet::new();
         session_dir_entries(&self.roots, |name| name.starts_with(&prefix))
-            .filter(|entry| !self.existing.contains(entry))
-            .map(|(path, _, _)| path)
+            .expect("complete postlaunch session directory census")
+            .into_iter()
+            .filter_map(|(path, metadata)| match metadata {
+                Ok(metadata) => {
+                    let prelaunch = session_dir_key(&path, &metadata)
+                        .is_some_and(|key| self.existing.contains(&key));
+                    (!prelaunch && seen.insert((metadata.dev(), metadata.ino()))).then_some(path)
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(_) => Some(path), // Listed, but not proven absent or prelaunch.
+            })
             .collect()
     }
 }
 
-/// `(path, device, inode)` for each `kb-*` entry under `roots` whose name
-/// passes `keep`. `TMPDIR=/tmp` or a symlinked root (macOS `/tmp` is
-/// `/private/tmp`) makes roots overlap, so each `(device, inode)` is yielded
-/// once, under the first path that reached it.
-fn session_dir_entries<'a>(
-    roots: &'a [PathBuf],
-    keep: impl Fn(&str) -> bool + 'a,
-) -> impl Iterator<Item = (PathBuf, u64, u64)> + 'a {
-    let mut seen = HashSet::new();
-    roots
-        .iter()
-        .flat_map(|base| {
-            fs::read_dir(base)
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-        })
-        .filter(move |entry| {
-            let name = entry.file_name();
+/// Shared with the Swift observer: numeric fields plus the complete basename.
+/// The name makes the key path-alias independent without exempting a rename.
+/// Unsupported creation time and unrepresentable names are not exemptions.
+fn session_dir_key(path: &Path, metadata: &fs::Metadata) -> Option<String> {
+    if !metadata.is_dir() {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    let born = metadata.created().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    if born.is_zero() {
+        return None;
+    }
+    Some(format!(
+        "{} {} {} {} {} {} {name}",
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+        born.as_secs(),
+        born.subsec_nanos(),
+    ))
+}
+
+type SessionMetadata = (PathBuf, io::Result<fs::Metadata>);
+
+/// The configured temp root is required. Fallback roots may be absent,
+/// but failure to open or iterate an existing root is not evidence of absence.
+fn session_dir_entries(
+    roots: &[PathBuf],
+    keep: impl Fn(&str) -> bool,
+) -> io::Result<Vec<SessionMetadata>> {
+    let mut observed = Vec::new();
+    for (index, root) in roots.iter().enumerate() {
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if index != 0 && error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(session_scan_error(root, &error)),
+        };
+        visit_session_paths(
+            entries.map(|entry| entry.map(|entry| entry.path())),
+            &keep,
+            |path| {
+                // Preserve lookup errors for names observed by the enumerator.
+                let metadata = fs::symlink_metadata(&path);
+                observed.push((path, metadata));
+            },
+        )
+        .map_err(|error| session_scan_error(root, &error))?;
+    }
+    Ok(observed)
+}
+
+fn session_scan_error(root: &Path, error: &io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("scan session root {}: {error}", root.display()),
+    )
+}
+
+fn visit_session_paths(
+    entries: impl IntoIterator<Item = io::Result<PathBuf>>,
+    keep: &impl Fn(&str) -> bool,
+    mut observe: impl FnMut(PathBuf),
+) -> io::Result<()> {
+    for entry in entries {
+        let path = entry?;
+        if let Some(name) = path.file_name() {
             let name = name.to_string_lossy();
-            name.starts_with("kb-") && keep(&name)
-        })
-        .filter_map(|entry| {
-            let metadata = fs::symlink_metadata(entry.path()).ok()?;
-            Some((entry.path(), metadata.dev(), metadata.ino()))
-        })
-        .filter(move |&(_, device, inode)| seen.insert((device, inode)))
+            if name.starts_with("kb-") && keep(&name) {
+                observe(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn session_census_allows_only_missing_fallback_roots() {
+    let primary = tempfile::tempdir().expect("scan parent");
+    let root = primary.path().to_path_buf();
+    let missing = root.join("absent");
+    let file = root.join("not a directory");
+    fs::write(&file, b"ordinary file").expect("write non-directory");
+
+    assert!(session_dir_entries(&[root.clone(), missing.clone()], |_| true).is_ok());
+    let error = session_dir_entries(&[missing], |_| true).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+    let error = session_dir_entries(&[root, file], |_| true).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotADirectory);
+}
+
+#[test]
+fn session_census_rejects_partial_enumeration() {
+    let observed_name = PathBuf::from("/fixture/kb-42-observed");
+    for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
+        let mut observed = Vec::new();
+        let error = visit_session_paths(
+            [Ok(observed_name.clone()), Err(io::Error::from(kind))],
+            &|_| true,
+            |path| observed.push(path),
+        )
+        .unwrap_err();
+        assert_eq!(observed, std::slice::from_ref(&observed_name));
+        assert_eq!(error.kind(), kind);
+    }
 }
 
 // SDK sys/event.h ABI and constants, local to this independent macOS test census.

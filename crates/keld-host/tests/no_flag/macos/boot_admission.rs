@@ -1,8 +1,8 @@
 use crate::support::EVENT_DEADLINE;
 use crate::support::TITLE;
-use crate::support::admission::{NativeAbsenceWatcher, PolicyReadFault};
+use crate::support::admission::{NativeAbsenceWatcher, PolicyReadFault, assert_watcher_not_failed};
 use crate::support::control::wait_child_output;
-use crate::support::control::wait_child_output_observing;
+use crate::support::control::{ReapOnDrop, wait_owned_child_output_observing};
 use crate::support::invalid_stage::{InvalidBoot, InvalidPolicy};
 use crate::support::native_window::native_windows;
 use crate::support::process::{SessionDirCensus, await_process_state};
@@ -259,32 +259,40 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
         command.env_remove("KELD_DEV_LEASE");
     }
     let sessions = SessionDirCensus::before_launch();
-    let mut child = command.spawn().expect("start suspended invalid host");
+    let roots = sessions
+        .watcher_roots()
+        .expect("represent exact census roots in watcher arguments");
+    let mut child = ReapOnDrop(command.spawn().expect("start suspended invalid host"));
     // Retain the valid lease writer until the real host has exited. Legacy
     // callers still select the lease-less invalid-stage path above.
-    let _dev_lease = child.stdin.take();
-    let host_pid = child.id();
+    let _dev_lease = child.0.stdin.take();
+    let host_pid = child.0.id();
     await_process_state(host_pid, 'T');
-    let native = watcher.spawn(host_pid);
+    let mut native = Some(watcher.spawn(host_pid, &roots, sessions.watcher_baseline(host_pid)));
     let mut forbidden_control = false;
-    let output = wait_child_output_observing(child, EVENT_DEADLINE, || match listener.accept() {
-        Ok((mut stream, _)) => {
-            forbidden_control = true;
-            stream
-                .write_all(b"QUIT\n")
-                .expect("stop forbidden app through its owned lifecycle path");
+    let output = wait_owned_child_output_observing(child, EVENT_DEADLINE, || {
+        assert_watcher_not_failed(&mut native, case);
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                forbidden_control = true;
+                stream
+                    .write_all(b"QUIT\n")
+                    .expect("stop forbidden app through its owned lifecycle path");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("inspect invalid-stage control: {error}"),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-        Err(error) => panic!("inspect invalid-stage control: {error}"),
     });
     assert!(!forbidden_control, "{case}: Bun entered before preflight");
     assert!(
         !output.status.success(),
         "{case}: invalid boot became success"
     );
-    let native_output = native
-        .wait_with_output()
-        .expect("wait native absence watcher");
+    let native_output = wait_owned_child_output_observing(
+        native.expect("owned native watcher"),
+        EVENT_DEADLINE,
+        || {},
+    );
     assert!(
         native_output.status.success(),
         "{case}: watcher failed: {native_output:?}"
