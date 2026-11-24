@@ -147,7 +147,7 @@ func parseProcessID(_ field: Substring) -> Int32? {
   return Int32(field)
 }
 
-func sample() {
+func sample(requireTarget: Bool = false) {
   let rows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
   for row in rows {
     let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
@@ -184,12 +184,17 @@ func sample() {
     processCensusFailure("invalid process census encoding or incomplete output")
   }
   // This is a sample, not an exhaustive lifecycle trace.
+  var sawTarget = false
   for line in text.dropLast().split(separator: "\n", omittingEmptySubsequences: false) {
     let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
     guard fields.count == 2, let parent = parseProcessID(fields[0]), let child = parseProcessID(fields[1]) else {
       processCensusFailure("invalid process census row")
     }
+    if child == target { sawTarget = true }
     if parent == target { children.insert(Int(child)) }
+  }
+  if requireTarget && !sawTarget {
+    processCensusFailure("initial process census did not contain the stopped target")
   }
 }
 
@@ -216,7 +221,8 @@ func finalSampleRequested() -> Bool {
   }
 }
 
-sample()
+// Rust retains the stopped child until this first sample completes.
+sample(requireTarget: true)
 print("READY")
 fflush(stdout)
 while !finalSampleRequested() { sample() }
@@ -338,12 +344,18 @@ fn native_absence_watcher_rejects_incomplete_process_census() {
     let roots = SessionDirCensus::before_launch_in(vec![fixture.path().to_path_buf()])
         .watcher_roots()
         .expect("encode the private fixture root");
-    let unrelated = format!(" 0 {pid}\n");
+    let target_only = format!(" 0 {pid}\n");
+    let unrelated_only = format!(" 0 {}\n", pid + 1);
     let observed_child = format!(" 0 {pid}\n {pid} 174\n");
     let malformed = format!(" 0 {pid}\n malformed\n");
     let incomplete = format!(" 0 {pid}");
     for (rows, status, expected) in [
-        (unrelated.as_bytes(), "0", Some(b"READY\nDONE\n".as_slice())),
+        (
+            target_only.as_bytes(),
+            "0",
+            Some(b"READY\nDONE\n".as_slice()),
+        ),
+        (unrelated_only.as_bytes(), "0", None),
         (
             observed_child.as_bytes(),
             "0",
@@ -377,6 +389,13 @@ fn native_absence_watcher_rejects_incomplete_process_census() {
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains("process census failed"),
                 "{output:?}"
+            );
+        }
+        if rows == unrelated_only.as_bytes() {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("did not contain the stopped target"),
+                "{output:?}",
             );
         }
     }
