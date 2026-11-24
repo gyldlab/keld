@@ -8,7 +8,7 @@
 
 ## 1. Goal & non-goals
 
-Bind each selected Windows original WebView to its logical Window. The unchanged XML app receives the genuine `WebContents` sender and can reply to the exact source.
+The proposed outcome is to bind each selected Windows original WebView to its logical Window. On a qualified implementation, the unchanged XML app receives the genuine `WebContents` sender and can reply to the exact source.
 
 Reuse the existing document, permission, writer, ledger and ownership boundaries. Keep other Window dialects and the public Electron facade intact. Recovery of a registered route on a surviving document remains GH1404 work.
 
