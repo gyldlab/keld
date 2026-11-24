@@ -390,72 +390,12 @@ try {
         throw 'KEL270_NSIS_BUILD_SOURCE_FORBIDDEN: uncommissioned parallel native authority'
     }
     Write-Output 'KEL270_NSIS_SOURCE_PASS original_host=true user_level=true persistent_target_not_selected=true'
-    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=10 published_native_oracles=4 source_only=true installer=NOT_BUILT signed_release=NOT_RUN'
+    Write-Output 'KEL270_NSIS_NEGATIVE_SUITE_PASS count=10 published_native_oracles=4 source_only=true installer=NOT_BUILT signed_release=NOT_RUN fixture_cleanup=UNQUALIFIED_RETAINED'
 } finally {
-    $expectedFixture = '^keld270-nsis-negative-[a-f0-9]{32}$'
-    if ([IO.Path]::GetDirectoryName($fixture) -cne $env:TEMP -or
-        [IO.Path]::GetFileName($fixture) -cnotmatch $expectedFixture) {
-        throw 'KEL270_NSIS_TEST_CLEANUP: refusing an unowned fixture path'
-    }
-    # Delete only the exact disposable files this test created. Unknown
-    # entries and reparse points cause cleanup refusal, never recursive travel.
-    foreach ($relative in @(
-        'stage/bin/keld-host.exe', 'stage/bin/keld.exe',
-        'stage/bin/keld-role-launcher.exe', 'stage/bin/keld-updater-helper.exe',
-        'stage/recovery/keld-host.exe', 'stage/bindings/keld-mcp-stdio.json',
-        'stage/manifest.json', 'UNCOMMISSIONED-CATALOGUE.bin', 'mutant-builder.ps1',
-        'mutant-signer/mutant-builder.ps1',
-        'mutant-signer/windows_v2_nsis_installer.nsi',
-        'tampered-nsis/windows_v2_nsis_build.ps1',
-        'tampered-nsis/windows_v2_nsis_installer.nsi',
-        'compiler-parent/pre-publication/keld-v2-peruserdirect-UNSIGNED.exe',
-        'compiler-parent/published-output/keld-v2-peruserdirect-UNSIGNED.exe',
-        'compiler-parent/alias-target/keld-v2-peruserdirect-UNSIGNED.exe',
-        'shadow-hash/Get-FileHash.ps1',
-        'shadow-signer/Get-AuthenticodeSignature.ps1',
-        'shadow-modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psm1'
-    )) {
-        $itemPath = Join-Path $fixture $relative
-        $item = Get-Item -LiteralPath $itemPath -Force -ErrorAction SilentlyContinue
-        if ($null -ne $item) {
-            if ($item -isnot [IO.FileInfo] -or
-                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-                throw 'KEL270_NSIS_TEST_CLEANUP: unexpected file type or reparse point'
-            }
-            [IO.File]::Delete($itemPath)
-        }
-    }
-    $link = Join-Path $fixture 'alias'
-    $linkItem = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
-    if ($null -ne $linkItem) {
-        if (($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-            throw 'KEL270_NSIS_TEST_CLEANUP: alias is no longer a reparse point'
-        }
-        [IO.Directory]::Delete($link, $false)
-    }
-    $publishedAliasLink = Join-Path $fixture 'compiler-parent/published-alias'
-    $publishedAliasItem = Get-Item -LiteralPath $publishedAliasLink -Force -ErrorAction SilentlyContinue
-    if ($null -ne $publishedAliasItem) {
-        if (($publishedAliasItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-            throw 'KEL270_NSIS_TEST_CLEANUP: published alias is no longer a reparse point'
-        }
-        [IO.Directory]::Delete($publishedAliasLink, $false)
-    }
-    foreach ($relative in @(
-        'stage/bin', 'stage/recovery', 'stage/bindings', 'stage',
-        'compiler-parent/pre-publication', 'compiler-parent/published-output',
-        'compiler-parent/alias-target', 'compiler-parent', 'outside',
-        'shadow-hash', 'shadow-signer', 'tampered-nsis', 'mutant-signer',
-        'shadow-modules/Microsoft.PowerShell.Security', 'shadow-modules', ''
-    )) {
-        $directory = if ($relative -eq '') { $fixture } else { Join-Path $fixture $relative }
-        $item = Get-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue
-        if ($null -ne $item) {
-            if ($item -isnot [IO.DirectoryInfo] -or
-                (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-                throw 'KEL270_NSIS_TEST_CLEANUP: unexpected directory or reparse point'
-            }
-            [IO.Directory]::Delete($directory, $false)
-        }
-    }
+    # The fixture paths were created and reopened by name, not retained
+    # as owned native objects. Even checking every ancestor cannot authorize
+    # a later delete: another actor can substitute a junction between the
+    # check and the deletion. Keep all entries, including intentional links,
+    # until the test-only retained-handle cleanup contract is commissioned.
+    Write-Warning "KEL270_NSIS_TEST_FIXTURE_RETAINED: $fixture; automatic cleanup refused without retained filesystem identity"
 }
