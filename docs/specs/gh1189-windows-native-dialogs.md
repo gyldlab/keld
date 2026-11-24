@@ -333,6 +333,8 @@ native/FFI amendment precedes production calls.
 - **Blocked by:** B-5; the integrated qualification additionally requires B-4's committed interface handback.
 - Obtain separate scoped test-only approval; this does not approve production integration or resolve B-1.
 - A standalone native API or message-hook fixture may discover mechanism behavior, but cannot close Q-1 or B-2.
+  Record it as preliminary evidence. Even if it uses the same native API or binary, it cannot count as a run of the
+  integrated Core/W2 route unless the accepted interface commits and the actual cancellation and settlement owners participated.
 - Qualify the actual Core/W2/native route using the accepted interface commits and the intended modal entry point.
   Bind the fixture, integration diff, binaries, parent generation, role/profile admission and independent witnesses to those exact inputs.
 - Observe the originating WebView2 callback exit before native entry; issue cancellation and retirement through the actual Core owner.
