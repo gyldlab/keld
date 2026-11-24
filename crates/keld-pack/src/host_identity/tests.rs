@@ -10,6 +10,7 @@ mod fixture;
 mod malformed;
 mod platform;
 mod reader;
+mod signing_relation;
 mod v2;
 mod writer;
 
