@@ -1,7 +1,7 @@
 # Spec: draw.io first-proof product corpus physical partitions (GH-500)
 
-- Status: approved
-Human approval: [GH #500 exact-source implementation approval](https://github.com/gyldlab/keld/issues/500#issuecomment-6383291604), for design commit `284498123e80161042fdf362a62b57f7305fec5b`, original SHA-256 `eb9f2e3fdfcf5d197d09111a2468588d802b446545b06969748436c965ff4ff4`. This status-only amendment changes no design decision.
+- Status: draft
+Historical human approval: [GH #500 exact-source implementation approval](https://github.com/gyldlab/keld/issues/500#issuecomment-6383291604), for design commit `284498123e80161042fdf362a62b57f7305fec5b`, original SHA-256 `eb9f2e3fdfcf5d197d09111a2468588d802b446545b06969748436c965ff4ff4`. Approval of the current revision is pending.
 - Tracker: GH-500
 - Owner: @0monish
 - Updated: 2026-11-22
@@ -415,8 +415,10 @@ None from this documentation-only specification. No new runtime per-frame observ
 
 ## 10. Open questions, blockers & unknowns
 
-**Human spec gate resolved:** the exact GH-500 *physical corpus implementation* plan was
-approved for implementation on 2026-10-24, at the source bytes and receipt cited in the header.
+**Pinned GH-500 approval only; current revision pending:** the 2026-10-24 implementation approval
+applies only to commit `284498123e80161042fdf362a62b57f7305fec5b` and SHA-256
+`eb9f2e3fdfcf5d197d09111a2468588d802b446545b06969748436c965ff4ff4`.
+The changed contract bytes in this revision require their own explicit approval before T1/T2.
 This is not merge, public scoring, product-result, native OS or installer approval. The
 already-approved GH-587 three-kind design and GH-589 scoring specification are consumed
 unchanged; no new choice of single mixed-kind manifest is reopened.
