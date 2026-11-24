@@ -193,8 +193,13 @@ function Require-OrdinaryRunner([string]$ExpectedSid) {
             Refuse 'OS whoami.exe is missing for medium integrity observation'
         }
         $rows = (& $whoami /groups /fo csv /nh | Out-String)
-        if ($LASTEXITCODE -ne 0 -or
-            $rows -notmatch '(?<!\d)S-1-16-8192(?!\d)' -or
+        if ($LASTEXITCODE -ne 0) {
+            Refuse "OS whoami.exe group query failed (exit=$LASTEXITCODE)"
+        }
+        if ($rows -notmatch '(?<!\d)S-1-16-[0-9]+(?!\d)') {
+            Refuse 'OS whoami.exe group query returned no integrity SID'
+        }
+        if ($rows -notmatch '(?<!\d)S-1-16-8192(?!\d)' -or
             $rows -match '(?<!\d)S-1-5-32-544(?!\d)') {
             Refuse 'runner lacks observed medium integrity or retains administrator group'
         }

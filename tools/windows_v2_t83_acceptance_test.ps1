@@ -29,42 +29,51 @@ function Assert-Refuses([string]$Case, [string[]]$Arguments, [string]$Expected) 
 # A terminating KEL270-T83 refusal exits 1. Only named ordinary-runner
 # policy refusals can skip this distinct-role test; API/read failures and
 # unrelated child errors are test failures, not evidence of a token refusal.
+function New-RefusalRecord([string]$Message) {
+    return 'KEL270_T83_CHILD_REFUSAL=' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Message))
+}
+
 function Get-RoleRefusalDisposition([int]$ExitCode, [string]$Output) {
-    # The child console can wrap a terminating error across stderr lines.
-    # Compare raw record text, not PowerShell's decorated display formatting.
-    $diagnostic = [regex]::Replace($Output, '\s+', ' ')
-    if ($ExitCode -eq 1 -and
-        $diagnostic -notmatch 'KEL270_T83_SIGNED_INSTALLED_PASS|KELD_RELEASE_SIGNED_INSTALLED_PASS') {
+    # Only one exact exception record from the isolated child wrapper is
+    # admissible. Other stdout/stderr, multiple records and crashes fail.
+    $match = [regex]::Match($Output, '\AKEL270_T83_CHILD_REFUSAL=([A-Za-z0-9+/]+={0,2})\z')
+    $diagnostic = $Output
+    if ($ExitCode -eq 1 -and $match.Success) {
+        try { $diagnostic = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($match.Groups[1].Value)) }
+        catch { throw "KEL270-T83-TEST unexpected distinct-role child result: exit=$ExitCode output=$Output" }
         $suffix = '; signed Windows v2 installed acceptance NOT_RUN'
         $role = 'KEL270-T83: APP, RECOVERY and installer lack independent roles and distinct signed bytes' + $suffix
-        if ($diagnostic.Contains($role)) { return 'role-refused' }
+        if ($diagnostic -ceq $role) { return 'role-refused' }
         foreach ($reason in @(
             'runner is an administrator or filtered administrator account',
             'runner has a nonordinary primary, elevated, filtered, UIAccess or AppContainer token',
             'runner token session differs from its process session',
             'runner lacks observed medium integrity or retains administrator group'
         )) {
-            if ($diagnostic.Contains(('KEL270-T83: ' + $reason + $suffix))) { return 'token-refused' }
+            if ($diagnostic -ceq ('KEL270-T83: ' + $reason + $suffix)) { return 'token-refused' }
         }
     }
-    throw "KEL270-T83-TEST unexpected distinct-role child result: exit=$ExitCode output=$Output"
+    throw "KEL270-T83-TEST unexpected distinct-role child result: exit=$ExitCode diagnostic=$diagnostic output=$Output"
 }
 
 # The classification oracle is exercised even on an administrator runner.
 # These are diagnostic inputs only, not native ordinary-token acceptance.
-$roleDiagnostic = 'KEL270-T83: APP, RECOVERY and installer lack independent roles and distinct signed bytes; signed Windows v2 installed acceptance NOT_RUN'
-$tokenDiagnostic = 'KEL270-T83: runner has a nonordinary primary, elevated, filtered, UIAccess or AppContainer token; signed Windows v2 installed acceptance NOT_RUN'
+$roleDiagnostic = New-RefusalRecord 'KEL270-T83: APP, RECOVERY and installer lack independent roles and distinct signed bytes; signed Windows v2 installed acceptance NOT_RUN'
+$tokenDiagnostic = New-RefusalRecord 'KEL270-T83: runner has a nonordinary primary, elevated, filtered, UIAccess or AppContainer token; signed Windows v2 installed acceptance NOT_RUN'
 if ((Get-RoleRefusalDisposition 1 $roleDiagnostic) -cne 'role-refused' -or
-    (Get-RoleRefusalDisposition 1 $tokenDiagnostic) -cne 'token-refused' -or
-    (Get-RoleRefusalDisposition 1 ($tokenDiagnostic.Replace('installed acceptance', "installed`r`nacceptance"))) -cne 'token-refused') {
+    (Get-RoleRefusalDisposition 1 $tokenDiagnostic) -cne 'token-refused') {
     throw 'KEL270-T83-TEST role refusal classifier rejected a named refusal'
 }
 foreach ($failure in @(
     @{ code = 1; output = 'unrelated child failure' },
-    @{ code = 1; output = 'KEL270-T83: native token class 8 was not readable (bytes=0 win32=5); signed Windows v2 installed acceptance NOT_RUN' },
+    @{ code = 1; output = (New-RefusalRecord 'KEL270-T83: native token class 8 was not readable (bytes=0 win32=5); signed Windows v2 installed acceptance NOT_RUN') },
+    @{ code = 1; output = (New-RefusalRecord 'KEL270-T83: OS whoami.exe group query failed (exit=1); signed Windows v2 installed acceptance NOT_RUN') },
+    @{ code = 1; output = (New-RefusalRecord 'KEL270-T83: OS whoami.exe group query returned no integrity SID; signed Windows v2 installed acceptance NOT_RUN') },
     @{ code = 2; output = $tokenDiagnostic },
     @{ code = 0; output = $roleDiagnostic },
-    @{ code = 1; output = "$roleDiagnostic KEL270_T83_SIGNED_INSTALLED_PASS" }
+    @{ code = 1; output = "$roleDiagnostic KEL270_T83_SIGNED_INSTALLED_PASS" },
+    @{ code = 1; output = "$tokenDiagnostic`nunrelated child failure" },
+    @{ code = 1; output = "$roleDiagnostic`n$tokenDiagnostic" }
 )) {
     $rejected = $false
     try { $null = Get-RoleRefusalDisposition $failure.code $failure.output }
@@ -74,7 +83,7 @@ foreach ($failure in @(
     }
     if (-not $rejected) { throw 'KEL270-T83-TEST unexpected failure was classified as a skip or pass' }
 }
-Write-Output 'KEL270_T83_ROLE_CLASSIFIER_PASS source_diagnostics_only=true unexpected_failures_refused=5'
+Write-Output 'KEL270_T83_ROLE_CLASSIFIER_PASS source_diagnostics_only=true unexpected_failures_refused=9'
 
 Assert-Refuses 'missing-application-signature' @() 'missing required ApplicationHost'
 
@@ -155,9 +164,34 @@ if (($currentSid -match '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') -and
     # embedded-signed input reads succeed and the reused-role gate must refuse.
     # An unadmitted token itself is also a valid refusal but not role coverage.
     $roleArgs = $application + $recovery + $installer + $installed
+    # Catch the actual terminating exception in the child, before console
+    # formatting can wrap it. The only accepted record is that exact message.
+    $named = [ordered]@{}
+    for ($i = 0; $i -lt $roleArgs.Count; $i += 2) {
+        $named[$roleArgs[$i].Substring(1)] = $roleArgs[$i + 1]
+    }
+    $payload = ConvertTo-Json -InputObject ([ordered]@{ Entrypoint = $gate; Arguments = $named }) -Compress
+    $payload64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
+    $child = @'
+$ErrorActionPreference = 'Stop'
+$values = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')))
+$entrypoint = [string]$values.Entrypoint
+$arguments = @{}
+foreach ($property in $values.Arguments.PSObject.Properties) {
+    $arguments[$property.Name] = [string]$property.Value
+}
+try {
+    & $entrypoint @arguments
+    exit 0
+} catch {
+    [Console]::Out.WriteLine('KEL270_T83_CHILD_REFUSAL=' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Exception.Message)))
+    exit 1
+}
+'@
+    $encodedChild = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($child.Replace('__PAYLOAD__', $payload64)))
     $ErrorActionPreference = 'Continue'
     try {
-        $roleRecords = @(& $powershell '-NoProfile' '-NonInteractive' '-File' $gate @roleArgs 2>&1)
+        $roleRecords = @(& $powershell '-NoProfile' '-NonInteractive' '-EncodedCommand' $encodedChild 2>&1)
         $roleExit = $LASTEXITCODE
         $roleOutput = ($roleRecords | ForEach-Object { $_.ToString() }) -join "`n"
     } finally {
