@@ -194,6 +194,42 @@ try {
         throw 'substituted signed image was published'
     }
     Write-Output 'PASS_SIGNED_SOURCE_SUBSTITUTION_REFUSED'
+    # The publication contains exactly the three intended files. A disposable
+    # unexpected member must prevent a success receipt; retain uncertain output.
+    foreach ($phase in @('before', 'after')) {
+        $inventoryArgs = $common.Clone()
+        $inventoryArgs.OutputDirectory = Join-Path $EvidenceDirectory ('inventory-' + $phase)
+        $injected = Join-Path $EvidenceDirectory ('inventory-' + $phase + '.ps1')
+        $scriptText = [IO.File]::ReadAllText($scriptPath)
+        if ($phase -eq 'before') {
+            $anchor = '    if (Test-Path -LiteralPath $output) { Refuse ''destination appeared before publication'' }'
+            $mutation = '    [IO.File]::WriteAllText((Join-Path $temporary ''unexpected-test-member.txt''), ''fixture-only'')'
+        } else {
+            $anchor = '    $temporary = $null' + [Environment]::NewLine + '    # Publication is not a native custody proof.'
+            $scriptText = $scriptText.Replace("`r`n", "`n")
+            $anchor = $anchor.Replace("`r`n", "`n")
+            $mutation = '    [IO.File]::WriteAllText((Join-Path $output ''unexpected-test-member.txt''), ''fixture-only'')'
+        }
+        if ([regex]::Matches($scriptText, [regex]::Escape($anchor)).Count -ne 1) {
+            throw "inventory test anchor changed: $phase"
+        }
+        $scriptText = $scriptText.Replace($anchor, $mutation + "`n" + $anchor)
+        [IO.File]::WriteAllText($injected, $scriptText)
+        $refused = $false
+        try { & $injected @inventoryArgs | Out-Null }
+        catch {
+            if (!$_.Exception.Message.Contains('unexpected DEV signing inventory count')) { throw }
+            $refused = $true
+        }
+        if (!$refused) { throw "unexpected DEV inventory accepted: $phase" }
+        if ($phase -eq 'before' -and (Test-Path -LiteralPath $inventoryArgs.OutputDirectory)) {
+            throw 'unexpected DEV inventory reached final output'
+        }
+        if ($phase -eq 'after' -and !(Test-Path -LiteralPath (Join-Path $inventoryArgs.OutputDirectory 'unexpected-test-member.txt') -PathType Leaf)) {
+            throw 'uncertain DEV output was not retained'
+        }
+        Write-Output "PASS_UNEXPECTED_DEV_INVENTORY_REFUSED $phase"
+    }
     $signedReceipt = Get-Content -Raw -LiteralPath (Join-Path $common.OutputDirectory 'dev-signing-observation.json') | ConvertFrom-Json
     $a = $common.Clone(); $a.OutputDirectory = Join-Path $EvidenceDirectory 'resign'
     $a.UnsignedImage = Join-Path $common.OutputDirectory $signedReceipt.file; $a.ExpectedUnsignedSha256 = $signedReceipt.signedSha256

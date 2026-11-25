@@ -212,6 +212,21 @@ function Get-ObservedAuthenticode([string]$Path) {
     return (& $cmdlet -LiteralPath $Path)
 }
 
+# Exact publication inventory is an additional observation, not proof of
+# exclusive native directory custody or post-publication immutability.
+function Require-ExactDevInventory([string]$Directory, [string[]]$ExpectedNames) {
+    $null = Require-LocalPath $Directory
+    $members = @(Get-ChildItem -LiteralPath $Directory -Force -ErrorAction Stop)
+    if ($members.Count -ne $ExpectedNames.Count) { Refuse 'unexpected DEV signing inventory count' }
+    foreach ($name in $ExpectedNames) {
+        $match = @($members | Where-Object { $_.Name -ceq $name })
+        if ($match.Count -ne 1 -or $match[0] -isnot [IO.FileInfo] -or
+            ($match[0].Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Refuse 'unexpected DEV signing inventory member'
+        }
+    }
+}
+
 function Read-PublicCertificate([string]$Path, [string]$Expected) {
     $path = Require-LocalPath $Path
     $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -376,6 +391,7 @@ try {
         }
     }
     if (Test-Path -LiteralPath $output) { Refuse 'destination appeared before publication' }
+    Require-ExactDevInventory $temporary @($receipt.file, 'dev-root-public.cer', 'dev-signing-observation.json')
     [IO.Directory]::Move($temporary, $output)
     $temporary = $null
     # Publication is not a native custody proof. Recheck final paths and retain
@@ -391,6 +407,7 @@ try {
             Refuse 'published signing artifact changed after rename'
         }
     }
+    Require-ExactDevInventory $output @($receipt.file, 'dev-root-public.cer', 'dev-signing-observation.json')
     Write-Output 'KEL270_DEV_SIGNED_COPY_ONLY: no native trust, admission, or release qualification claimed'
 } catch {
     if ($null -ne $temporary) {
