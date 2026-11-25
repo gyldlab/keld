@@ -27,6 +27,11 @@ authors = ["GYLDLAB"]
 # GH-1404 reuses GH473's owned macOS reader-queue shutdown join. This exact
 # safe wrapper is already locked via Tao; no version upgrade or public queue.
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
+# Evidence URI admission needs WHATWG host/path normalization; std has no URL parser.
+# Reuse versions already locked transitively (MIT OR Apache-2.0; MSRV <= 1.63).
+# percent-encoding exposes decoded path segments for immutable-reference checks.
+url = "=2.5.9"
+percent-encoding = "=2.3.2"
 keld-core = { path = "crates/keld-core" }
 keld-wv = { path = "crates/keld-wv" }
 keld-ipc = { path = "crates/keld-ipc" }

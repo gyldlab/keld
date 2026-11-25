@@ -21,9 +21,27 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
         return Ok(trimmed.to_owned());
     }
     if let Some(rest) = trimmed.strip_prefix("https://") {
-        let (host, path) = parse_https_host_and_path(rest, trimmed)?;
+        // Preserve strict authority syntax (including empty userinfo/ports) before
+        // WHATWG parsing, which otherwise repairs some malformed inputs.
+        let authority_and_path = rest
+            .split_once(['?', '#'])
+            .map_or(rest, |(prefix, _)| prefix);
+        parse_https_host_and_path(authority_and_path, trimmed)?;
+        if trimmed.bytes().any(|b| b.is_ascii_control()) || authority_and_path.contains('\\') {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{trimmed}` contains ambiguous URL characters"),
+            });
+        }
+        let url = parse_credential_free_https_url(trimmed)?;
+        let host = match url.host() {
+            Some(url::Host::Domain(host)) => host.to_owned(),
+            Some(url::Host::Ipv4(host)) => host.to_string(),
+            Some(url::Host::Ipv6(host)) => host.to_string(),
+            None => String::new(),
+        };
         // Trailing FQDN dots are the same host (RFC 1034); compare once.
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let (path, nested_path) = decoded_policy_paths(url.path(), trimmed)?;
         if host_is_forbidden(&host) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a public https location"),
@@ -42,7 +60,9 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 detail: format!("`{trimmed}` is not a resolvable https URL with a path"),
             });
         }
-        if https_path_is_live_mutable(&host, &path) {
+        if https_path_is_live_mutable(&host, &path)
+            || https_path_is_live_mutable(&host, &nested_path)
+        {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!(
                     "`{trimmed}` has a live branch/tag path; \
@@ -50,7 +70,7 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 ),
             });
         }
-        if !path_has_git_object_id(&path) {
+        if !path_has_git_object_id(&path) || !path_has_git_object_id(&nested_path) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!(
                     "`{trimmed}` has no git object id in the path; \
@@ -58,11 +78,101 @@ pub(super) fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 ),
             });
         }
-        return Ok(trimmed.to_owned());
+        return Ok(url.into());
     }
     Err(EvidenceError::NonNormativeEvidence {
         detail: format!("`{trimmed}` is not https:// or sha256:"),
     })
+}
+
+fn parse_credential_free_https_url(uri: &str) -> Result<url::Url, EvidenceError> {
+    let url = url::Url::parse(uri).map_err(|_| EvidenceError::NonNormativeEvidence {
+        detail: format!("`{uri}` is not a public https location"),
+    })?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: "HTTPS evidence locations must not contain credentials".to_owned(),
+        });
+    }
+    Ok(url)
+}
+
+/// Check both the one-decode URL path and its deeply decoded safety view.
+/// A second decoding pass must never create the only accepted git pin.
+/// The serialized evidence URL is not rewritten here.
+fn decoded_policy_paths(path: &str, original: &str) -> Result<(String, String), EvidenceError> {
+    const POLICY_ESCAPES: &percent_encoding::AsciiSet =
+        &percent_encoding::CONTROLS.add(b'%').add(b'?').add(b'#');
+    let mut segments = Vec::new();
+    let mut nested_segments = Vec::new();
+    for segment in path.split('/') {
+        let malformed_escape = segment
+            .as_bytes()
+            .iter()
+            .enumerate()
+            .any(|(offset, &byte)| {
+                byte == b'%'
+                    && !segment
+                        .as_bytes()
+                        .get(offset + 1..offset + 3)
+                        .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit))
+            });
+        // Reduce percent triplets to a fixed point in one linear pass. A
+        // decoded literal "%a1" filename is safe, but a multi-encoded
+        // slash, backslash, control or dot-only segment is not.
+        let once_decoded: Vec<_> = percent_encoding::percent_decode_str(segment).collect();
+        let decoded = fully_decode_path_segment(segment);
+        if malformed_escape
+            || matches!(once_decoded.as_slice(), b"." | b"..")
+            || once_decoded
+                .iter()
+                .any(|&b| matches!(b, b'/' | b'\\') || b.is_ascii_control())
+            || matches!(decoded.as_slice(), b"." | b"..")
+            || decoded
+                .iter()
+                .any(|&b| matches!(b, b'/' | b'\\') || b.is_ascii_control())
+        {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{original}` has an ambiguous encoded path"),
+            });
+        }
+        // Preserve non-ASCII filename bytes and escaped punctuation in the
+        // policy view. Pin and route tokens use ASCII; the returned URL is unchanged.
+        segments.push(percent_encoding::percent_encode(&once_decoded, POLICY_ESCAPES).to_string());
+        nested_segments
+            .push(percent_encoding::percent_encode(&decoded, POLICY_ESCAPES).to_string());
+    }
+    Ok((segments.join("/"), nested_segments.join("/")))
+}
+
+fn fully_decode_path_segment(segment: &str) -> Vec<u8> {
+    let mut decoded = Vec::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        decoded.push(byte);
+        while let Some(start) = decoded.len().checked_sub(3) {
+            if decoded[start] != b'%' {
+                break;
+            }
+            let (Some(hi), Some(lo)) = (
+                hex_nibble(decoded[start + 1]),
+                hex_nibble(decoded[start + 2]),
+            ) else {
+                break;
+            };
+            decoded.truncate(start);
+            decoded.push((hi << 4) | lo);
+        }
+    }
+    decoded
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Turn citations and local temp *paths*. Not a substring search on https URLs.
@@ -82,26 +192,23 @@ fn is_lead_not_location(uri: &str) -> bool {
 }
 
 fn parse_https_host_and_path(
-    rest: &str,
+    authority_and_path: &str,
     original: &str,
 ) -> Result<(String, String), EvidenceError> {
-    let without_hash = rest.split_once('#').map_or(rest, |(p, _)| p);
-    let without_query = without_hash
-        .split_once('?')
-        .map_or(without_hash, |(p, _)| p);
-    if without_query.is_empty() || authority_has_userinfo(without_query) {
+    if authority_and_path.is_empty() || authority_has_userinfo(authority_and_path) {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{original}` is not a public https location"),
         });
     }
-    if without_query.starts_with('[') {
-        let end = without_query
-            .find(']')
-            .ok_or_else(|| EvidenceError::NonNormativeEvidence {
-                detail: format!("`{original}` is not a resolvable https URL with a path"),
-            })?;
-        let host = without_query[1..end].to_owned();
-        let after = &without_query[end + 1..];
+    if authority_and_path.starts_with('[') {
+        let end =
+            authority_and_path
+                .find(']')
+                .ok_or_else(|| EvidenceError::NonNormativeEvidence {
+                    detail: format!("`{original}` is not a resolvable https URL with a path"),
+                })?;
+        let host = authority_and_path[1..end].to_owned();
+        let after = &authority_and_path[end + 1..];
         let path = match after.strip_prefix(':') {
             Some(port_and_path) => {
                 let path_at =
@@ -134,13 +241,13 @@ fn parse_https_host_and_path(
         };
         return Ok((host, path));
     }
-    if without_query.matches(':').count() > 1 {
+    if authority_and_path.matches(':').count() > 1 {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{original}` is not a resolvable https URL with a path"),
         });
     }
-    let slash = without_query.find('/');
-    let hostport = slash.map_or(without_query, |i| &without_query[..i]);
+    let slash = authority_and_path.find('/');
+    let hostport = slash.map_or(authority_and_path, |i| &authority_and_path[..i]);
     if hostport.is_empty() {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{original}` is not a public https location"),
@@ -157,7 +264,7 @@ fn parse_https_host_and_path(
         }
         None => hostport.to_owned(),
     };
-    let path = slash.map_or(String::new(), |i| without_query[i..].to_owned());
+    let path = slash.map_or(String::new(), |i| authority_and_path[i..].to_owned());
     Ok((host, path))
 }
 
@@ -182,9 +289,8 @@ fn https_port_is_valid(port: &str) -> bool {
 
 fn host_is_forbidden(host: &str) -> bool {
     // Browsers treat a trailing FQDN dot as the same host; `Ipv4Addr` does not.
-    // Literal authority only: no DNS, and no abbreviated-IPv4 parser
-    // (`127.1`, `010.0.0.1`, `1.1`) — those plus DNS-to-private (`nip.io`)
-    // are T1 residuals (easy to mis-classify a public address).
+    // URL parsing has already canonicalized literal IP addresses. No DNS
+    // lookup is performed; DNS-to-private hosts remain a residual risk.
     let h = host.to_ascii_lowercase();
     let h = h.trim_end_matches('.');
     if h.is_empty() || h == "localhost" || h.ends_with(".localhost") {
@@ -200,11 +306,24 @@ fn host_is_forbidden(host: &str) -> bool {
 }
 
 fn ipv4_is_non_public(v4: Ipv4Addr) -> bool {
+    let [a, b, c, d] = v4.octets();
+    // IANA IPv4 Special-Purpose Address Registry: deny non-globally reachable
+    // blocks, plus multicast (not unicast evidence) and reserved space.
+    // 192.0.0.9 and .10 are the registry's globally reachable exceptions.
     v4.is_loopback()
-        || v4.is_unspecified()
         || v4.is_private()
         || v4.is_link_local()
         || ipv4_is_cgnat(v4)
+        || matches!(
+            [a, b, c],
+            [0 | 224..=255, _, _]
+                | [192, 0, 2]
+                | [192, 88, 99]
+                | [198, 18 | 19, _]
+                | [198, 51, 100]
+                | [203, 0, 113]
+        )
+        || ([a, b, c] == [192, 0, 0] && !matches!(d, 9 | 10))
 }
 
 /// RFC 6598 shared address space `100.64.0.0/10` (CGNAT).
@@ -260,26 +379,120 @@ fn path_has_git_object_id(path: &str) -> bool {
 /// `/{owner}/{repo}/{branch}/…` stay live-mutable even when a later segment is
 /// 40- or 64-hex. Commit-pinned `/blob/<object-id>/` is not this case.
 fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
-    if path_has_live_git_ref(path) {
-        return true;
-    }
     let host = host.to_ascii_lowercase();
     let host = host.trim_end_matches('.');
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if host == "raw.githubusercontent.com" {
-        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         return segs
             .get(2)
             .is_some_and(|git_ref| !is_git_object_id(git_ref));
     }
-    false
+    // Once a known provider's route has an immutable ref, later "blob",
+    // "tree", or "raw" components are ordinary directory names.
+    if has_pinned_provider_ref(host, &segs) {
+        return false;
+    }
+    // On an unknown public host, a git object id establishes the immutable
+    // location. Route-like directory names after it are file-path data.
+    // Named providers keep their existing route-position checks above.
+    let generic_host = !matches!(host, "github.com" | "gitlab.com" | "bitbucket.org");
+    // A SHA-looking project or group name is not proof that a later
+    // GitLab/GitHub-style provider route has a pinned revision.
+    if generic_host && generic_host_has_live_provider_ref(&segs) {
+        return true;
+    }
+    path_has_live_git_ref(path, generic_host)
 }
 
-fn path_has_live_git_ref(path: &str) -> bool {
+fn generic_host_has_live_provider_ref(segments: &[&str]) -> bool {
+    let is_route = |segment: &str| {
+        matches!(
+            segment.to_ascii_lowercase().as_str(),
+            "commit" | "commits" | "blob" | "tree" | "raw"
+        )
+    };
+    // GitLab self-hosted instances support nested groups before /-/blob/<ref>.
+    // Only the first provider route is authoritative; later route-like names
+    // in a pinned file path remain directory data.
+    if let Some(route) = segments
+        .windows(3)
+        .find(|part| part[0] == "-" && is_route(part[1]))
+    {
+        return !is_git_object_id(route[2]);
+    }
+    // Gitea uses /<owner>/<repo>/src/branch/<mutable-ref> and
+    // /src/commit/<immutable-sha>. Its /commits/branch/<ref> route is
+    // also mutable, even when a project name resembles a SHA.
+    if segments
+        .get(2)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("commits"))
+    {
+        let ref_kind = segments.get(3).copied().unwrap_or_default();
+        return !is_git_object_id(ref_kind);
+    }
+    // A Bitbucket-like /src/<ref> must
+    // also pin the ref at its actual position.
+    if segments
+        .get(2)
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("src"))
+    {
+        let ref_kind = segments.get(3).copied().unwrap_or_default();
+        return match ref_kind.to_ascii_lowercase().as_str() {
+            "branch" | "tag" => true,
+            "commit" => !segments.get(4).is_some_and(|pin| is_git_object_id(pin)),
+            _ => !is_git_object_id(ref_kind),
+        };
+    }
+    // A GitHub/Gitea-style route follows /<owner>/<repo>/, even when
+    // the owner or repository slug itself looks like a git object id.
+    segments.get(2).is_some_and(|segment| is_route(segment))
+        && !segments
+            .get(3)
+            .is_some_and(|segment| is_git_object_id(segment))
+}
+
+fn has_pinned_provider_ref(host: &str, segments: &[&str]) -> bool {
+    let is_git_route = |segment: &str| {
+        matches!(
+            segment.to_ascii_lowercase().as_str(),
+            "commit" | "commits" | "blob" | "tree" | "raw"
+        )
+    };
+    match host {
+        "github.com" => {
+            segments.get(2).is_some_and(|segment| is_git_route(segment))
+                && segments
+                    .get(3)
+                    .is_some_and(|segment| is_git_object_id(segment))
+        }
+        "gitlab.com" => segments
+            .windows(3)
+            .find(|triple| triple[0] == "-" && is_git_route(triple[1]))
+            .is_some_and(|triple| is_git_object_id(triple[2])),
+        "bitbucket.org" => {
+            segments.get(2) == Some(&"src")
+                && segments
+                    .get(3)
+                    .is_some_and(|segment| is_git_object_id(segment))
+        }
+        _ => false,
+    }
+}
+
+fn path_has_live_git_ref(path: &str, stop_at_immutable_pin: bool) -> bool {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    segments.windows(2).any(|pair| {
+    for pair in segments.windows(2) {
+        if stop_at_immutable_pin && is_git_object_id(pair[0]) {
+            break;
+        }
         let kind = pair[0].to_ascii_lowercase();
-        matches!(kind.as_str(), "blob" | "tree" | "raw") && !is_git_object_id(pair[1])
-    })
+        if matches!(kind.as_str(), "blob" | "tree" | "raw" | "commits")
+            && !is_git_object_id(pair[1])
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_git_object_id(segment: &str) -> bool {
@@ -287,4 +500,52 @@ fn is_git_object_id(segment: &str) -> bool {
         && segment
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ipv4Addr, ipv4_is_non_public, parse_credential_free_https_url};
+
+    #[test]
+    fn parsed_https_urls_reject_credentials() {
+        for uri in [
+            "https://reader@example.com/pinned-evidence",
+            "https://:placeholder@example.com/pinned-evidence",
+        ] {
+            let err = parse_credential_free_https_url(uri).expect_err("credentials are forbidden");
+            assert_eq!(err.code(), "KELD-COMPAT-007");
+        }
+        let uri = "https://example.com/pinned-evidence";
+        let url = parse_credential_free_https_url(uri).expect("no credentials");
+        assert_eq!(url.as_str(), uri);
+    }
+
+    #[test]
+    fn ipv4_policy_classifies_special_use_and_public_unicast() {
+        for (octets, expected_non_public) in [
+            ([0, 1, 2, 3], true),         // This network
+            ([192, 0, 0, 8], true),       // IETF protocol assignments
+            ([192, 0, 0, 9], false),      // PCP anycast
+            ([192, 0, 0, 10], false),     // TURN anycast
+            ([192, 0, 0, 11], true),      // IETF protocol assignments
+            ([192, 0, 2, 1], true),       // TEST-NET-1
+            ([192, 88, 99, 1], true),     // Deprecated 6to4 relay anycast
+            ([198, 18, 0, 1], true),      // Benchmarking lower /16
+            ([198, 19, 255, 254], true),  // Benchmarking upper /16
+            ([198, 51, 100, 1], true),    // TEST-NET-2
+            ([203, 0, 113, 1], true),     // TEST-NET-3
+            ([224, 1, 2, 3], true),       // Multicast
+            ([239, 255, 0, 1], true),     // Multicast upper boundary
+            ([240, 1, 2, 3], true),       // Reserved
+            ([255, 255, 255, 255], true), // Limited broadcast
+            ([8, 8, 8, 8], false),        // Public unicast (classification only)
+        ] {
+            let address = Ipv4Addr::from(octets);
+            assert_eq!(
+                ipv4_is_non_public(address),
+                expected_non_public,
+                "{address}"
+            );
+        }
+    }
 }
