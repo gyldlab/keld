@@ -272,7 +272,18 @@ fn nsis_fixture_ordinary_cleanup_after_powershell_payload_refusal() {
 
 #[test]
 fn nsis_fixture_ordinary_cleanup_retains_independent_extra_file() {
+    use std::io::Read as _;
+
     let fixture = Fixture::new();
+    let sibling_name = format!("{}-sibling", fixture.root_name);
+    let sibling_path = fixture.path.with_file_name(&sibling_name);
+    let sibling_bytes = b"independent ordinary sibling fixture data";
+    let sibling_owner = create_file(
+        &fixture.temp_parent,
+        fixture.path.parent().expect("fixture has a parent"),
+        &sibling_name,
+        sibling_bytes,
+    );
     let extra = create_file(
         &fixture.root,
         &fixture.path,
@@ -315,6 +326,26 @@ fn nsis_fixture_ordinary_cleanup_retains_independent_extra_file() {
         .expect("dispose of our empty test root");
     drop(root_token);
     assert_absent(&temp_parent, &root_name);
+
+    // This ordinary file is outside the fixture. Read its bytes through the
+    // same handle used to confirm its identity, after the fixture has retired.
+    let mut sibling = File::open(&sibling_path).expect("independent outside sibling retained");
+    sibling_owner
+        .require_same(&sibling)
+        .expect("outside sibling identity unchanged");
+    let mut actual_bytes = Vec::new();
+    sibling
+        .read_to_end(&mut actual_bytes)
+        .expect("read independent outside sibling");
+    assert_eq!(actual_bytes.as_slice(), sibling_bytes);
+    drop(sibling);
+
+    // Only the test harness has the sibling's owner token.
+    sibling_owner
+        .remove(&temp_parent, &sibling_name)
+        .expect("retire independently owned outside sibling");
+    drop(sibling_owner);
+    assert_absent(&temp_parent, &sibling_name);
 }
 
 fn run_ordinary_cleanup(bytes: &[u8], run_smoke: bool) -> io::Result<()> {
