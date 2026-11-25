@@ -112,6 +112,7 @@ fn pump_until(deadline: Instant, mut ready: impl FnMut() -> bool) -> bool {
 #[derive(Debug)]
 pub(super) struct Session {
     trace: SharedTrace,
+    held_iframe: Rc<RefCell<Option<wv::ICoreWebView2Deferral>>>,
     work_deadline: Instant,
     cleanup_deadline: Instant,
     profile: PathBuf,
@@ -140,6 +141,7 @@ impl Session {
                 phase: "setup".into(),
                 events: Vec::new(),
             })),
+            held_iframe: Rc::new(RefCell::new(None)),
             work_deadline: started + Duration::from_secs(55),
             cleanup_deadline: started + Duration::from_secs(90),
             profile: profile.to_owned(),
@@ -446,6 +448,10 @@ impl Session {
     pub(super) fn shutdown(&mut self) -> Value {
         self.phase("cleanup");
         let mut faults = Vec::new();
+        let held_frame_exists = self.held_iframe.borrow().is_some();
+        if held_frame_exists && let Err(error) = self.release_held_iframe() {
+            faults.push(format!("release held iframe during cleanup: {error}"));
+        }
         let mut closed = false;
         self.collect_late_creations(&mut faults);
         if self.creation_is_pending() {
