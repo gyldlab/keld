@@ -7,7 +7,7 @@ const workflow = Bun.YAML.parse(source) as Record<string, any>;
 const verify = workflow.jobs.provenance;
 const publish = workflow.jobs.publish;
 const action =
-  "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510";
+  "actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc";
 const githubScript =
   "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3";
 const body = publish.steps[1].with.script as string;
