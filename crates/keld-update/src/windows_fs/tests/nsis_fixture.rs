@@ -169,7 +169,9 @@ fn nsis_fixture_ordinary_cleanup_after_powershell_payload_refusal() {
     let error = run_ordinary_cleanup(b"ordinary fixture mismatch", true)
         .expect_err("the child must refuse different ordinary bytes");
     assert!(
-        error.to_string().contains("fixture content differs"),
+        error
+            .get_ref()
+            .is_some_and(|cause| cause.is::<OwnedFixturePayloadRefused>()),
         "{error}"
     );
 }
@@ -278,19 +280,69 @@ fn read_fixture_through_runner(root: &Path) -> io::Result<()> {
         .arg("-OwnedFixtureSmokeRoot")
         .arg(root)
         .output()?;
-    if output.status.success()
-        && String::from_utf8_lossy(&output.stdout).trim()
-            == "KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true"
-        && output.stderr.is_empty()
-    {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "owned fixture smoke failed: {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
+    classify_owned_fixture_smoke(output.status.code(), &output.stdout, &output.stderr)
+}
+
+#[derive(Debug)]
+struct OwnedFixturePayloadRefused;
+
+impl std::fmt::Display for OwnedFixturePayloadRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("owned fixture payload refused")
     }
+}
+
+impl std::error::Error for OwnedFixturePayloadRefused {}
+
+fn classify_owned_fixture_smoke(
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> io::Result<()> {
+    const PASS: &[u8] = b"KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true";
+    const REFUSAL: &[u8] = b"KEL270_NSIS_OWNED_FIXTURE_SMOKE_REFUSED: fixture content differs";
+    fn is_marker(line: &[u8], marker: &[u8]) -> bool {
+        line.strip_suffix(b"\r\n")
+            .or_else(|| line.strip_suffix(b"\n"))
+            .unwrap_or(line)
+            == marker
+    }
+    if exit_code == Some(0) && is_marker(stdout, PASS) && stderr.is_empty() {
+        return Ok(());
+    }
+    if exit_code == Some(4) && stdout.is_empty() && is_marker(stderr, REFUSAL) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            OwnedFixturePayloadRefused,
+        ));
+    }
+    Err(io::Error::other(format!(
+        "owned fixture smoke had unexpected exit or markers (exit code {exit_code:?})"
+    )))
+}
+
+#[test]
+fn owned_fixture_smoke_classifier_requires_exact_exit_and_single_marker() {
+    let accepted = b"KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true\r\n";
+    let refused = b"KEL270_NSIS_OWNED_FIXTURE_SMOKE_REFUSED: fixture content differs\r\n";
+    assert!(classify_owned_fixture_smoke(Some(0), accepted, b"").is_ok());
+    let is_refusal = |exit, stdout: &[u8], stderr: &[u8]| {
+        classify_owned_fixture_smoke(exit, stdout, stderr)
+            .expect_err("input must not be accepted")
+            .get_ref()
+            .is_some_and(|cause| cause.is::<OwnedFixturePayloadRefused>())
+    };
+    assert!(is_refusal(Some(4), b"", refused));
+    assert!(!is_refusal(Some(0), b"", refused));
+    assert!(!is_refusal(Some(0), accepted, refused));
+    assert!(!is_refusal(Some(4), accepted, refused));
+    assert!(!is_refusal(Some(1), b"", refused));
+    assert!(!is_refusal(None, b"", refused));
+    assert!(!is_refusal(
+        Some(4),
+        b"",
+        b"something else: fixture content differs"
+    ));
 }
 
 #[test]
@@ -404,5 +456,90 @@ fn nsis_fixture_cleanup_refuses_live_reparse_object() {
         .remove(&fixture.root, "outside")
         .expect("delete owned empty outside fixture");
     drop(outside_token);
+    fixture.finish();
+}
+
+#[test]
+fn nsis_fixture_ordinary_lifecycle_exclusive_creation_and_in_place_rewrite() {
+    use std::io::{Seek as _, SeekFrom};
+
+    let fixture = Fixture::new();
+    let name = "sample";
+    let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
+    let mut created = create_file_relative_with_profile(&fixture.root, name, profile)
+        .expect("create new ordinary sample");
+    created
+        .write_all(b"initial fixture bytes")
+        .expect("write sample");
+    let owner = OwnedFixtureEntry::capture(&created, &fixture.path.join(name), EntryKind::File)
+        .expect("retain the created sample");
+
+    // Keep the original writer open: rewrite does not reopen the name or replace the object.
+    created
+        .seek(SeekFrom::Start(0))
+        .expect("rewind retained sample");
+    created.write_all(b"new").expect("rewrite retained sample");
+    created.set_len(3).expect("truncate original sample");
+    created.sync_all().expect("flush the ordinary sample");
+    owner
+        .require_same(&created)
+        .expect("same sample after rewrite");
+    drop(created);
+
+    let duplicate = create_file_relative_with_profile(&fixture.root, name, profile)
+        .expect_err("exclusive creation must not replace a present sample");
+    assert_eq!(duplicate.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        fs::read(fixture.path.join(name)).expect("check rewritten sample"),
+        b"new"
+    );
+    owner
+        .remove(&fixture.root, name)
+        .expect("retire rewritten sample");
+    drop(owner);
+    assert_absent(&fixture.root, name);
+    fixture.finish();
+}
+
+#[test]
+fn nsis_fixture_ordinary_lifecycle_move_then_retire_child_before_parent() {
+    use super::super::publish_new_record_file;
+
+    let fixture = Fixture::new();
+    let stage_name = "ordinary-stage";
+    let stage =
+        create_directory_relative(&fixture.root, stage_name).expect("create ordinary stage");
+    let stage_path = fixture.path.join(stage_name);
+    let stage_owner = OwnedFixtureEntry::capture(&stage, &stage_path, EntryKind::Directory)
+        .expect("retain created stage");
+    // This private ordinary test owns both leaf names; the move is not a public
+    // authorization primitive. Keep the created object's identity handle live
+    // and require that exact object before using the new name for retirement.
+    let owner = create_file(&stage, &stage_path, "pending-sample", b"ordinary sample");
+    publish_new_record_file(&stage, "pending-sample", "published-sample")
+        .expect("move ordinary file to absent sibling");
+    assert_absent(&stage, "pending-sample");
+    let observed = open_for_delete(&stage, "published-sample", DeletePurpose::Remove)
+        .expect("open ordinary moved sample relative to retained stage");
+    owner
+        .require_same(observed.file())
+        .expect("moved object identity");
+    drop(observed);
+    assert_eq!(
+        fs::read(stage_path.join("published-sample")).expect("read ordinary moved sample"),
+        b"ordinary sample"
+    );
+
+    owner
+        .remove(&stage, "published-sample")
+        .expect("retire owned child");
+    drop(owner);
+    assert_absent(&stage, "published-sample");
+    drop(stage);
+    stage_owner
+        .remove(&fixture.root, stage_name)
+        .expect("retire now-empty owned stage");
+    drop(stage_owner);
+    assert_absent(&fixture.root, stage_name);
     fixture.finish();
 }

@@ -71,16 +71,22 @@ if ($PSCmdlet.ParameterSetName -ceq 'OwnedFixtureSmoke') {
     $sharing = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
     $payload = [IO.File]::Open($payloadPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $sharing)
     try {
+        $matchesExpected = $true
         foreach ($byte in $expected) {
             if ($payload.ReadByte() -ne $byte) {
-                throw 'KEL270_NSIS_OWNED_FIXTURE_SMOKE: fixture content differs'
+                $matchesExpected = $false
+                break
             }
         }
-        if ($payload.ReadByte() -ne -1) {
-            throw 'KEL270_NSIS_OWNED_FIXTURE_SMOKE: fixture content differs'
+        if ($matchesExpected -and $payload.ReadByte() -ne -1) {
+            $matchesExpected = $false
         }
     } finally {
         $payload.Dispose()
+    }
+    if (-not $matchesExpected) {
+        [Console]::Error.WriteLine('KEL270_NSIS_OWNED_FIXTURE_SMOKE_REFUSED: fixture content differs')
+        exit 4
     }
     Write-Output 'KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true'
     return
