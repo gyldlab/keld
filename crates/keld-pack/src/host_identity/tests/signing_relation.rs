@@ -1,5 +1,8 @@
 //! Test-only DEV signing byte relationship. No signature or custody authority.
-use super::*;
+use super::{
+    Bytes, CERTIFICATE_TABLE, CHECKSUM, COFF_END, PackError, admit_structure, fixture, invalid,
+    le16, le32, to_index,
+};
 
 fn relation(unsigned: &[u8], signed: &[u8]) -> Result<(), PackError> {
     let before = admit_structure(&Bytes(unsigned))?;
