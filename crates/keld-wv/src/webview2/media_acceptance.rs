@@ -68,6 +68,20 @@ struct Evidence {
 thread_local! {
     static EVIDENCE: RefCell<Evidence> = RefCell::new(Evidence::default());
     static COM_LIFETIME_PHASES: Cell<bool> = const { Cell::new(false) };
+    static GH814_FIXTURE_RUNTIME_PROBES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Test-only census of native loader calls on the selected fixture thread.
+/// Reset before each fixture generation; a second query is not a receipt of
+/// the constructor's original selected preflight.
+pub(super) fn gh814_record_runtime_probe() {
+    GH814_FIXTURE_RUNTIME_PROBES.with(|probes| probes.set(probes.get() + 1));
+}
+
+/// The failure-only native environment argument oracle. It is absent from
+/// shipping builds and never permits a real COM launch to succeed.
+pub(super) fn gh814_force_fixture_environment_timeout() -> bool {
+    std::env::var_os("KELD_GH814_FIXTURE_FORCE_ENV_TIMEOUT").is_some()
 }
 
 /// Flush each phase before the fixture watchdog can terminate the process.
@@ -78,6 +92,98 @@ pub(super) fn observe_com_phase(stage: &'static str) {
             let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     });
+}
+
+// Test-only native observation. GetModuleHandleW reads the module table of
+// THIS fixture process. A browser version query or an installed file alone
+// cannot establish which Evergreen DLL the failing process loaded.
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    #[link_name = "GetModuleHandleW"]
+    fn gh814_get_module_handle_w(name: *const u16) -> *mut std::ffi::c_void;
+    #[link_name = "GetModuleFileNameW"]
+    fn gh814_get_module_file_name_w(
+        module: *mut std::ffi::c_void,
+        buffer: *mut u16,
+        capacity: u32,
+    ) -> u32;
+}
+
+fn gh814_loaded_module_path(name: &str) -> Result<Option<std::path::PathBuf>, WvError> {
+    use std::os::windows::ffi::OsStringExt as _;
+
+    if name.is_empty() || name.contains('\0') {
+        return Err(failure("invalid module probe name"));
+    }
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: the NUL-terminated name is valid for the duration of this
+    // read-only current-process module query; no module reference is acquired.
+    let handle = unsafe { gh814_get_module_handle_w(wide.as_ptr()) };
+    if handle.is_null() {
+        return Ok(None);
+    }
+    let mut buffer = [0_u16; 4096];
+    let capacity = u32::try_from(buffer.len())
+        .map_err(|_| failure("current-process module path buffer exceeds Win32 capacity"))?;
+    // SAFETY: the handle came from this process's module table; buffer is
+    // writable for exactly capacity UTF-16 units. The API copies a path.
+    let count =
+        unsafe { gh814_get_module_file_name_w(handle, buffer.as_mut_ptr(), capacity) } as usize;
+    if count == 0 || count >= buffer.len() {
+        return Err(failure(
+            "current-process module path query failed or truncated",
+        ));
+    }
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..count]));
+    if !path
+        .file_name()
+        .and_then(|part| part.to_str())
+        .is_some_and(|part| part.eq_ignore_ascii_case(name))
+    {
+        return Err(failure(
+            "current-process module name changed during observation",
+        ));
+    }
+    Ok(Some(path))
+}
+
+fn gh814_module_file_digest(path: &Path) -> Result<String, WvError> {
+    use sha2::Digest as _;
+
+    let mut source = std::fs::File::open(path).map_err(failure)?;
+    let mut sha = sha2::Sha256::new();
+    let mut block = [0_u8; 8 * 1024];
+    loop {
+        let count = source.read(&mut block).map_err(failure)?;
+        if count == 0 {
+            break;
+        }
+        sha.update(&block[..count]);
+    }
+    Ok(format!("{:x}", sha.finalize()))
+}
+
+fn gh814_observe_first_controller(stage: &'static str, apartment: &'static str, digest: bool) {
+    let module = match gh814_loaded_module_path("EmbeddedBrowserWebView.dll") {
+        Ok(None) => String::from("module=not_loaded file_sha256=none"),
+        Err(_) => String::from("module=query_failed file_sha256=none"),
+        Ok(Some(path)) => {
+            let file_hash = if digest {
+                gh814_module_file_digest(&path).unwrap_or_else(|_| String::from("unreadable"))
+            } else {
+                String::from("not_sampled_before_launch")
+            };
+            format!("module=loaded file_sha256={file_hash}")
+        }
+    };
+    // Do not disclose the module path, user profile, PID or COM thread ID.
+    // The file digest describes the on-disk image at observation time, not
+    // immutable mapped bytes. Existing launch-timeout stderr owns the actual
+    // callback-channel, same-STA thread comparison and pump-return evidence.
+    println!(
+        "KELD_GH814_FIRST_CONTROLLER stage={stage} process=current apartment={apartment} {module}"
+    );
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
 pub(super) fn fixture_manifest() -> PermissionsManifest {
@@ -1157,19 +1263,62 @@ mod tests {
         )
     }
 
+    /// Only the native COM lifetime case needs to inspect the exact selected
+    /// constructor preflight. Return the same captured value without asking
+    /// Evergreen a second time outside the original launch lifetime.
+    fn profile_fixture_engine_with_receipt(
+        root: &Path,
+        selection: crate::profile::WebProfileSelection,
+    ) -> Result<(WebView2Engine, Option<String>), WvError> {
+        profile_fixture_engine_with_options_receipt(
+            root,
+            selection,
+            CoreWebView2EnvironmentOptions::default(),
+        )
+    }
+
     fn profile_fixture_engine_with_options(
         root: &Path,
         selection: crate::profile::WebProfileSelection,
         options: CoreWebView2EnvironmentOptions,
     ) -> Result<WebView2Engine, WvError> {
-        runtime_version()?;
+        profile_fixture_engine_with_options_receipt(root, selection, options)
+            .map(|(engine, _receipt)| engine)
+    }
+
+    fn profile_fixture_engine_with_options_receipt(
+        root: &Path,
+        selection: crate::profile::WebProfileSelection,
+        options: CoreWebView2EnvironmentOptions,
+    ) -> Result<(WebView2Engine, Option<String>), WvError> {
+        // This native fixture owns an engine just like production does.
+        // Keep its actual preflight for both environment and controller
+        // failure diagnostics; never re-query Evergreen after a deadline.
+        let preflight_runtime_version = super::super::gh814_engine_preflight_version()?;
+        if gh814_force_fixture_environment_timeout() {
+            // The original selected native preflight, not a second loader
+            // query: compare this to the real failure-side environment log.
+            println!(
+                "KELD_GH814_FIXTURE_SELECTED_PREFLIGHT loader_runtime_version={}",
+                preflight_runtime_version
+                    .as_deref()
+                    .unwrap_or("unavailable")
+            );
+        }
         let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_any_thread(true).with_dpi_aware(false);
         let event_loop = builder.build();
-        let environment =
-            super::super::create_environment_for_profile_with_options(&profile, options)?;
-        WebView2Engine::from_selected_environment(com, event_loop, environment, profile)
+        let environment = super::super::create_environment_for_profile_with_options(
+            &profile,
+            options,
+            preflight_runtime_version.as_deref(),
+        )?;
+        let mut engine =
+            WebView2Engine::from_selected_environment(com, event_loop, environment, profile)?;
+        let selected_receipt = preflight_runtime_version.clone();
+        engine.diagnostic_runtime_version = preflight_runtime_version;
+        Ok((engine, selected_receipt))
     }
 
     fn run_profile_fixture(mut engine: WebView2Engine) -> Result<(), WvError> {
@@ -1556,6 +1705,234 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         Ok(())
     }
 
+    /// Report only the current thread's COM apartment category. This reuses
+    /// the fixture's existing non-mutating apartment query and discloses no
+    /// thread ID, process ID, HRESULT, directory or profile identity.
+    fn gh814_successor_apartment_phase(
+        observation: &windows::core::Result<(
+            windows::Win32::System::Com::APTTYPE,
+            windows::Win32::System::Com::APTTYPEQUALIFIER,
+        )>,
+    ) -> &'static str {
+        use windows::Win32::System::Com::{APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER_NONE};
+
+        match observation {
+            Ok((kind, qualifier))
+                if matches!(*kind, APTTYPE_STA | APTTYPE_MAINSTA)
+                    && *qualifier == APTTYPEQUALIFIER_NONE =>
+            {
+                "successor-apartment-sta-observed"
+            }
+            Ok(_) => "successor-apartment-other-observed",
+            Err(_) => "successor-apartment-query-failed",
+        }
+    }
+
+    fn gh814_assert_initial_engine_sta_apartment(
+        observation: windows::core::Result<(
+            windows::Win32::System::Com::APTTYPE,
+            windows::Win32::System::Com::APTTYPEQUALIFIER,
+        )>,
+    ) -> Result<(), WvError> {
+        use windows::Win32::System::Com::{APTTYPE_MAINSTA, APTTYPE_STA, APTTYPEQUALIFIER_NONE};
+
+        let (kind, qualifier) = observation.map_err(failure)?;
+        assert!(matches!(kind, APTTYPE_STA | APTTYPE_MAINSTA));
+        assert_eq!(qualifier, APTTYPEQUALIFIER_NONE);
+        Ok(())
+    }
+
+    /// Check the real native profile-fixture constructor, not a synthetic
+    /// deadline child: it must retain the loader version it preflighted and
+    /// make that same bounded value available to controller startup.
+    fn gh814_assert_profile_fixture_preflight(
+        engine: &WebView2Engine,
+        observed_runtime: Option<&str>,
+        generation: &str,
+    ) -> Result<(), WvError> {
+        let observed_runtime = observed_runtime
+            .ok_or_else(|| failure("the native fixture selected no Evergreen preflight"))?;
+        let expected = super::super::gh814_validated_preflight_version(observed_runtime)
+            .ok_or_else(|| failure("native Evergreen version failed diagnostic validation"))?;
+        let actual = engine
+            .diagnostic_runtime_version
+            .as_deref()
+            .ok_or_else(|| failure("GH814: fixture discarded the successful native preflight"))?;
+        if actual != expected {
+            return Err(failure(
+                "GH814: fixture did not retain this generation's actual Evergreen preflight",
+            ));
+        }
+        println!(
+            "KELD_GH814_FIXTURE_PREFLIGHT generation={generation} loader_runtime_version={actual}"
+        );
+        Ok(())
+    }
+
+    fn gh814_begin_fixture_query_census() {
+        GH814_FIXTURE_RUNTIME_PROBES.with(|probes| probes.set(0));
+    }
+
+    fn gh814_assert_one_native_loader_query(generation: &str) -> Result<(), WvError> {
+        GH814_FIXTURE_RUNTIME_PROBES.with(|probes| {
+            if probes.get() == 1 {
+                Ok(())
+            } else {
+                Err(failure(format!(
+                    "GH814: {generation} fixture queried Evergreen {} times; expected one exact selected preflight",
+                    probes.get()
+                )))
+            }
+        })
+    }
+
+    /// The real fixture constructor enters the original environment timeout
+    /// with exactly the native preflight it selected, never a late loader
+    /// query or a version recovered from another engine.
+    #[test]
+    fn gh814_fixture_environment_timeout_keeps_selected_preflight() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("current keld-wv native test executable"),
+        )
+        .args([
+            "--exact",
+            "webview2::media_acceptance::tests::gh814_fixture_environment_timeout_child",
+            "--nocapture",
+        ])
+        .env("KELD_GH814_FIXTURE_FORCE_ENV_TIMEOUT", "1")
+        .output()
+        .expect("native fixture environment-timeout oracle child");
+        assert!(
+            output.status.success(),
+            "original typed environment refusal must be retained: {output:?}"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("bounded fixture preflight receipt");
+        let expected = stdout
+            .lines()
+            .find(|line| line.contains("KELD_GH814_FIXTURE_SELECTED_PREFLIGHT"))
+            .and_then(|line| line.split_once("loader_runtime_version="))
+            .map(|(_, version)| version.trim())
+            .expect("exact originally selected native preflight receipt");
+        assert!(
+            super::super::gh814_validated_preflight_version(expected).as_deref() == Some(expected),
+            "the selected native preflight must be bounded dotted digits: {expected}"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("bounded environment timeout log");
+        let emitted = stderr
+            .lines()
+            .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+            .expect("real native environment-timeout evidence");
+        assert!(
+            emitted.contains("phase=environment")
+                && emitted.contains(&format!("loader_runtime_version={expected}"))
+                && emitted.contains("callback_channel_state=not_observed")
+                && !emitted.contains("ThreadId("),
+            "environment did not receive this fixture's exact selected preflight: {emitted}"
+        );
+    }
+
+    /// Test-only real profile fixture, with the unchanged environment WV-009
+    /// waiter forced expired before any COM browser startup. Uses the existing
+    /// fixture watchdog and removes only its own unique test directory.
+    #[test]
+    fn gh814_fixture_environment_timeout_child() -> Result<(), WvError> {
+        if !gh814_force_fixture_environment_timeout() {
+            return Ok(());
+        }
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            let root = profile_fixture_root("gh814-environment-timeout");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let ephemeral = crate::profile::EphemeralProfile::from_host_random([27; 32])?;
+            let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+            let outcome = match profile_fixture_engine(&root, selection) {
+                Ok(engine) => {
+                    drop(engine);
+                    Err(failure(
+                        "expired environment launch incorrectly reached READY",
+                    ))
+                }
+                Err(error)
+                    if error.to_string().contains("KELD-WV-009")
+                        && error.to_string().contains("phase=environment") =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(failure(format!(
+                    "environment launch returned unrelated error: {error}"
+                ))),
+            };
+            std::fs::remove_dir_all(root).map_err(failure)?;
+            outcome
+        })
+    }
+
+    #[test]
+    fn gh814_successor_apartment_phase_distinguishes_sta_mta_and_failed_query() {
+        use windows::Win32::System::Com::{
+            APTTYPE_MAINSTA, APTTYPE_MTA, APTTYPE_STA, APTTYPEQUALIFIER_NONE,
+        };
+
+        for kind in [APTTYPE_STA, APTTYPE_MAINSTA] {
+            assert_eq!(
+                gh814_successor_apartment_phase(&Ok((kind, APTTYPEQUALIFIER_NONE))),
+                "successor-apartment-sta-observed"
+            );
+        }
+        assert_eq!(
+            gh814_successor_apartment_phase(&Ok((APTTYPE_MTA, APTTYPEQUALIFIER_NONE))),
+            "successor-apartment-other-observed"
+        );
+        assert_eq!(
+            gh814_successor_apartment_phase(&Err(windows::core::Error::from(
+                windows::Win32::Foundation::E_POINTER,
+            ))),
+            "successor-apartment-query-failed"
+        );
+    }
+
+    /// Native failure-first control for the same-process DLL observer. Both a
+    /// loaded system DLL and a non-existent module name must yield different
+    /// results. A fixed `loaded` or `not_loaded` answer fails this test.
+    #[test]
+    fn gh814_current_process_module_probe_distinguishes_loaded_and_missing() -> Result<(), WvError>
+    {
+        let loaded = gh814_loaded_module_path("kernel32.dll")?
+            .ok_or_else(|| failure("kernel32.dll must be loaded in this Windows test process"))?;
+        assert!(loaded.is_absolute(), "native module path must be absolute");
+        assert!(
+            loaded
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("kernel32.dll")),
+            "returned native module must match the exact requested DLL"
+        );
+        assert!(
+            gh814_loaded_module_path("gh814-not-loaded-control-20261122.dll")?.is_none(),
+            "an uninstalled module must not be inferred from an Evergreen version or disk file"
+        );
+        Ok(())
+    }
+
+    /// Keep the real first-controller result and its original refusal intact
+    /// while emitting the same-process module and apartment observations.
+    fn gh814_fixture_first_controller(
+        engine: &mut WebView2Engine,
+        apartment_state: impl Fn() -> &'static str,
+    ) -> Result<crate::WebviewId, WvError> {
+        gh814_observe_first_controller("pending", apartment_state(), false);
+        match engine.create(&blank_spec()) {
+            Ok(id) => {
+                gh814_observe_first_controller("ready", apartment_state(), true);
+                Ok(id)
+            }
+            Err(error) => {
+                // Observe after refusal, without delaying or replacing WV-009.
+                gh814_observe_first_controller("failed", apartment_state(), true);
+                Err(error)
+            }
+        }
+    }
+
     #[test]
     #[ignore = "real Windows COM environment ownership and native HWND Close"]
     fn windows_com_engine_lifetime_subprocess() -> Result<(), WvError> {
@@ -1584,18 +1961,12 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let ephemeral = crate::profile::EphemeralProfile::from_host_random([93; 32])?;
             let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
             let plan = super::super::windows_profile_plan(&root, selection)?;
-            let engine = profile_fixture_engine(&root, selection)?;
+            gh814_begin_fixture_query_census();
+            let (engine, initial_runtime) = profile_fixture_engine_with_receipt(&root, selection)?;
+            gh814_assert_one_native_loader_query("initial")?;
+            gh814_assert_profile_fixture_preflight(&engine, initial_runtime.as_deref(), "initial")?;
             observe_com_phase("initial-engine-ready");
-            let (kind, qualifier) = apartment().map_err(failure)?;
-            assert!(matches!(
-                kind,
-                windows::Win32::System::Com::APTTYPE_STA
-                    | windows::Win32::System::Com::APTTYPE_MAINSTA
-            ));
-            assert_eq!(
-                qualifier,
-                windows::Win32::System::Com::APTTYPEQUALIFIER_NONE
-            );
+            gh814_assert_initial_engine_sta_apartment(apartment())?;
             assert_eq!(
                 super::super::environment_user_data_folder(&engine.environment)?,
                 plan.user_data_dir
@@ -1628,10 +1999,25 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let successor = crate::profile::EphemeralProfile::from_host_random([94; 32])?;
             let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
             let next_plan = super::super::windows_profile_plan(&root, successor)?;
-            let mut engine = profile_fixture_engine(&root, successor)?;
+            gh814_begin_fixture_query_census();
+            let (mut engine, successor_runtime) =
+                profile_fixture_engine_with_receipt(&root, successor)?;
+            gh814_assert_one_native_loader_query("successor")?;
+            gh814_assert_profile_fixture_preflight(
+                &engine,
+                successor_runtime.as_deref(),
+                "successor",
+            )?;
             observe_com_phase("successor-engine-ready");
+            // The old hosted failure occurred after engine-ready and before
+            // controller-ready. Sample the existing COM apartment observer
+            // at that exact boundary, before the original launch deadline.
+            // This is a point observation, not proof of later callback delivery.
+            observe_com_phase(gh814_successor_apartment_phase(&apartment()));
             observe_com_phase("successor-create-start");
-            let id = engine.create(&blank_spec())?;
+            let id = gh814_fixture_first_controller(&mut engine, || {
+                gh814_successor_apartment_phase(&apartment())
+            })?;
             observe_com_phase("successor-create-ready");
             let window = &engine.view(id)?.window;
             // SAFETY: this fixture owns the live HWND. Posting the actual Close

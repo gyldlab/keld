@@ -151,6 +151,35 @@ use crate::profile::{
     RecordedProcessObservation, WebProfileSelection, next_windows_lifecycle_action,
 };
 
+/// Only numeric, bounded Evergreen versions can appear in startup diagnostics.
+/// A preflight is owned by the engine that queried it, not by the process:
+/// another engine may observe a newer installed Evergreen version.
+fn gh814_validated_preflight_version(version: &str) -> Option<String> {
+    if version.is_empty()
+        || version.len() > 64
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        None
+    } else {
+        Some(version.to_owned())
+    }
+}
+
+/// Capture one engine's loader version before starting any `WebView2` launch.
+fn gh814_engine_preflight_version() -> Result<Option<String>, WvError> {
+    runtime_version().map(|version| gh814_validated_preflight_version(&version))
+}
+
+#[cfg(test)]
+fn gh814_assert_runtime_probe_is_not_late() {
+    assert!(
+        std::env::var_os("KELD_GH814_FORBID_LATE_RUNTIME_PROBE").is_none(),
+        "GH814: unbounded loader version probe reached after the launch deadline"
+    );
+}
+
 /// Returns the installed `WebView2` Evergreen runtime version.
 ///
 /// This is the detection path Microsoft documents. We deliberately do not read
@@ -166,6 +195,12 @@ pub fn runtime_version() -> Result<String, WvError> {
     use webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString;
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::core::{PCWSTR, PWSTR};
+
+    #[cfg(all(feature = "media-acceptance", test))]
+    media_acceptance::gh814_record_runtime_probe();
+
+    #[cfg(test)]
+    gh814_assert_runtime_probe_is_not_late();
 
     let mut version = PWSTR::null();
     // SAFETY: `PCWSTR::null()` selects the installed Evergreen runtime (the
@@ -366,8 +401,56 @@ pub const WEBVIEW2_STARTUP_BOUND: Duration = EXCLUSIVE_UDF_PROBE_BOUND
     .saturating_add(PROFILE_LAUNCH_DEADLINE)
     .saturating_add(crate::INITIAL_NAVIGATION_DEADLINE);
 
+#[cfg(test)]
 const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";
+/// Preserve the public KELD-WV-009 category while identifying which COM
+/// completion missed its own unchanged launch deadline.
+#[derive(Clone, Copy)]
+enum WebView2LaunchPhase {
+    Environment,
+    Controller,
+}
+
+impl WebView2LaunchPhase {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Environment => "environment",
+            Self::Controller => "controller",
+        }
+    }
+
+    const fn timeout_context(self) -> &'static str {
+        match self {
+            Self::Environment => {
+                "the WebView2 launch deadline expired before the environment or controller completed; phase=environment"
+            }
+            Self::Controller => {
+                "the WebView2 launch deadline expired before the environment or controller completed; phase=controller"
+            }
+        }
+    }
+}
+
+/// Cold COM completion-channel observation. The capture timestamp is taken
+/// when the `WebView2` callback executes, immediately before its channel send.
+/// It does not claim the earlier, unobservable OS/COM event-queue time.
+struct LaunchCallback<T> {
+    captured_at: Instant,
+    captured_on_thread: std::thread::ThreadId,
+    value: T,
+}
+
+impl<T> LaunchCallback<T> {
+    fn captured(value: T) -> Self {
+        Self {
+            captured_at: Instant::now(),
+            captured_on_thread: std::thread::current().id(),
+            value,
+        }
+    }
+}
+
 const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
 const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
 const BROWSER_EXIT_WAKE_UNREGISTERED: &str = "the browser-exit wake could not be registered, so the release barrier could not observe the browser's exit";
@@ -597,24 +680,100 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
 /// bound while the browser process is alive, only the
 /// [`BROWSER_SHUTDOWN_HANG_GUARD`] kill switch.
 fn wait_for_launch_with_message_pump_until<T>(
-    receiver: &Receiver<T>,
+    receiver: &Receiver<LaunchCallback<T>>,
     deadline: Instant,
+    phase: WebView2LaunchPhase,
+    phase_started: Instant,
+    launch_call_returned_at: Instant,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<T, WvError> {
+    // Only compare thread identity with the thread running the COM pump.
+    // A match is not an independent proof of the OS apartment type.
+    let pump_thread = std::thread::current().id();
+    let mut last_pump_returned_at: Option<Instant> = None;
     loop {
-        if Instant::now() >= deadline {
+        let observed_at = Instant::now();
+        if observed_at >= deadline {
+            // Bounded, non-sensitive failure-only telemetry. The stable typed
+            // error remains KELD-WV-009; a queued completion is inspected
+            // only for evidence and can NEVER rescue an expired launch.
+            let (callback_channel_state, callback_captured_ms, callback_thread_relation) =
+                match receiver.try_recv() {
+                    Ok(callback) => (
+                        if callback.captured_at < deadline {
+                            "captured_before_deadline"
+                        } else {
+                            "captured_at_or_after_deadline"
+                        },
+                        Some(
+                            callback
+                                .captured_at
+                                .saturating_duration_since(phase_started)
+                                .as_millis(),
+                        ),
+                        if callback.captured_on_thread == pump_thread {
+                            "matches_pump"
+                        } else {
+                            "different_thread"
+                        },
+                    ),
+                    Err(TryRecvError::Empty) => ("not_observed", None, "not_observed"),
+                    Err(TryRecvError::Disconnected) => {
+                        ("sender_disconnected", None, "not_observed")
+                    }
+                };
+            let callback_captured_ms = callback_captured_ms
+                .map_or_else(|| String::from("none"), |elapsed| elapsed.to_string());
+            let pump_returned_ms = last_pump_returned_at.map_or_else(
+                || String::from("none"),
+                |at| {
+                    at.saturating_duration_since(phase_started)
+                        .as_millis()
+                        .to_string()
+                },
+            );
+            let elapsed_ms = observed_at
+                .saturating_duration_since(phase_started)
+                .as_millis();
+            // The synchronous COM launch may consume the deadline before
+            // this thread can pump a single message. Distinguish that from
+            // an asynchronous completion that did not arrive after a quick
+            // launch return. Both still fail with the original WV-009.
+            let launch_call_returned_ms = launch_call_returned_at
+                .saturating_duration_since(phase_started)
+                .as_millis()
+                .min(u128::from(u16::MAX));
+            let launch_call_deadline_state = if launch_call_returned_at < deadline {
+                "returned_before_deadline"
+            } else {
+                "returned_at_or_after_deadline"
+            };
+            let remaining_ms = deadline
+                .saturating_duration_since(phase_started)
+                .as_millis();
+            // The deadline already expired. This is a caller-owned preflight
+            // value from this exact engine, not a first-ever process cache.
+            // Never query the loader synchronously here: it could block the
+            // typed WV-009 and prevent the Host's original failure cleanup.
+            let runtime = preflight_runtime_version.unwrap_or("unavailable");
+            eprintln!(
+                "KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT phase={} elapsed_ms={elapsed_ms} remaining_ms_at_phase_start={remaining_ms} launch_call_returned_ms={launch_call_returned_ms} launch_call_deadline_state={launch_call_deadline_state} callback_channel_state={callback_channel_state} callback_captured_ms={callback_captured_ms} callback_thread_relation={callback_thread_relation} pump_returned_ms={pump_returned_ms} pump_observed_ms={elapsed_ms} loader_runtime_version={runtime}",
+                phase.name(),
+            );
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
-                LAUNCH_DEADLINE_EXPIRED,
+                phase.timeout_context(),
             ));
         }
         match receiver.try_recv() {
-            Ok(value) => return Ok(value),
+            Ok(callback) => return Ok(callback.value),
             Err(TryRecvError::Disconnected) => {
                 return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
             }
             Err(TryRecvError::Empty) => {}
         }
         pump_message_or_handle(None, milliseconds_until(deadline)?)?;
+        last_pump_returned_at = Some(Instant::now());
     }
 }
 
@@ -1439,18 +1598,25 @@ fn dacl_has_untrusted_access(dacl: &Acl, current_user_sid: &str) -> bool {
 /// model).
 fn create_environment_for_profile(
     profile: &SelectedWindowsProfile,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Environment, WvError> {
-    create_environment_for_profile_with_options(profile, CoreWebView2EnvironmentOptions::default())
+    create_environment_for_profile_with_options(
+        profile,
+        CoreWebView2EnvironmentOptions::default(),
+        preflight_runtime_version,
+    )
 }
 
 fn create_environment_for_profile_with_options(
     profile: &SelectedWindowsProfile,
     options: CoreWebView2EnvironmentOptions,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Environment, WvError> {
     create_environment_for_profile_with_options_until(
         profile,
         options,
         Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        preflight_runtime_version,
     )
 }
 
@@ -1458,12 +1624,37 @@ fn create_environment_for_profile_with_options_until(
     profile: &SelectedWindowsProfile,
     options: CoreWebView2EnvironmentOptions,
     deadline: Instant,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Environment, WvError> {
+    #[cfg(all(feature = "media-acceptance", test))]
+    if media_acceptance::gh814_force_fixture_environment_timeout() {
+        // Test-only deterministic failure at the ACTUAL fixture-to-environment
+        // argument boundary, before COM or profile browser creation. Exercise
+        // the original native typed deadline telemetry with the version
+        // received by this function. No production deadline is modified.
+        let (_sender, receiver) = mpsc::channel::<LaunchCallback<()>>();
+        let expired = Instant::now();
+        return match wait_for_launch_with_message_pump_until(
+            &receiver,
+            expired,
+            WebView2LaunchPhase::Environment,
+            expired,
+            expired,
+            preflight_runtime_version,
+        ) {
+            Err(error) => Err(error),
+            Ok(()) => Err(profile_failure(ProfileErrorKind::LifecycleUnproven)),
+        };
+    }
     // SAFETY: options is private and unpublished. The pinned implementation
     // exposes the documented EnvironmentOptions2 exclusive-UDF property.
     unsafe { options.set_exclusive_user_data_folder_access(true) };
-    let environment =
-        create_environment_with_options_until(&profile.plan.user_data_dir, options, deadline)?;
+    let environment = create_environment_with_options_until(
+        &profile.plan.user_data_dir,
+        options,
+        deadline,
+        preflight_runtime_version,
+    )?;
     let actual = environment_user_data_folder(&environment)?;
     same_directory_as_handle(&actual, &profile.user_data_handle)?;
     validate_profile_acl(&profile.user_data_handle)?;
@@ -1613,6 +1804,7 @@ fn create_environment_with_options(
         directory,
         options,
         Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        None,
     )
 }
 
@@ -1620,7 +1812,9 @@ fn create_environment_with_options_until(
     directory: &std::path::Path,
     options: CoreWebView2EnvironmentOptions,
     deadline: Instant,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Environment, WvError> {
+    let phase_started = Instant::now();
     let user_data = HSTRING::from(directory.as_os_str());
     let (tx, rx) = mpsc::channel();
 
@@ -1637,15 +1831,23 @@ fn create_environment_with_options_until(
                 move |result, environment| {
                     let environment = result
                         .and(environment.ok_or_else(|| windows::core::Error::from(E_POINTER)));
-                    tx.send(environment)
+                    tx.send(LaunchCallback::captured(environment))
                         .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
                 },
             )),
         )
     };
+    let launch_call_returned_at = Instant::now();
     launched.map_err(|error| environment_creation_error("launch", &error))?;
 
-    let environment = wait_for_launch_with_message_pump_until(&rx, deadline)?;
+    let environment = wait_for_launch_with_message_pump_until(
+        &rx,
+        deadline,
+        WebView2LaunchPhase::Environment,
+        phase_started,
+        launch_call_returned_at,
+        preflight_runtime_version,
+    )?;
     environment.map_err(|error| environment_creation_error("completion", &error))
 }
 
@@ -1664,8 +1866,10 @@ fn environment_creation_error(phase: &'static str, error: &windows::core::Error)
 fn create_controller(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Controller, WvError> {
-    create_controller_observed(environment, hwnd).map_err(ControllerCreationError::into_wv_error)
+    create_controller_observed(environment, hwnd, preflight_runtime_version)
+        .map_err(ControllerCreationError::into_wv_error)
 }
 
 enum ControllerCreationError {
@@ -1708,15 +1912,23 @@ impl fmt::Display for ControllerCreationError {
 fn create_controller_observed(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
-    create_controller_observed_until(environment, hwnd, Instant::now() + PROFILE_LAUNCH_DEADLINE)
+    create_controller_observed_until(
+        environment,
+        hwnd,
+        Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        preflight_runtime_version,
+    )
 }
 
 fn create_controller_observed_until(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
     deadline: Instant,
+    preflight_runtime_version: Option<&str>,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
+    let phase_started = Instant::now();
     let (tx, rx) = mpsc::channel();
 
     // SAFETY: `environment` was created on this thread (STA) and `hwnd` is a
@@ -1729,16 +1941,24 @@ fn create_controller_observed_until(
                 move |result, controller| {
                     let controller =
                         result.and(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
-                    tx.send(controller)
+                    tx.send(LaunchCallback::captured(controller))
                         .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
                 },
             )),
         )
     };
+    let launch_call_returned_at = Instant::now();
     launched.map_err(ControllerCreationError::Windows)?;
-    wait_for_launch_with_message_pump_until(&rx, deadline)
-        .map_err(ControllerCreationError::Pump)?
-        .map_err(ControllerCreationError::Windows)
+    wait_for_launch_with_message_pump_until(
+        &rx,
+        deadline,
+        WebView2LaunchPhase::Controller,
+        phase_started,
+        launch_call_returned_at,
+        preflight_runtime_version,
+    )
+    .map_err(ControllerCreationError::Pump)?
+    .map_err(ControllerCreationError::Windows)
 }
 
 fn webview_browser_process_id(webview: &ICoreWebView2) -> Option<u32> {
@@ -1893,6 +2113,7 @@ fn prove_exclusive_udf_released_on_hwnd(
         profile,
         CoreWebView2EnvironmentOptions::default(),
         launch_deadline,
+        None,
     ) {
         Ok(environment) => environment,
         Err(error) => return ExclusiveUdfRelease::Unproven(error),
@@ -1930,11 +2151,12 @@ fn probe_exclusive_udf_with_observer(
     receiver: Receiver<Result<(), WvError>>,
     launch_deadline: Instant,
 ) -> ExclusiveUdfRelease {
-    let controller = match create_controller_observed_until(environment, window, launch_deadline) {
-        Ok(controller) => controller,
-        Err(error) if error.is_invalid_state() => return ExclusiveUdfRelease::Busy,
-        Err(error) => return ExclusiveUdfRelease::Unproven(error.into_wv_error()),
-    };
+    let controller =
+        match create_controller_observed_until(environment, window, launch_deadline, None) {
+            Ok(controller) => controller,
+            Err(error) if error.is_invalid_state() => return ExclusiveUdfRelease::Busy,
+            Err(error) => return ExclusiveUdfRelease::Unproven(error.into_wv_error()),
+        };
     // SAFETY: the controller was created on this STA for the live recovery
     // window. No navigation or content is created by this probe.
     let webview = unsafe { controller.CoreWebView2() }.ok();
@@ -2862,6 +3084,10 @@ pub struct WebView2Engine {
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
+    /// Successful loader preflight owned by this engine's launch generation.
+    /// A subsequent engine may have a newer Evergreen version. Never reuse
+    /// this as a claim about the browser DLL that was actually loaded.
+    diagnostic_runtime_version: Option<String>,
     /// Retained validated directory handles and native exclusive lease.
     profile: Option<SelectedWindowsProfile>,
     browser_exit: Option<Receiver<Result<(), WvError>>>,
@@ -2922,7 +3148,7 @@ impl WebView2Engine {
     /// is not installed, so callers fail with install guidance before a window
     /// ever appears.
     pub fn new(selection: WebProfileSelection) -> Result<Self, WvError> {
-        runtime_version()?;
+        let preflight_runtime_version = gh814_engine_preflight_version()?;
         let profile_root = known_local_app_data()?;
         let selected = prepare_profile_before_event_loop(&profile_root, selection);
         #[cfg(feature = "profile-test-root")]
@@ -2938,7 +3164,8 @@ impl WebView2Engine {
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_dpi_aware(false);
         let event_loop = builder.build();
-        let environment_result = create_environment_for_profile(&profile);
+        let environment_result =
+            create_environment_for_profile(&profile, preflight_runtime_version.as_deref());
         #[cfg(feature = "profile-test-root")]
         if let Err(error) = &environment_result {
             eprintln!("KELD_PROFILE_TEST_ENVIRONMENT_FAILED {error}");
@@ -2946,7 +3173,9 @@ impl WebView2Engine {
         let environment = environment_result?;
         #[cfg(feature = "profile-test-root")]
         println!("KELD_PROFILE_TEST_ENVIRONMENT_READY");
-        Self::from_selected_environment(com, event_loop, environment, profile)
+        let mut engine = Self::from_selected_environment(com, event_loop, environment, profile)?;
+        engine.diagnostic_runtime_version = preflight_runtime_version;
+        Ok(engine)
     }
 
     /// Creates the explicit owner-private profile used by unsigned dev hosts.
@@ -2990,6 +3219,7 @@ impl WebView2Engine {
             _com: com,
             event_loop: Some(event_loop),
             environment,
+            diagnostic_runtime_version: None,
             profile: None,
             browser_exit: None,
             browser_exit_environment: None,
@@ -3592,7 +3822,11 @@ impl WebEngine for WebView2Engine {
             .map_err(|e| WvError::Window(e.to_string()))?;
 
         let hwnd = HWND(window.hwnd() as _);
-        let controller = create_controller(&self.environment, hwnd)?;
+        let controller = create_controller(
+            &self.environment,
+            hwnd,
+            self.diagnostic_runtime_version.as_deref(),
+        )?;
         // SAFETY: controller was created on this thread a moment ago.
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|err| WvError::Webview(format!("controller returned no webview: {err}")))?;
@@ -3916,23 +4150,232 @@ mod tests {
     }
 
     #[test]
-    fn real_controller_launch_deadline_keeps_its_profile_failure_kind() {
-        let (_sender, receiver) = std::sync::mpsc::channel::<()>();
-        let observed =
-            super::wait_for_launch_with_message_pump_until(&receiver, std::time::Instant::now())
-                .expect_err("a deadline that already elapsed must refuse before pumping messages");
-        let error = super::ControllerCreationError::Pump(observed).into_wv_error();
-        let WvError::ProfileSelection(profile) = error else {
-            panic!("the real pump deadline must preserve its typed profile error: {error}");
-        };
-        assert_eq!(profile.kind(), ProfileErrorKind::LifecycleUnproven);
-        let message = profile.to_string();
-        assert!(message.contains("KELD-WV-009"), "{message}");
-        assert!(
-            message.contains(super::LAUNCH_DEADLINE_EXPIRED),
-            "{message}"
+    fn real_launch_deadline_reports_exact_com_phase_and_preserves_error_kind() {
+        use super::{LaunchCallback, WebView2LaunchPhase};
+
+        for (phase, expected, unexpected) in [
+            (
+                WebView2LaunchPhase::Environment,
+                "phase=environment",
+                "phase=controller",
+            ),
+            (
+                WebView2LaunchPhase::Controller,
+                "phase=controller",
+                "phase=environment",
+            ),
+        ] {
+            let (_sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<()>>();
+            let started = std::time::Instant::now();
+            let observed = super::wait_for_launch_with_message_pump_until(
+                &receiver, started, phase, started, started, None,
+            )
+            .expect_err("an expired COM launch must refuse before pumping messages");
+            let error = super::ControllerCreationError::Pump(observed).into_wv_error();
+            let WvError::ProfileSelection(profile) = error else {
+                panic!("the real pump deadline must retain its typed profile error: {error}");
+            };
+            assert_eq!(profile.kind(), ProfileErrorKind::LifecycleUnproven);
+            let message = profile.to_string();
+            assert!(message.contains("KELD-WV-009"), "{message}");
+            assert!(
+                message.contains(super::LAUNCH_DEADLINE_EXPIRED),
+                "{message}"
+            );
+            assert!(message.contains(expected), "{message}");
+            assert!(!message.contains(unexpected), "{message}");
+            assert!(!message.contains("KELD-WV-008"), "{message}");
+        }
+
+        // A successfully completed asynchronous COM callback remains accepted
+        // before the same deadline; the diagnostic path cannot invent failure.
+        let (sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<u32>>();
+        sender
+            .send(LaunchCallback::captured(17))
+            .expect("queue callback before deadline");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            super::wait_for_launch_with_message_pump_until(
+                &receiver,
+                started + std::time::Duration::from_secs(1),
+                WebView2LaunchPhase::Controller,
+                started,
+                started,
+                None,
+            )
+            .expect("ready callback before deadline"),
+            17,
         );
-        assert!(!message.contains("KELD-WV-008"), "{message}");
+    }
+
+    /// Exercise consecutive simulated engine versions or the real Evergreen
+    /// preflight in the test child's own process and unchanged native waiter.
+    fn gh814_generation_timeout_oracle(phase: super::WebView2LaunchPhase) -> bool {
+        use super::LaunchCallback;
+        let Some(scenario) = std::env::var("KELD_GH814_GENERATION_ORACLE").ok() else {
+            return false;
+        };
+        // Two consecutive generations share one physical Windows process but
+        // receive distinct preflight versions. No Evergreen upgrade is needed:
+        // the injected version values isolate the handoff from the OS runtime.
+        let preflights = match scenario.as_str() {
+            "two" => ["111.1.1.1", "222.2.2.2"]
+                .into_iter()
+                .map(super::gh814_validated_preflight_version)
+                .collect::<Vec<_>>(),
+            "real" => vec![
+                super::gh814_engine_preflight_version().expect("real Windows Evergreen preflight"),
+            ],
+            _ => panic!("unknown test-owned generation oracle"),
+        };
+        for preflight in preflights {
+            let (_sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<()>>();
+            let started = std::time::Instant::now();
+            let fault = super::wait_for_launch_with_message_pump_until(
+                &receiver,
+                started,
+                phase,
+                started,
+                started,
+                preflight.as_deref(),
+            )
+            .expect_err("each expired generation must refuse the original launch");
+            assert!(fault.to_string().contains("KELD-WV-009"), "{fault}");
+        }
+        true
+    }
+
+    /// Captures the actual emitted timeout line in a separate test process.
+    /// Merely preserving typed metadata would not satisfy this contract.
+    #[test]
+    fn gh814_launch_timeout_log_child() {
+        use super::LaunchCallback;
+        let Ok(label) = std::env::var("KELD_GH814_LAUNCH_LOG_PHASE") else {
+            return;
+        };
+        let phase = match label.as_str() {
+            "environment" => super::WebView2LaunchPhase::Environment,
+            "controller" => super::WebView2LaunchPhase::Controller,
+            _ => panic!("unknown test-owned launch phase"),
+        };
+        if gh814_generation_timeout_oracle(phase) {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel::<LaunchCallback<()>>();
+        // Both artificial callback times are already in the past when the
+        // waiter runs. This tests ordering without relying on a timed sleep,
+        // a live WebView2 environment or an assumed COM queue timestamp.
+        let started = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("test monotonic clock must support one second of history");
+        let case = std::env::var("KELD_GH814_CALLBACK_QUEUE_CASE")
+            .unwrap_or_else(|_| String::from("none"));
+        let deadline = if case == "none" {
+            started
+        } else {
+            started + std::time::Duration::from_millis(500)
+        };
+        // Synthetic timestamps test the emitted distinction without sleeping
+        // or extending any production deadline.
+        let launch_call_returned_at = match std::env::var("KELD_GH814_LAUNCH_CALL_CASE").as_deref()
+        {
+            Ok("before") | Err(_) => started + std::time::Duration::from_millis(100),
+            Ok("at") => started + std::time::Duration::from_millis(500),
+            Ok("after") => started + std::time::Duration::from_millis(600),
+            Ok(_) => panic!("unknown test-owned synchronous launch case"),
+        };
+        match case.as_str() {
+            "before" => sender
+                .send(LaunchCallback {
+                    captured_at: started + std::time::Duration::from_millis(250),
+                    captured_on_thread: std::thread::current().id(),
+                    value: (),
+                })
+                .expect("queue synthetic pre-deadline callback"),
+            "after" => sender
+                .send(LaunchCallback {
+                    captured_at: started + std::time::Duration::from_millis(750),
+                    captured_on_thread: std::thread::current().id(),
+                    value: (),
+                })
+                .expect("queue synthetic late callback"),
+            "foreign_before" => {
+                std::thread::spawn(move || {
+                    sender
+                        .send(LaunchCallback {
+                            captured_at: started + std::time::Duration::from_millis(250),
+                            captured_on_thread: std::thread::current().id(),
+                            value: (),
+                        })
+                        .expect("queue cross-thread pre-deadline callback");
+                })
+                .join()
+                .expect("capture and send on an independent real thread");
+            }
+            "disconnected" => drop(sender),
+            "none" => {}
+            _ => panic!("unknown test-owned callback case"),
+        }
+        let failure = super::wait_for_launch_with_message_pump_until(
+            &receiver,
+            deadline,
+            phase,
+            started,
+            launch_call_returned_at,
+            None,
+        )
+        .expect_err("expired native launch must fail even with a callback");
+        assert!(
+            failure.to_string().contains("KELD-WV-009"),
+            "original lifecycle failure category changed"
+        );
+    }
+
+    #[test]
+    fn gh814_launch_timeout_emits_exact_phase_and_bounded_runtime() {
+        for (phase, unexpected) in [
+            ("environment", "phase=controller"),
+            ("controller", "phase=environment"),
+        ] {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current keld-wv test executable"),
+            )
+            .args([
+                "--exact",
+                "webview2::tests::gh814_launch_timeout_log_child",
+                "--nocapture",
+            ])
+            .env("KELD_GH814_LAUNCH_LOG_PHASE", phase)
+            .output()
+            .expect("launch isolated WebView2 diagnostic child");
+            assert!(
+                output.status.success(),
+                "the test-owned child must preserve typed WV-009: {output:?}"
+            );
+            let stderr = String::from_utf8(output.stderr).expect("UTF-8 phase diagnostic");
+            let emitted = stderr
+                .lines()
+                .find(|line| line.contains("KELD_GH814_WEBVIEW2_LAUNCH_TIMEOUT"))
+                .expect("real emitted timeout diagnostic");
+            assert!(emitted.contains(&format!("phase={phase}")), "{emitted}");
+            assert!(!emitted.contains(unexpected), "{emitted}");
+            assert!(emitted.contains("elapsed_ms="), "{emitted}");
+            assert!(
+                emitted.contains("remaining_ms_at_phase_start=0"),
+                "{emitted}"
+            );
+            let runtime = emitted
+                .split_once("loader_runtime_version=")
+                .expect("bounded Evergreen loader version")
+                .1;
+            assert!(
+                !runtime.is_empty()
+                    && runtime.len() <= 64
+                    && (runtime == "unavailable"
+                        || runtime.bytes().all(|b| b.is_ascii_digit() || b == b'.')),
+                "unbounded or unrecognized version: {emitted}"
+            );
+        }
     }
 
     #[test]
