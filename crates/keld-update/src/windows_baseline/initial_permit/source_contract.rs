@@ -186,12 +186,11 @@ pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError>
     let prepared = prepare_bootstrap_lock(roots)?;
     create_prepared_bootstrap_lock(prepared)
 }
-struct PreparedBootstrapLock {
+struct PreparedBootstrapLock<'a> {
     update: File,
-    profile: keld_guard::WindowsInstallProtectionProfile,
+    roots: &'a Roots,
 }
-fn prepare_bootstrap_lock(roots: &Roots) -> Result<PreparedBootstrapLock, UpdateError> {
-    let profile = roots.profile();
+fn prepare_bootstrap_lock(roots: &Roots) -> Result<PreparedBootstrapLock<'_>, UpdateError> {
     let install = roots.install().map_err(|cause| error("install root", cause))?;
     let update_name = roots.trust.installation.update_root.file_name()
         .and_then(|value| value.to_str()).ok_or_else(|| error("topology", "update name absent"))?;
@@ -200,10 +199,13 @@ fn prepare_bootstrap_lock(roots: &Roots) -> Result<PreparedBootstrapLock, Update
     exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
     let update = roots.update.try_clone()
         .map_err(|cause| error("exclusive bootstrap parent", cause))?.into_std_file();
-    Ok(PreparedBootstrapLock { update, profile })
+    Ok(PreparedBootstrapLock { update, roots })
 }
-fn create_prepared_bootstrap_lock(prepared: PreparedBootstrapLock) -> Result<File, UpdateError> {
-    let PreparedBootstrapLock { update, profile } = prepared;
+fn create_prepared_bootstrap_lock(
+    prepared: PreparedBootstrapLock<'_>,
+) -> Result<File, UpdateError> {
+    let PreparedBootstrapLock { update, roots } = prepared;
+    let profile = roots.profile();
     let lock = create_file_relative_exclusive_with_profile(&update, "bootstrap.lock", profile)
         .map_err(|cause| error("exclusive bootstrap lock", cause))?;
     keld_guard::validate_windows_install_file(&lock, profile)
