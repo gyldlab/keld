@@ -292,6 +292,88 @@ describe("original preload runtime only", () => {
       f.restore();
     }
   });
+  test("an acknowledged unwatch releases its watch owner but a failed unwatch preserves it", () => {
+    const f = fixture();
+    try {
+      const path = "/test/watch-lifecycle.xml";
+      const released: number[] = [];
+      f.page.document.addEventListener(
+        "__keld_page_refusal_data_v1",
+        (event) => {
+          released.push((event as CustomEvent<number>).detail);
+        },
+      );
+      let events = 0;
+      function request(action: string, listener?: () => void) {
+        const call = f.call(
+          "request",
+          { action, path, listener },
+          () => {},
+          () => {},
+        );
+        const { reqId } = decodeEndpointArguments(
+          new Uint8Array(f.sends().at(-1)!.payload as number[]),
+        )[0] as { reqId: number };
+        return { call: call.call as number, reqId };
+      }
+      const watch = request("watchFile", () => events++);
+      f.event("mainResp", [{ reqId: watch.reqId, data: true }]);
+      const denied = request("unwatchFile");
+      f.event("mainResp", [{ reqId: denied.reqId, error: "not stopped" }], 2);
+      expect(released).not.toContain(watch.call);
+      f.event("fileChanged", [{ path, curr: 1, prev: 0 }], 3);
+      expect(events).toBe(1);
+      const stopped = request("unwatchFile");
+      f.event("mainResp", [{ reqId: stopped.reqId, data: true }], 4);
+      expect(released.filter((call) => call === watch.call)).toHaveLength(1);
+    } finally {
+      f.restore();
+    }
+  });
+
+  test("an acknowledged stop does not retire a newer watch on the same path", () => {
+    const f = fixture();
+    try {
+      const path = "/test/watch-renewed.xml";
+      const released: number[] = [];
+      f.page.document.addEventListener(
+        "__keld_page_refusal_data_v1",
+        (event) => {
+          released.push((event as CustomEvent<number>).detail);
+        },
+      );
+      function request(action: string) {
+        const call = f.call(
+          "request",
+          action === "watchFile"
+            ? { action, path, listener: () => {} }
+            : { action, path },
+          () => {},
+          () => {},
+        );
+        const { reqId } = decodeEndpointArguments(
+          new Uint8Array(f.sends().at(-1)!.payload as number[]),
+        )[0] as { reqId: number };
+        return { call: call.call as number, reqId };
+      }
+      const pending = request("watchFile");
+      const stopped = request("unwatchFile");
+      const newer = request("watchFile");
+      f.event("mainResp", [{ reqId: newer.reqId, data: true }]);
+      f.event("mainResp", [{ reqId: stopped.reqId, data: true }], 2);
+      expect(released).not.toContain(pending.call);
+      expect(released).not.toContain(newer.call);
+      f.event("mainResp", [{ reqId: pending.reqId, data: true }], 3);
+      expect(released.filter((call) => call === pending.call)).toHaveLength(1);
+      expect(
+        f.event("fileChanged", [{ path, curr: 1, prev: 0 }], 4).disposition,
+      ).toEqual({
+        status: "consumed",
+      });
+    } finally {
+      f.restore();
+    }
+  });
   test("replacing completed same-path watches retires prior callbacks without losing other paths", () => {
     const f = fixture();
     try {

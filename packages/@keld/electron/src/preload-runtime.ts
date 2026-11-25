@@ -377,6 +377,7 @@ export function installApp(
       active: boolean;
       message: number;
       watchPath?: string;
+      watchStopped?: boolean;
       unwatchPath?: string;
     }
   >();
@@ -385,7 +386,7 @@ export function installApp(
   let invoking:
     | { call: number; bytes: number; watch: boolean; watchBytes: number }
     | undefined;
-  function retireSupersededWatch(call: number): void {
+  function retireUnownedWatch(call: number): void {
     // The prior original listener no longer owns this path. A still-pending
     // response, however, must retain its own callbacks until it completes.
     if (
@@ -939,17 +940,31 @@ export function installApp(
           if (req && typeof response.reqId === "number") {
             requests.delete(response.reqId);
             charged -= req.bytes;
-            if (!response.error && req.watchPath) {
+            if (!response.error && req.watchPath && !req.watchStopped) {
               activeWatches.add(req.watchPath);
               const previous = watches.get(req.watchPath);
               if (previous === undefined || previous < req.call) {
                 watches.set(req.watchPath, req.call);
-                if (previous !== undefined) retireSupersededWatch(previous);
+                if (previous !== undefined) retireUnownedWatch(previous);
               }
             }
-            if (!response.error && req.unwatchPath)
-              activeWatches.delete(req.unwatchPath);
-            if (req.watchPath) retireSupersededWatch(req.call);
+            if (!response.error && req.unwatchPath) {
+              const path = req.unwatchPath;
+              const owner = watches.get(path);
+              if (owner === undefined || owner < req.call) {
+                activeWatches.delete(path);
+                if (owner !== undefined) {
+                  watches.delete(path);
+                  retireUnownedWatch(owner);
+                }
+              }
+              // An older pending response still owns its response callbacks,
+              // but it cannot reacquire event delivery after this stop.
+              for (const pending of requests.values())
+                if (pending.watchPath === path && pending.call < req.call)
+                  pending.watchStopped = true;
+            }
+            if (req.watchPath) retireUnownedWatch(req.call);
             else if (![...watches.values()].includes(req.call))
               releaseCall(req.call);
           }
