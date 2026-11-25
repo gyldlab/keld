@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const app = readFileSync(new URL("./app.ts", import.meta.url), "utf8");
-const cancelStart = app.indexOf("function emitCancelable(");
+const cancelStart = app.indexOf("function createAppEvent(");
 const cancelEnd = app.indexOf(
   "\n/** Electron event names and application listeners",
   cancelStart,

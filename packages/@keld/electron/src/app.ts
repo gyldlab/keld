@@ -59,10 +59,9 @@ function emit(event: string, ...args: unknown[]): boolean {
   return listenerFailed;
 }
 
-/** Listener failures have the same canceling effect as preventDefault. */
-function emitCancelable(eventName: string): boolean {
+function createAppEvent() {
   let prevented = false;
-  const event = {
+  return {
     get defaultPrevented(): boolean {
       return prevented;
     },
@@ -70,7 +69,12 @@ function emitCancelable(eventName: string): boolean {
       prevented = true;
     },
   };
-  return emit(eventName, event) || prevented;
+}
+
+/** Listener failures have the same canceling effect as preventDefault. */
+function emitCancelable(eventName: string): boolean {
+  const event = createAppEvent();
+  return emit(eventName, event) || event.defaultPrevented;
 }
 
 /** Electron event names and application listeners have this single owner. */
@@ -295,7 +299,12 @@ function quit(): Promise<void> {
     // The Host remains alive on will-quit veto, including after a previous
     // close removed every window. A later app.quit() must start a fresh D2
     // attempt and emit before-quit/will-quit again.
-    if (emitCancelable("will-quit")) return Promise.resolve();
+    if (emitCancelable("will-quit")) {
+      // Retire before the next same-turn Host notification. An already
+      // canceled attempt no longer owns window-all-closed suppression.
+      fulfillQuitAttempt(attempt);
+      return attempt.promise;
+    }
     // A synchronous will-quit listener may construct another native window.
     // The prior zero-window census is no authority to force-close that window.
     if (
@@ -311,8 +320,10 @@ function quit(): Promise<void> {
     }
     ignoreIfUnawaited(observeReady());
     return apiApp.quit().then(() => {
-      // The terminal owner has accepted the Quit; no event on rejection/veto.
-      emit("quit");
+      // Normal app.quit() has no exit-code argument; 0 describes this
+      // graceful path, not an observed OS process exit. The Event is delivered
+      // after terminal acceptance, so preventDefault cannot reverse it.
+      emit("quit", createAppEvent(), 0);
     });
   });
 }

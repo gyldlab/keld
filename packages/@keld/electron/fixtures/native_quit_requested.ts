@@ -83,6 +83,8 @@ const { captureOriginalWindowQuitScope } = await import("../../api/src/app.ts");
 let before = 0;
 let willQuit = 0;
 let quitEvents = 0;
+let allClosed = 0;
+let quitArgs: unknown[] | undefined;
 const sequence: string[] = [];
 let nested: Promise<void> | undefined;
 app.on("before-quit", (event: unknown) => {
@@ -104,9 +106,15 @@ if (mode?.startsWith("zero-will")) {
     if (mode === "zero-will-veto" || willQuit === 1)
       (event as { preventDefault(): void }).preventDefault();
   });
-  app.on("quit", () => {
+  app.on("window-all-closed", () => {
+    allClosed++;
+  });
+  app.on("quit", (...args: unknown[]) => {
     quitEvents++;
     sequence.push("quit");
+    // Listener exceptions are intentionally isolated. Check arguments
+    // outside the callback so a regression cannot swallow the assertion.
+    quitArgs = args;
   });
 }
 const ready = app.whenReady();
@@ -196,6 +204,8 @@ if (mode?.startsWith("scope-")) {
     mode === "zero-will-retry" ||
     mode === "zero-will-throw"
   ) {
+    handlers.onLastWindowClosed();
+    assert.equal(allClosed, 1, "same-turn notification survives a will-quit veto");
     await nested;
     assert.equal(before, 1);
     assert.equal(willQuit, 1, "will-quit must fire before terminal Quit");
@@ -207,6 +217,20 @@ if (mode?.startsWith("scope-")) {
     assert.equal(willQuit, 2, "retry must emit a fresh will-quit");
     assert.equal(terminals, mode === "zero-will-veto" ? 0 : 1);
     assert.equal(quitEvents, mode === "zero-will-veto" ? 0 : 1);
+    if (mode === "zero-will-veto") {
+      assert.equal(quitArgs, undefined);
+    } else {
+      assert.equal(quitArgs?.length, 2);
+      const event = quitArgs?.[0] as {
+        defaultPrevented: boolean;
+        preventDefault(): void;
+      };
+      assert.equal(event.defaultPrevented, false);
+      assert.equal(quitArgs?.[1], 0);
+      event.preventDefault();
+      assert.equal(event.defaultPrevented, true);
+      assert.equal(admitted, false, "quit listeners cannot undo acceptance");
+    }
     assert.deepEqual(
       sequence,
       mode === "zero-will-veto"
