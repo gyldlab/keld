@@ -3,6 +3,13 @@
 #![cfg(target_os = "linux")]
 #![allow(clippy::expect_used, clippy::panic)] // process and filesystem observations are assertion oracles
 
+fn dev_stage_id(root: &std::path::Path) -> String {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let metadata = std::fs::metadata(root).expect("retained stage identity fixture");
+    format!("{}:{}", metadata.dev(), metadata.ino())
+}
+
 #[path = "no_flag/linux/dev_lifecycle.rs"]
 mod dev_lifecycle;
 #[path = "no_flag/linux/lifecycle.rs"]

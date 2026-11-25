@@ -111,6 +111,10 @@ fn linux_invalid_boot_and_lease_fail_before_app_resources() {
     let invalid_lease = Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .stdin(Stdio::null())
         .output()
         .expect("launch invalid lease");

@@ -8,6 +8,7 @@ use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::native_window::native_window_rows;
 use crate::support::process::{await_process_gone, process_group};
 use crate::support::product::ProductFixture;
+use keld_core::app_session::DEV_STAGE_ID_ENV;
 use std::fs;
 use std::io::{BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -336,6 +337,7 @@ fn public_destroy_fulfills_closed_then_all_closed_before_sync_return() {
         .current_dir(staged.root())
         .env("KELD_T1B_CONTROL", &listener_path)
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -641,6 +643,7 @@ fn public_electron_browser_window_uses_native_host_and_vetoes_unsaved_close() {
         .current_dir(staged.root())
         .env("KELD_T1B_CONTROL", &listener_path)
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -699,7 +702,6 @@ fn public_electron_browser_window_uses_native_host_and_vetoes_unsaved_close() {
         "one destroyed window must never evict the surviving window's close listener"
     );
     await_visible_native_census(host_pid, &initial);
-
     writer
         .write_all(b"QUIT_WHILE_OPEN\n")
         .expect("attempt unsupported non-vetoable application Quit");
@@ -750,6 +752,7 @@ fn external_appkit_close_fails_closed_instead_of_leaving_a_ghost_browser_window(
         .env("KELD_T1B_CONTROL", &listener_path)
         .env("KELD_T1B_UNEXPECTED_NATIVE_CLOSE", "1")
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -816,6 +819,7 @@ fn native_schema_two_subscribe_creates_one_real_app_window_without_authority_lea
         .current_dir(staged.root())
         .env("KELD_T1B_CONTROL", &listener_path)
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1014,6 +1018,7 @@ fn assert_late_package_boot_mode(with_sidecar: bool, recover: bool) {
         .current_dir(staged.root())
         .env("KELD_T1B_CONTROL", &listener_path)
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
         .env("KELD_NATIVE_WINDOW_FACADE", "unknown-caller-value")
         .env("KELD_F2_HAS_SIDECAR", if with_sidecar { "1" } else { "0" })
         .env("KELD_F2_RECOVER", if recover { "1" } else { "0" })
@@ -1149,6 +1154,7 @@ control.end();
         .current_dir(staged.root())
         .env("KELD_T1B_CONTROL", &listener_path)
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
         .env("KELD_NATIVE_WINDOW_FACADE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1213,6 +1219,7 @@ fn no_sidecar_runtime_config_is_refused_before_the_shipping_entry_executes() {
             .process_group(0)
             .current_dir(staged.root())
             .env("KELD_DEV_LEASE", "stdin-v1")
+            .env(DEV_STAGE_ID_ENV, crate::dev_stage_id(staged.root()))
             .env("KELD_F2_ENTRY_MARKER", &marker)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

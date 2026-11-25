@@ -436,6 +436,10 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
     let child = Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .env("KELD_KEL142_ACCEPTANCE_REPORT", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

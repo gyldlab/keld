@@ -36,6 +36,10 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
         .expect("nonblocking navigation control");
     let mut child = Command::new(stage.host())
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .env("KELD_T1B_CONTROL", &control_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -96,6 +100,10 @@ fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
     let attempt_marker = fixture.root.path().join("pre-ready-attempt");
     let mut child = Command::new(stage.host())
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
         .env("KELD_T3_PRE_READY_MARKER", &attempt_marker)
         .stdin(Stdio::piped())
@@ -138,6 +146,10 @@ fn dev_lease_loss_before_initial_bound_is_an_orderly_startup_cancellation() {
     let stage = fixture.stage();
     let mut child = Command::new(stage.host())
         .env("KELD_DEV_LEASE", "stdin-v1")
+        .env(
+            keld_core::app_session::DEV_STAGE_ID_ENV,
+            crate::dev_stage_id(stage.root()),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

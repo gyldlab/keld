@@ -168,6 +168,10 @@ impl ProductFixture {
             .env("KELD_T1B_CONTROL", &control_path)
             .env("KELD_BOOT_PATH", substitution_cwd.join("keld.boot.json"))
             .env("KELD_DEV_LEASE", "stdin-v1")
+            .env(
+                keld_core::app_session::DEV_STAGE_ID_ENV,
+                crate::dev_stage_id(stage.root()),
+            )
             .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
