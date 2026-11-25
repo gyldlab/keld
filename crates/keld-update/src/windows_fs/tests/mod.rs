@@ -4,6 +4,7 @@
 mod creation;
 mod deletion;
 mod enumeration;
+mod nsis_fixture;
 mod rename_binding;
 mod repository_record_boundary;
 mod retained_parent;
