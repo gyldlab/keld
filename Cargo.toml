@@ -24,6 +24,11 @@ repository = "https://github.com/gyldlab/keld"
 authors = ["GYLDLAB"]
 
 [workspace.dependencies]
+# Evidence URI admission needs WHATWG host/path normalization; std has no URL parser.
+# Reuse versions already locked transitively (MIT OR Apache-2.0; MSRV <= 1.63).
+# percent-encoding exposes decoded path segments for immutable-reference checks.
+url = "=2.5.8"
+percent-encoding = "=2.3.2"
 keld-core = { path = "crates/keld-core" }
 keld-wv = { path = "crates/keld-wv" }
 keld-ipc = { path = "crates/keld-ipc" }
