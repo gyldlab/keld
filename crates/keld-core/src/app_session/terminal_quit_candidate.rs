@@ -1,0 +1,487 @@
+//! GH-451 draft transaction candidate; deliberately not registered in Core.
+//! No IPC, native termination, window authority or production behavior is
+//! changed. The existing Host owner must supply these facts under its
+//! transition/current/registry ordering before this can be integrated.
+
+use std::num::{NonZeroU32, NonZeroU64};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Token {
+    generation: NonZeroU32,
+    serial: NonZeroU64,
+}
+
+/// Facts supplied by the existing Host owner, never by the calling app.
+#[derive(Clone, Copy)]
+struct HostFacts {
+    generation: Option<NonZeroU32>,
+    qualified: bool,
+    running: bool,
+    registry_empty: bool,
+    destruction_complete: bool,
+    fs_terminal_drained: bool,
+}
+
+impl HostFacts {
+    fn owns(self, token: Token) -> bool {
+        self.qualified && self.generation == Some(token.generation)
+    }
+
+    fn can_prepare(self) -> bool {
+        self.registry_empty && self.destruction_complete
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Prepared,
+    Draining,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pending {
+    token: Token,
+    phase: Phase,
+    invalidated: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    Idle { cancelled: Option<Token> },
+    Pending(Pending),
+    Committed(Token),
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    Prepared(Token),
+    DrainRequired,
+    AwaitingDrain,
+    Cancelled,
+    Retained,
+    Committed,
+    Refused,
+    Busy,
+    AlreadyTerminal,
+    Unknown,
+}
+
+/// Draft state owned by the existing lifecycle coordinator, not a second
+/// registry. The real owner must serialize every operation with Create,
+/// including preload/adoption, and share the existing terminal reservation.
+/// No new request IDs or wire discriminants are allocated here.
+struct TerminalQuit {
+    serial: u64,
+    state: State,
+}
+
+impl TerminalQuit {
+    fn new() -> Self {
+        Self {
+            serial: 0,
+            state: State::Idle { cancelled: None },
+        }
+    }
+
+    fn prepare(&mut self, facts: HostFacts) -> Outcome {
+        if !facts.qualified || !facts.running {
+            return Outcome::Refused;
+        }
+        let Some(generation) = facts.generation else {
+            return Outcome::Refused;
+        };
+        match self.state {
+            State::Idle { .. } => {}
+            State::Pending(_) => return Outcome::Busy,
+            State::Committed(_) => return Outcome::AlreadyTerminal,
+            State::Unknown => return Outcome::Unknown,
+        }
+        if !facts.can_prepare() {
+            return Outcome::Retained;
+        }
+        let Some(serial) = self.serial.checked_add(1).and_then(NonZeroU64::new) else {
+            return Outcome::Refused;
+        };
+        self.serial = serial.get();
+        let token = Token { generation, serial };
+        self.state = State::Pending(Pending {
+            token,
+            phase: Phase::Prepared,
+            invalidated: false,
+        });
+        Outcome::Prepared(token)
+    }
+
+    /// Call only at the successful existing Create admission cut. The real
+    /// registry remains the sole source of window authority. A failed build
+    /// cannot undo this invalidation; an unadmitted request does not call it.
+    fn admit_create(&mut self) -> bool {
+        match &mut self.state {
+            State::Pending(pending) => pending.invalidated = true,
+            State::Idle { .. } => {}
+            State::Committed(_) | State::Unknown => return false,
+        }
+        true
+    }
+
+    fn cancel(&mut self, token: Token, facts: HostFacts) -> Outcome {
+        if !facts.owns(token) || !facts.running {
+            return Outcome::Refused;
+        }
+        match self.state {
+            State::Idle {
+                cancelled: Some(previous),
+            } if previous == token => Outcome::Cancelled,
+            State::Pending(pending)
+                if pending.token == token && pending.phase == Phase::Prepared =>
+            {
+                self.state = State::Idle {
+                    cancelled: Some(token),
+                };
+                Outcome::Cancelled
+            }
+            State::Committed(_) => Outcome::AlreadyTerminal,
+            State::Unknown => Outcome::Unknown,
+            _ => Outcome::Refused,
+        }
+    }
+
+    /// Begin the reversible reader-dispatch pause. No terminal reservation
+    /// occurs here. The real owner must drain existing FS terminal writes
+    /// while the session is running and without holding the transition locks.
+    fn begin_commit(&mut self, token: Token, facts: HostFacts) -> Outcome {
+        if !facts.owns(token) {
+            return Outcome::Refused;
+        }
+        let State::Pending(mut pending) = self.state else {
+            return self.non_pending_outcome();
+        };
+        if pending.token != token {
+            return Outcome::Refused;
+        }
+        if !facts.running {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
+        }
+        if pending.phase != Phase::Prepared {
+            return Outcome::Busy;
+        }
+        if pending.invalidated || !facts.can_prepare() {
+            self.state = State::Idle { cancelled: None };
+            return Outcome::Retained;
+        }
+        pending.phase = Phase::Draining;
+        self.state = State::Pending(pending);
+        Outcome::DrainRequired
+    }
+
+    /// Model the final guarded cut: recheck all facts, then execute the
+    /// existing terminal reserve exactly once, inside that same cut.
+    /// The closure must not perform cleanup or wait for native/FS work.
+    /// The real reservation result is not inferred from a zero-window count.
+    fn finish_commit(
+        &mut self,
+        token: Token,
+        facts: HostFacts,
+        reserve: impl FnOnce() -> bool,
+    ) -> Outcome {
+        if !facts.owns(token) {
+            return Outcome::Refused;
+        }
+        let State::Pending(pending) = self.state else {
+            return self.non_pending_outcome();
+        };
+        if pending.token != token || pending.phase != Phase::Draining {
+            return Outcome::Refused;
+        }
+        if !facts.running {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
+        }
+        if !facts.fs_terminal_drained {
+            return Outcome::AwaitingDrain;
+        }
+        if pending.invalidated || !facts.can_prepare() {
+            self.state = State::Idle { cancelled: None };
+            return Outcome::Retained;
+        }
+        if !reserve() {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
+        }
+        self.state = State::Committed(token);
+        Outcome::Committed
+    }
+
+    fn non_pending_outcome(&self) -> Outcome {
+        match self.state {
+            State::Committed(_) => Outcome::AlreadyTerminal,
+            State::Unknown => Outcome::Unknown,
+            _ => Outcome::Refused,
+        }
+    }
+
+    /// Only the existing lifecycle owner may report authoritative retirement.
+    /// A late notification cannot cancel a successor or reset terminal state.
+    fn retire_generation(&mut self, generation: NonZeroU32) {
+        if matches!(self.state, State::Pending(p) if p.token.generation == generation)
+            || matches!(self.state, State::Idle { cancelled: Some(t) } if t.generation == generation)
+        {
+            self.state = State::Idle { cancelled: None };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn generation(value: u32) -> NonZeroU32 {
+        NonZeroU32::new(value).expect("fixture generation is nonzero")
+    }
+
+    fn ready(value: u32) -> HostFacts {
+        HostFacts {
+            generation: Some(generation(value)),
+            qualified: true,
+            running: true,
+            registry_empty: true,
+            destruction_complete: true,
+            fs_terminal_drained: true,
+        }
+    }
+
+    fn prepared(quit: &mut TerminalQuit, facts: HostFacts) -> Token {
+        match quit.prepare(facts) {
+            Outcome::Prepared(token) => token,
+            other => panic!("expected prepared token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn physical_destroyed_and_authoritative_empty_are_both_required() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        // CloseRequested or user-facing closed is not physical destruction.
+        assert_eq!(
+            quit.prepare(HostFacts {
+                destruction_complete: false,
+                ..facts
+            }),
+            Outcome::Retained
+        );
+        // Includes Opening, Closing and replacement windows.
+        assert_eq!(
+            quit.prepare(HostFacts {
+                registry_empty: false,
+                ..facts
+            }),
+            Outcome::Retained
+        );
+        assert!(matches!(quit.prepare(facts), Outcome::Prepared(_)));
+    }
+
+    #[test]
+    fn unqualified_or_retired_owner_cannot_prepare() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        for denied in [
+            HostFacts {
+                qualified: false,
+                ..facts
+            },
+            HostFacts {
+                generation: None,
+                ..facts
+            },
+            HostFacts {
+                running: false,
+                ..facts
+            },
+        ] {
+            assert_eq!(quit.prepare(denied), Outcome::Refused);
+        }
+    }
+
+    #[test]
+    fn veto_is_idempotent_and_retry_mints_a_new_token() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let first = prepared(&mut quit, facts);
+        assert_eq!(quit.cancel(first, facts), Outcome::Cancelled);
+        assert_eq!(quit.cancel(first, facts), Outcome::Cancelled);
+        let second = prepared(&mut quit, facts);
+        assert_ne!(first, second);
+        assert_eq!(quit.cancel(first, facts), Outcome::Refused);
+        assert_eq!(quit.begin_commit(first, facts), Outcome::Refused);
+        assert_eq!(quit.begin_commit(second, facts), Outcome::DrainRequired);
+    }
+
+    #[test]
+    fn create_invalidates_even_after_transient_build_failure() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        assert!(quit.admit_create());
+        // The Create (normal/preload/adoption share this cut) failed and
+        // current registry is empty again. The old token stays invalid.
+        assert_eq!(quit.begin_commit(token, facts), Outcome::Retained);
+        assert_ne!(token, prepared(&mut quit, facts));
+    }
+
+    #[test]
+    fn create_during_drain_blocks_commit_even_after_window_disappears() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert!(quit.admit_create());
+        let called = Cell::new(false);
+        assert_eq!(
+            quit.finish_commit(token, facts, || {
+                called.set(true);
+                true
+            }),
+            Outcome::Retained
+        );
+        assert!(!called.get());
+        assert_ne!(token, prepared(&mut quit, facts));
+    }
+
+    #[test]
+    fn fs_terminal_replies_must_finish_before_reservation() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        let count = Cell::new(0);
+        let reserve = || {
+            count.set(count.get() + 1);
+            true
+        };
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert_eq!(
+            quit.finish_commit(
+                token,
+                HostFacts {
+                    fs_terminal_drained: false,
+                    ..facts
+                },
+                reserve
+            ),
+            Outcome::AwaitingDrain
+        );
+        assert_eq!(count.get(), 0);
+        assert_eq!(
+            quit.finish_commit(token, facts, reserve),
+            Outcome::Committed
+        );
+        assert_eq!(count.get(), 1);
+        assert_eq!(
+            quit.finish_commit(token, facts, reserve),
+            Outcome::AlreadyTerminal
+        );
+        assert_eq!(count.get(), 1);
+        assert!(!quit.admit_create());
+    }
+
+    #[test]
+    fn final_recheck_refuses_unreported_live_or_undestroyed_window() {
+        let facts = ready(1);
+        for changed in [
+            HostFacts {
+                registry_empty: false,
+                ..facts
+            },
+            HostFacts {
+                destruction_complete: false,
+                ..facts
+            },
+        ] {
+            let mut quit = TerminalQuit::new();
+            let token = prepared(&mut quit, facts);
+            assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+            assert_eq!(
+                quit.finish_commit(token, changed, || panic!("must not reserve")),
+                Outcome::Retained
+            );
+        }
+    }
+
+    #[test]
+    fn stale_generation_and_late_retirement_cannot_spend_successor_token() {
+        let mut quit = TerminalQuit::new();
+        let old = ready(1);
+        let current = ready(2);
+        let first = prepared(&mut quit, old);
+        quit.retire_generation(generation(1));
+        let second = prepared(&mut quit, current);
+        quit.retire_generation(generation(1));
+        assert_eq!(quit.begin_commit(first, current), Outcome::Refused);
+        assert_eq!(quit.begin_commit(second, old), Outcome::Refused);
+        assert_eq!(quit.begin_commit(second, current), Outcome::DrainRequired);
+        assert_eq!(
+            quit.finish_commit(second, current, || true),
+            Outcome::Committed
+        );
+    }
+
+    #[test]
+    fn competing_shutdown_is_not_a_retryable_retained_outcome() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert_eq!(
+            quit.finish_commit(
+                token,
+                HostFacts {
+                    running: false,
+                    ..facts
+                },
+                || panic!("must not reserve")
+            ),
+            Outcome::Unknown
+        );
+        assert_eq!(quit.prepare(facts), Outcome::Unknown);
+        assert!(!quit.admit_create());
+    }
+
+    #[test]
+    fn failed_terminal_reservation_cannot_reopen_admission() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert_eq!(quit.finish_commit(token, facts, || false), Outcome::Unknown);
+        assert_eq!(
+            quit.finish_commit(token, facts, || panic!("must not reserve again")),
+            Outcome::Unknown
+        );
+        assert_eq!(quit.prepare(facts), Outcome::Unknown);
+        assert!(!quit.admit_create());
+    }
+
+    #[test]
+    fn duplicate_prepare_and_early_commit_cannot_mint_or_reserve() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        assert_eq!(quit.prepare(facts), Outcome::Busy);
+        assert_eq!(
+            quit.finish_commit(token, facts, || panic!("must not reserve")),
+            Outcome::Refused
+        );
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert_eq!(quit.begin_commit(token, facts), Outcome::Busy);
+    }
+
+    #[test]
+    fn serial_exhaustion_refuses_without_wrapping() {
+        let mut quit = TerminalQuit::new();
+        quit.serial = u64::MAX;
+        assert_eq!(quit.prepare(ready(1)), Outcome::Refused);
+        assert_eq!(quit.serial, u64::MAX);
+    }
+}
