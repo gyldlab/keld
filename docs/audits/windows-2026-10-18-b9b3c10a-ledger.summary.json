@@ -6,16 +6,16 @@
     "test": 166
   },
   "candidates": 345,
-  "evidence_sha256": "6b449fdcd9e0b69f8e0c50b0284359ea781f9996200df3e3496f37df409e96be",
-  "manifest_sha256": "5390f1dadb610ddfe5e34b8d6ca66aec18164c70efc68aea2c7707ff311fc5d1",
-  "not_closed": 340,
-  "pending_independent_review": 339,
+  "evidence_sha256": "1da8d0769b408a37c801cb77ad581b6badb2c97dd1e6e418e70e5cfe836f72e7",
+  "manifest_sha256": "3ad34777f9709cdda4e3203e6c5dd2a1251e82d89a7aae0523afdf3346b18d91",
+  "not_closed": 338,
+  "pending_independent_review": 336,
   "pinned_ref": "b9b3c10ac9054e4c4baba1b28c6026c65b38944c",
   "review_provenance": "exact per-file Git blob and public independent-review citation",
   "review_scope": "Windows-related tracked candidate paths only, not whole #824",
-  "reviewed_conditional_risk": 1,
-  "reviewed_no_change": 5,
-  "reviewed_total": 6,
+  "reviewed_conditional_risk": 2,
+  "reviewed_no_change": 7,
+  "reviewed_total": 9,
   "schema": "keld.windows-architecture-closeout/v2",
   "triage_queue_sha256": "63cc445c53cf3d069b44aac6081bb27439444adc1de19a46b2556e469eb569a5"
 }
