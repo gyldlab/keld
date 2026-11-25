@@ -21,40 +21,8 @@ if ($PSCmdlet.ParameterSetName -ceq 'OrdinaryFixtureCleanup') {
     if (-not $OrdinaryFixtureCleanup) {
         throw 'OrdinaryFixtureCleanup must be enabled explicitly'
     }
-    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
-        throw 'Ordinary NSIS fixture cleanup requires Windows'
-    }
-    # Check exact discovery before execution: Cargo accepts a zero-match filter.
-    $prefix = 'windows_fs::tests::nsis_fixture::nsis_fixture_ordinary_cleanup_'
-    $expected = @(
-        ($prefix + 'after_powershell_payload_refusal: test')
-        ($prefix + 'after_powershell_smoke: test')
-        ($prefix + 'retains_independent_extra_file: test')
-        ($prefix + 'uses_only_owned_handles: test')
-    )
-    Push-Location (Split-Path -Parent $PSScriptRoot)
-    try {
-        $listing = @(& cargo test --locked -p keld-update --lib $prefix -- --list)
-        if ($LASTEXITCODE -ne 0) {
-            throw "Ordinary NSIS fixture cleanup discovery failed (cargo exit $LASTEXITCODE)"
-        }
-        $registered = @($listing | Where-Object { $_ -cmatch ': (test|benchmark)$' })
-        if ($registered.Count -ne $expected.Count -or
-            @($expected | Where-Object { $_ -cnotin $registered }).Count -ne 0) {
-            throw 'Ordinary NSIS fixture cleanup discovery did not match the four expected test names'
-        }
-        $results = @(& cargo test --locked -p keld-update --lib $prefix -- --test-threads=1)
-        $exitCode = $LASTEXITCODE
-        $results | Write-Output
-        if ($exitCode -ne 0) {
-            throw "Ordinary NSIS fixture cleanup tests failed (cargo exit $exitCode)"
-        }
-        if (@($results | Where-Object { $_ -cmatch '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' }).Count -ne 1) {
-            throw 'Ordinary NSIS fixture cleanup did not pass all four expected tests'
-        }
-    } finally {
-        Pop-Location
-    }
+    # Keep the ordinary alias and standalone command on one exact runner.
+    & (Join-Path $PSScriptRoot 'windows_v2_nsis_owned_fixture_test.ps1')
     return
 }
 

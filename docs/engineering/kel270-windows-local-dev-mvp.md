@@ -83,6 +83,20 @@ Production-only commissioning and public release evidence are separate future ga
 No development result qualifies public distribution.
 The loss-only recovery distribution ceremony is a separate support cell. APP signing must still never grant RECOVERY authority.
 
+### Ordinary fixture cleanup check
+
+From the repository root on Windows, run the ordinary test setup and cleanup check before installer acceptance:
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -File .\tools\windows_v2_nsis_build_test.ps1 -OrdinaryFixtureCleanup
+```
+
+The explicit switch calls the standalone runner at `tools/windows_v2_nsis_owned_fixture_test.ps1`.
+It requires seven named checks, including partial-copy rollback, rewrite, move, bounded read-only child, and retirement of owned test files.
+Require exit code 0 and `KEL270_NSIS_ORDINARY_FIXTURE_LIFECYCLE_PASS`.
+This command does not run the default negative suite, sign any artifact, or build or install NSIS output.
+It does not qualify the default suite cleanup or replace native installation and release acceptance.
+
 ## Independent falsifiers
 
 - Production rejects every development image and policy, even when Windows trusts its root. Development rejects production state and identity.
