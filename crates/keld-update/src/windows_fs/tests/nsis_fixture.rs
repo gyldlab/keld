@@ -154,6 +154,100 @@ fn create_file(parent: &File, path: &Path, name: &str, bytes: &[u8]) -> OwnedFix
 }
 
 #[test]
+fn nsis_fixture_separate_generation_record_preserves_ordinary_members() {
+    use super::super::publish_new_record_file;
+    use std::io::Read as _;
+
+    fn read_member(path: &Path) -> File {
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .expect("open ordinary fixture member for reading")
+    }
+
+    fn read_bytes(mut file: &File) -> Vec<u8> {
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).expect("read retained member");
+        data
+    }
+
+    let fixture = Fixture::new();
+    let samples: [(&str, &[u8]); 3] = [
+        ("sample-image", b"ordinary image fixture"),
+        ("sample-root", b"ordinary root fixture"),
+        ("sample-observation", b"ordinary observation fixture"),
+    ];
+    let held: Vec<_> = samples
+        .iter()
+        .map(|(name, bytes)| {
+            let owner = create_file(&fixture.root, &fixture.path, name, bytes);
+            let original = read_member(&fixture.path.join(name));
+            owner
+                .require_same(&original)
+                .expect("initial object identity");
+            (owner, original)
+        })
+        .collect();
+
+    let record_bytes = b"completed ordinary fixture record";
+    let mut pending = create_file_relative_with_profile(
+        &fixture.root,
+        "pending-record",
+        keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+    )
+    .expect("create the separate ordinary record");
+    pending
+        .write_all(record_bytes)
+        .expect("write complete record");
+    pending.sync_all().expect("flush complete record");
+    let record_owner = OwnedFixtureEntry::capture(
+        &pending,
+        &fixture.path.join("pending-record"),
+        EntryKind::File,
+    )
+    .expect("retain exact record identity");
+    drop(pending);
+    assert_absent(&fixture.root, "committed-record");
+
+    publish_new_record_file(&fixture.root, "pending-record", "committed-record")
+        .expect("publish the separate record to an absent sibling");
+    assert_absent(&fixture.root, "pending-record");
+    let committed = read_member(&fixture.path.join("committed-record"));
+    record_owner
+        .require_same(&committed)
+        .expect("fresh record reader sees the same regular single-link object");
+    assert_eq!(read_bytes(&committed).as_slice(), record_bytes);
+    drop(committed);
+
+    for ((name, bytes), (owner, original)) in samples.into_iter().zip(held) {
+        let fresh = read_member(&fixture.path.join(name));
+        owner
+            .require_same(&original)
+            .expect("retained member identity");
+        owner
+            .require_same(&fresh)
+            .expect("fresh reader sees the same member");
+        assert_eq!(read_bytes(&original).as_slice(), bytes);
+        assert_eq!(read_bytes(&fresh).as_slice(), bytes);
+        drop((original, fresh));
+        owner
+            .remove(&fixture.root, name)
+            .expect("retire owned member");
+        drop(owner);
+        assert_absent(&fixture.root, name);
+    }
+
+    record_owner
+        .remove(&fixture.root, "committed-record")
+        .expect("retire owned committed record");
+    drop(record_owner);
+    assert_absent(&fixture.root, "committed-record");
+    fixture.finish();
+}
+
+#[test]
 fn nsis_fixture_ordinary_cleanup_uses_only_owned_handles() {
     run_ordinary_cleanup(b"owned test bytes", false).expect("clean up the ordinary fixture");
 }
@@ -262,25 +356,171 @@ fn clean_owned_stage(fixture: &Fixture, bytes: &[u8], run_smoke: bool) -> io::Re
     result
 }
 
-fn read_fixture_through_runner(root: &Path) -> io::Result<()> {
+fn windows_powershell() -> io::Result<PathBuf> {
     let system_root = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("Windows SystemRoot is unavailable"))?;
-    let powershell = system_root
+    Ok(system_root
         .join("System32")
         .join("WindowsPowerShell")
         .join("v1.0")
-        .join("powershell.exe");
+        .join("powershell.exe"))
+}
+
+fn read_fixture_through_runner(root: &Path) -> io::Result<()> {
     let runner =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/windows_v2_nsis_build_test.ps1");
-    let output = std::process::Command::new(powershell)
+    let mut command = std::process::Command::new(windows_powershell()?);
+    command
         .args(["-NoProfile", "-NonInteractive", "-File"])
         .arg(runner)
         .arg("-OwnedFixtureSmokeRoot")
-        .arg(root)
-        .output()?;
+        .arg(root);
+    let output = run_owned_smoke_child(&mut command, std::time::Duration::from_secs(15))?;
     classify_owned_fixture_smoke(output.status.code(), &output.stdout, &output.stderr)
+}
+
+// Only the ordinary smoke child, which does not start descendants or write the
+// fixture, is sent through this runner. The budget starts after process spawn;
+// on failure we allow a separate, bounded grace for direct-child reaping.
+fn run_owned_smoke_child(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> io::Result<std::process::Output> {
+    use std::io::Read as _;
+    use std::process::{Output, Stdio};
+    use std::sync::mpsc::{self, Receiver, TryRecvError};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const MAX_OUTPUT: usize = 4096;
+    const POLL: Duration = Duration::from_millis(10);
+    fn capture(pipe: impl io::Read + Send + 'static) -> io::Result<Receiver<io::Result<Vec<u8>>>> {
+        let (send, recv) = mpsc::channel();
+        thread::Builder::new().spawn(move || {
+            let mut bytes = Vec::with_capacity(MAX_OUTPUT + 1);
+            let result = pipe
+                .take((MAX_OUTPUT + 1) as u64)
+                .read_to_end(&mut bytes)
+                .and_then(|_| {
+                    if bytes.len() > MAX_OUTPUT {
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "owned smoke child exceeded its output limit",
+                        ))
+                    } else {
+                        Ok(bytes)
+                    }
+                });
+            let _ = send.send(result);
+        })?;
+        Ok(recv)
+    }
+    fn receive(item: &mut Option<Vec<u8>>, recv: &Receiver<io::Result<Vec<u8>>>) -> io::Result<()> {
+        if item.is_none() {
+            match recv.try_recv() {
+                Ok(result) => *item = Some(result?),
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    return Err(io::Error::other("owned smoke output reader disconnected"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let start = Instant::now();
+    let result = (|| {
+        let stdout = capture(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| io::Error::other("owned smoke stdout was not piped"))?,
+        )?;
+        let stderr = capture(
+            child
+                .stderr
+                .take()
+                .ok_or_else(|| io::Error::other("owned smoke stderr was not piped"))?,
+        )?;
+        let (mut out, mut err) = (None, None);
+        loop {
+            if start.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "owned smoke child exceeded its completion budget",
+                ));
+            }
+            receive(&mut out, &stdout)?;
+            receive(&mut err, &stderr)?;
+            if let Some(status) = child.try_wait()? {
+                if out.is_some() && err.is_some() {
+                    return Ok(Output {
+                        status,
+                        stdout: out.take().unwrap_or_default(),
+                        stderr: err.take().unwrap_or_default(),
+                    });
+                }
+            }
+            thread::sleep(POLL.min(timeout.saturating_sub(start.elapsed())));
+        }
+    })();
+
+    if let Err(cause) = &result {
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            // The handle belongs only to the child we just spawned. A kill can
+            // race a normal exit; a successful try_wait is the reaping proof.
+            let killed = child.kill();
+            let reap_start = Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if reap_start.elapsed() < Duration::from_secs(2) => {
+                        thread::sleep(POLL);
+                    }
+                    outcome => {
+                        return Err(io::Error::other(format!(
+                            "could not reap owned smoke child after {cause}: kill={killed:?}, wait={outcome:?}"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+#[test]
+fn owned_smoke_child_runner_bounds_ordinary_process_and_output() {
+    use std::process::Command;
+    use std::time::Duration;
+
+    let run = |script: &str, timeout| {
+        let mut command = Command::new(windows_powershell().expect("Windows PowerShell path"));
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        run_owned_smoke_child(&mut command, timeout)
+    };
+    let time = Duration::from_secs(15);
+    let complete = run(
+        "[Console]::Out.Write('ok'); [Console]::Error.Write('note')",
+        time,
+    )
+    .expect("ordinary direct child completed");
+    assert!(complete.status.success());
+    assert_eq!(complete.stdout, b"ok");
+    assert_eq!(complete.stderr, b"note");
+    let overflow = run("[Console]::Out.Write('x' * 8192)", time)
+        .expect_err("oversized output must be rejected");
+    assert_eq!(overflow.kind(), io::ErrorKind::InvalidData);
+    let stalled = run("Start-Sleep -Seconds 30", Duration::from_millis(250))
+        .expect_err("stalled ordinary child must be terminated and reaped");
+    assert_eq!(stalled.kind(), io::ErrorKind::TimedOut);
 }
 
 #[derive(Debug)]
