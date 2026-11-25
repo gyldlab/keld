@@ -46,7 +46,7 @@ const REPOSITORY_LEASE: &str = "repository.lock";
 /// The handle is not a D-90 completeness witness, metadata grant or D-46
 /// installer permit. This constructor CAN open a different physical root
 /// supplied by its caller. The future D-44 owner must independently authenticate
-/// LocalAppData, repository ID, app, captured SID and every root namespace
+/// `LocalAppData`, repository ID, app, captured SID and every root namespace
 /// before using this handle for any effect. The unissued D-90 witness
 /// prevents the constructor from becoming installation authority.
 #[derive(Debug)]
