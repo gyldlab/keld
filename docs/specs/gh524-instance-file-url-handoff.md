@@ -2,7 +2,7 @@
 - Status: draft
 - Tracker: GH-524
 - Owner: @0monish (approval pending)
-- Updated: 2026-11-21
+- Updated: 2026-11-26
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 Source baseline: `0eb3ce203187f35c5276a4237189c906a5220d5a`
@@ -130,6 +130,21 @@ contract or typed unsupported behavior. Test the stale initial-true return and t
 
 A qualified sender must still enqueue through that same ingress in an independent positive test.
 
+### AC-9: Order handoff admission against lease release
+
+- **Given:** A qualified handoff authenticates against the current elected Host and races release of that lease.
+- **When:** The existing lock/ingress owner orders admission, success acknowledgement and release.
+- **Then:** Admission first may insert the whole record and publish one success acknowledgement before release.
+  Release first refuses admission with no old-endpoint insertion or success acknowledgement, even if authentication began earlier.
+  Release retires undispatched records from the old lease as dropped/unknown; it does not replay them to the next holder.
+- **Negative control:**
+  - **Single fault:** Use the earlier authentication result without rechecking lease custody at admission.
+  - **At-risk precondition:** Authentication succeeded, then release completed before queue admission.
+  - **Expected RED:** An old-endpoint record is inserted or a new success acknowledgement is published after release.
+
+Run the admission-first control with actual delivery before release; separately test admitted but undispatched records at release.
+A mutation that publishes a new success acknowledgement after release must independently fail.
+
 ## 4. Design
 
 ### 4.1 One admitted queue owner
@@ -169,6 +184,15 @@ preserve it through an approved existing transport/state barrier, or keep releas
 completion while still reporting stale custody. Define reacquisition after release explicitly. Extend only the owning generated
 schema, and preserve the losing instance's false verdict even when handoff admission fails.
 
+The proposed joint contract orders cross-Host queue insertion, success acknowledgement publication and release under the same
+existing lease owner. Authentication alone is not admission; validate current holder/lease custody at the ordered admission cut.
+Release closes admission, retires the old ingress identity and cancels undispatched records as dropped/unknown before reporting
+completion. Already delivered records remain delivered, without replay; the successor starts with its own queue and identity.
+No old endpoint may insert a record or publish a new success acknowledgement after the release cut. An acknowledgement already
+published before the cut can arrive later due to transport delay; it identifies the old admitted record, not current custody or
+a delivery guarantee across release. If acknowledgement publication cannot complete before release, do not report success later;
+use the approved refusal or unknown disposition. The GH453/GH452/GH524 owners must approve this ordering before implementation.
+
 ### 4.6 Evidence and implementation admission
 
 Use the cited immutable source and re-read live owner claims before implementation. A public issue receipt is reported evidence,
@@ -204,6 +228,7 @@ budgets and lifecycle ordering; record source-backed pending rows.
 
 - [ ] Wire will-finish-launching/Ready ordering for both native file and URL sources, and the jointly approved synchronous
 release/current-state/reacquisition contract into existing app/facts owners.
+- [ ] Order the qualified ingress admission/acknowledgement cut and lease release, including retirement of undispatched records.
 
 ### T-4: Qualify native and hostile-input acceptance
 
@@ -219,7 +244,9 @@ preserve pending-fail/unknown status until the actual implementing commit passes
 
 Drive explicit barriers for primary boot, listener registration and contender admission. Record host admission ID and role
 generation without logging raw sensitive payload. Native intent provenance requires an actual OS-source fixture; injecting a
-facade event proves only the consumer.
+facade event proves only the consumer. Use explicit barriers for authentication-before-release/admission-after-release and
+admission-before-release; count old-endpoint insertions and success acknowledgement publications across the release cut.
+Distinguish delayed arrival of a pre-release acknowledgement from a new post-release acknowledgement.
 
 Documentation validation in this batch covers immutable reference/readback, all ten sections, independent controls,
 source-versus-proposal wording and file limits. Runtime, native and original-app tests are planned, not executed. GitHub CI status
@@ -236,7 +263,7 @@ Official upstream GitHub sources were used within that source restriction; no Co
 
 ### E-2: Planned GH-524 runtime and OS acceptance
 
-- **Run:** Not executed; run the separate AC-1 through AC-8 positive and negative fixtures during implementation.
+- **Run:** Not executed; run the separate AC-1 through AC-9 positive and negative fixtures during implementation.
 - **n:** 0 native acceptance runs.
 - **Environment:** Exact implementing revision and qualified native host/device must be recorded at execution.
 - **Limits:** No acceptance result is claimed for second-instance, file/URL ordering, release, replay or authenticated ingress.
