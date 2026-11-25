@@ -1,16 +1,21 @@
 use crate::support::PROCESS_DEADLINE;
 use crate::support::control::wait_child_output;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
+use std::collections::HashSet;
 use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::{self, ErrorKind};
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::thread;
 use std::time::Instant;
+use std::time::UNIX_EPOCH;
 
 unsafe extern "C" {
     #[link_name = "kill"]
@@ -127,6 +132,127 @@ fn process_group_cleanup_rejects_non_group_broadcast_values() {
             .expect_err("invalid process group must be rejected before kill(2)");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
+}
+
+/// A `kb-<pid hex>-<label>-<random>` directory planted in the bootstrap's first
+/// session root. `tempfile` creates it exclusively under a random suffix, so a
+/// directory left by an interrupted run cannot make the plant fail, and it is
+/// removed on drop.
+struct PlantedSessionDir(tempfile::TempDir);
+
+impl PlantedSessionDir {
+    fn create(pid: u32, label: &str) -> Self {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("kb-{pid:x}-{label}-"))
+            .tempdir_in(std::env::temp_dir())
+            .expect("plant session directory");
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+#[test]
+fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
+    // macOS reuses PIDs, and a crashed or killed earlier process can leave its
+    // `kb-<pid>-*` directory behind. This test runner's own PID stands in for
+    // a host that inherited such a PID: the stale directory exists before the
+    // "launch", so it is not this host's resource.
+    let pid = std::process::id();
+    let stale = PlantedSessionDir::create(pid, "stale-before-launch");
+    let census = SessionDirCensus::before_launch();
+    assert_eq!(
+        census.dirs_for(pid),
+        [] as [PathBuf; 0],
+        "a directory that predates the launch was attributed to the host: {}",
+        stale.path().display()
+    );
+    // Negative control: a directory with the host's prefix that appears after
+    // the census is still attributed, so a host that leaves its own session
+    // behind still fails the cleanup assertions.
+    let owned = PlantedSessionDir::create(pid, "left-by-this-host");
+    assert_eq!(census.dirs_for(pid), [owned.path().to_path_buf()]);
+}
+
+fn leftover_fixture_pid(process_id: u32) -> u32 {
+    0x8000_0000 | process_id
+}
+
+#[test]
+fn leftover_fixture_cleanup_is_independent_between_processes() {
+    let root = tempfile::tempdir().expect("isolated shared session root");
+    let path_for = |pid| root.path().join(format!("kb-{pid:x}-stale-before-launch"));
+    let first = path_for(leftover_fixture_pid(41));
+    let second = path_for(leftover_fixture_pid(42));
+    fs::create_dir_all(&first).expect("first process leaves its fixture");
+    fs::create_dir_all(&second).expect("second process leaves its fixture");
+    fs::remove_dir(&first).expect("first process cleans its fixture");
+    assert!(
+        second.is_dir(),
+        "first cleanup removed the second process fixture"
+    );
+    fs::remove_dir(&second).expect("second process cleans its fixture");
+
+    // Old fixed-PID setup permits two runs to share one path. Schedule the
+    // first cleanup before the second: the second deterministically fails.
+    let shared = path_for(0xdead_beef_u32);
+    fs::create_dir_all(&shared).expect("old first process fixture");
+    fs::create_dir_all(&shared).expect("old second process shared fixture");
+    fs::remove_dir(&shared).expect("old first process cleanup");
+    assert_eq!(
+        fs::remove_dir(&shared)
+            .expect_err("old shared-path cleanup must collide")
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
+    // A synthetic PID derived from this test process's own real PID, with the
+    // top bit forced on. The top bit keeps it outside the macOS PID range (so
+    // it cannot match a concurrent test's census in this process), and the
+    // real PID makes it unique per OS process, so two concurrent runs of this
+    // exact test (for example an overlapping retry) plant and clean up two
+    // different fixed-name directories instead of racing on one.
+    let synthetic_pid = leftover_fixture_pid(std::process::id());
+    let leftover = std::env::temp_dir().join(format!("kb-{synthetic_pid:x}-stale-before-launch"));
+    // An interrupted run left the fixed name that `PlantedSessionDir` used to
+    // create with `fs::create_dir`, which then failed before the census ran.
+    fs::create_dir_all(&leftover).expect("leave a stale directory");
+    let planted = PlantedSessionDir::create(synthetic_pid, "stale-before-launch");
+    let planted_path = planted.path().to_path_buf();
+    assert_ne!(
+        planted_path, leftover,
+        "plant reused a stale directory name"
+    );
+    assert!(planted_path.is_dir(), "plant did not create its directory");
+    drop(planted);
+    assert!(!planted_path.exists(), "plant leaked its directory on drop");
+    fs::remove_dir(&leftover).expect("remove the stale directory");
+}
+
+#[test]
+fn session_census_reports_a_directory_once_when_scan_roots_overlap() {
+    // `TMPDIR=/tmp` makes `temp_dir()` and the fixed `/tmp` root the same
+    // directory, and on macOS `/tmp` is a symlink to `/private/tmp`.
+    const SYNTHETIC_PID: u32 = 0xdead_bef0;
+    let root = tempfile::tempdir().expect("scan root");
+    let alias_parent = tempfile::tempdir().expect("alias parent");
+    let alias = alias_parent.path().join("alias-of-root");
+    std::os::unix::fs::symlink(root.path(), &alias).expect("alias the scan root");
+    let census = SessionDirCensus::before_launch_in(vec![
+        root.path().to_path_buf(),
+        root.path().to_path_buf(),
+        alias,
+    ]);
+    let owned = root
+        .path()
+        .join(format!("kb-{SYNTHETIC_PID:x}-left-by-this-host"));
+    fs::create_dir(&owned).expect("create the owned directory");
+    assert_eq!(census.dirs_for(SYNTHETIC_PID), [owned]);
 }
 
 pub(crate) fn await_process_state(pid: u32, wanted: char) {
@@ -253,23 +379,278 @@ pub(crate) fn process_state(pid: u32) -> String {
     }
 }
 
-pub(crate) fn session_dirs_for(pid: u32) -> Vec<PathBuf> {
-    let prefix = format!("kb-{pid:x}-");
-    [
-        std::env::temp_dir(),
-        PathBuf::from("/tmp"),
-        PathBuf::from("/var/tmp"),
-    ]
-    .into_iter()
-    .flat_map(|base| {
-        fs::read_dir(base)
+#[test]
+fn session_census_exempts_only_the_same_ordinary_prelaunch_object() {
+    let root = tempfile::tempdir().expect("scan root");
+    let stale = root.path().join("kb-deadbef0-before launch");
+    let alias = root.path().join("kb-deadbef0-symlink");
+    fs::create_dir(&stale).expect("create stale directory");
+    std::os::unix::fs::symlink(&stale, &alias).expect("create matching symlink");
+    let census = SessionDirCensus::before_launch_in(vec![root.path().to_path_buf()]);
+    let baseline = census.watcher_baseline(0xdead_bef0);
+    assert_eq!(baseline.len(), 1);
+    assert!(baseline[0].ends_with(" kb-deadbef0-before launch"));
+    assert_eq!(census.dirs_for(0xdead_bef0), std::slice::from_ref(&alias));
+
+    // Hold the old object under a different name so its inode cannot be reused.
+    fs::rename(&stale, root.path().join("retired")).expect("move prelaunch object");
+    fs::create_dir(&stale).expect("create a new directory at the same name");
+    let mut observed = census.dirs_for(0xdead_bef0);
+    observed.sort();
+    assert_eq!(observed, [stale, alias]);
+}
+
+#[test]
+fn watcher_roots_preserve_the_frozen_census_roots_and_aliases() {
+    let temp = tempfile::tempdir().expect("scan parent");
+    let root = temp.path().join("configured tmpdir");
+    let alias = temp.path().join("root alias");
+    fs::create_dir(&root).expect("create configured root");
+    std::os::unix::fs::symlink(&root, &alias).expect("alias configured root");
+    let name = "kb-deadbef0-ordinary";
+    fs::create_dir(root.join(name)).expect("plant ordinary directory");
+    let census = SessionDirCensus::before_launch_in(vec![root.clone(), alias.clone()]);
+
+    let roots = census.watcher_roots().expect("watcher roots");
+    assert_eq!(
+        roots,
+        ["2", root.to_str().unwrap(), alias.to_str().unwrap()]
+    );
+    let keys = census.watcher_baseline(0xdead_bef0);
+    assert_eq!(keys.len(), 1, "alias must not duplicate the fingerprint");
+    assert!(keys[0].ends_with(name));
+    assert_eq!(census.watcher_baseline(1), [] as [&str; 0]);
+}
+
+#[test]
+fn watcher_roots_refuse_unrepresentable_arguments_before_launch() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    for roots in [
+        vec![],
+        vec![PathBuf::from("/tmp"); 4],
+        vec![PathBuf::from("relative root")],
+        vec![PathBuf::from("/bad\nroot")],
+        vec![PathBuf::from("/bad\rroot")],
+        vec![PathBuf::from("/bad\0root")],
+        vec![PathBuf::from(OsString::from_vec(vec![b'/', 0xff]))],
+        vec![PathBuf::from(format!("/{}", "x".repeat(8191)))],
+    ] {
+        let census = SessionDirCensus {
+            roots,
+            existing: HashSet::new(),
+        };
+        assert_eq!(census.watcher_roots(), None);
+    }
+}
+
+/// The `kb-*` bootstrap session directories that existed before a host launch.
+///
+/// The bootstrap names each session directory `kb-<pid hex>-<nonce>` in one of
+/// three temp roots. macOS reuses PIDs, and an earlier process that was killed
+/// before cleanup leaves its directory behind, so a PID prefix alone does not
+/// identify the current host's directories. A directory that already existed
+/// before the launch cannot be the launched host's resource; every directory
+/// with the host's prefix that appears after the census still is, including
+/// one that this host leaves behind.
+pub(crate) struct SessionDirCensus {
+    roots: Vec<PathBuf>,
+    existing: HashSet<String>,
+}
+
+impl SessionDirCensus {
+    /// Records the existing session directories. Call before spawning the
+    /// process that launches the host.
+    pub(crate) fn before_launch() -> Self {
+        Self::before_launch_in(vec![
+            std::env::temp_dir(),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/var/tmp"),
+        ])
+    }
+
+    /// Records the session directories under `roots`.
+    pub(super) fn before_launch_in(roots: Vec<PathBuf>) -> Self {
+        let existing = session_dir_entries(&roots, |_| true)
+            .expect("complete prelaunch session directory census")
             .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-    })
-    .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-    .map(|entry| entry.path())
-    .collect()
+            .filter_map(|(path, metadata)| session_dir_key(&path, &metadata.ok()?))
+            .collect();
+        Self { roots, existing }
+    }
+
+    /// Validate and encode the frozen roots before launching the host.
+    pub(crate) fn watcher_roots(&self) -> Option<Vec<String>> {
+        if !(1..=3).contains(&self.roots.len()) {
+            return None;
+        }
+        let mut args = vec![self.roots.len().to_string()];
+        let mut bytes = 0;
+        for root in &self.roots {
+            let encoded = root.to_str()?;
+            if !root.is_absolute() || encoded.contains(['\n', '\r', '\0']) {
+                return None;
+            }
+            bytes += encoded.len() + 1;
+            if bytes > 8192 {
+                return None;
+            }
+            args.push(encoded.to_owned());
+        }
+        Some(args)
+    }
+
+    /// Ordinary prelaunch objects for this PID, encoded for the native watcher.
+    pub(crate) fn watcher_baseline(&self, pid: u32) -> Vec<&str> {
+        let prefix = format!("kb-{pid:x}-");
+        let mut bytes = 0;
+        let mut entries = Vec::new();
+        for entry in &self.existing {
+            // The basename is the last field. The preceding fields are numeric.
+            if entry
+                .splitn(7, ' ')
+                .nth(6)
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
+                bytes += entry.len() + 1;
+                if bytes > 8192 {
+                    // Do not treat a truncated baseline as complete. With no
+                    // exemptions, any matching observed name fails the test.
+                    return Vec::new();
+                }
+                entries.push(entry.as_str());
+            }
+        }
+        entries
+    }
+
+    /// Matching paths that are new or could not be verified, reported once
+    /// when scan roots overlap and the identity is known.
+    pub(crate) fn dirs_for(&self, pid: u32) -> Vec<PathBuf> {
+        let prefix = format!("kb-{pid:x}-");
+        let mut seen = HashSet::new();
+        session_dir_entries(&self.roots, |name| name.starts_with(&prefix))
+            .expect("complete postlaunch session directory census")
+            .into_iter()
+            .filter_map(|(path, metadata)| match metadata {
+                Ok(metadata) => {
+                    let prelaunch = session_dir_key(&path, &metadata)
+                        .is_some_and(|key| self.existing.contains(&key));
+                    (!prelaunch && seen.insert((metadata.dev(), metadata.ino()))).then_some(path)
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(_) => Some(path), // Listed, but not proven absent or prelaunch.
+            })
+            .collect()
+    }
+}
+
+/// Shared with the Swift observer: numeric fields plus the complete basename.
+/// The name makes the key path-alias independent without exempting a rename.
+/// Unsupported creation time and unrepresentable names are not exemptions.
+fn session_dir_key(path: &Path, metadata: &fs::Metadata) -> Option<String> {
+    if !metadata.is_dir() {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    let born = metadata.created().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    if born.is_zero() {
+        return None;
+    }
+    Some(format!(
+        "{} {} {} {} {} {} {name}",
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+        born.as_secs(),
+        born.subsec_nanos(),
+    ))
+}
+
+type SessionMetadata = (PathBuf, io::Result<fs::Metadata>);
+
+/// The configured temp root is required. Fallback roots may be absent,
+/// but failure to open or iterate an existing root is not evidence of absence.
+fn session_dir_entries(
+    roots: &[PathBuf],
+    keep: impl Fn(&str) -> bool,
+) -> io::Result<Vec<SessionMetadata>> {
+    let mut observed = Vec::new();
+    for (index, root) in roots.iter().enumerate() {
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if index != 0 && error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(session_scan_error(root, &error)),
+        };
+        visit_session_paths(
+            entries.map(|entry| entry.map(|entry| entry.path())),
+            &keep,
+            |path| {
+                // Preserve lookup errors for names observed by the enumerator.
+                let metadata = fs::symlink_metadata(&path);
+                observed.push((path, metadata));
+            },
+        )
+        .map_err(|error| session_scan_error(root, &error))?;
+    }
+    Ok(observed)
+}
+
+fn session_scan_error(root: &Path, error: &io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("scan session root {}: {error}", root.display()),
+    )
+}
+
+fn visit_session_paths(
+    entries: impl IntoIterator<Item = io::Result<PathBuf>>,
+    keep: &impl Fn(&str) -> bool,
+    mut observe: impl FnMut(PathBuf),
+) -> io::Result<()> {
+    for entry in entries {
+        let path = entry?;
+        if let Some(name) = path.file_name() {
+            let name = name.to_string_lossy();
+            if name.starts_with("kb-") && keep(&name) {
+                observe(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn session_census_allows_only_missing_fallback_roots() {
+    let primary = tempfile::tempdir().expect("scan parent");
+    let root = primary.path().to_path_buf();
+    let missing = root.join("absent");
+    let file = root.join("not a directory");
+    fs::write(&file, b"ordinary file").expect("write non-directory");
+
+    assert!(session_dir_entries(&[root.clone(), missing.clone()], |_| true).is_ok());
+    let error = session_dir_entries(&[missing], |_| true).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+    let error = session_dir_entries(&[root, file], |_| true).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotADirectory);
+}
+
+#[test]
+fn session_census_rejects_partial_enumeration() {
+    let observed_name = PathBuf::from("/fixture/kb-42-observed");
+    for kind in [ErrorKind::NotFound, ErrorKind::PermissionDenied] {
+        let mut observed = Vec::new();
+        let error = visit_session_paths(
+            [Ok(observed_name.clone()), Err(io::Error::from(kind))],
+            &|_| true,
+            |path| observed.push(path),
+        )
+        .unwrap_err();
+        assert_eq!(observed, std::slice::from_ref(&observed_name));
+        assert_eq!(error.kind(), kind);
+    }
 }
 
 // SDK sys/event.h ABI and constants, local to this independent macOS test census.
@@ -306,6 +687,145 @@ unsafe extern "C" {
     fn process_observer_fcntl(fd: i32, command: i32, ...) -> i32;
 }
 
+fn fixture_kqueue() -> std::os::fd::OwnedFd {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
+    assert_eq!(
+        std::mem::align_of::<ProcessKevent>(),
+        8,
+        "SDK kevent64 alignment"
+    );
+    assert_eq!(
+        std::mem::size_of::<ProcessKeventTimeout>(),
+        16,
+        "SDK timespec ABI"
+    );
+    // SAFETY: kqueue takes no arguments and returns a new owned descriptor.
+    let fd = unsafe { kqueue() };
+    assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
+    // SAFETY: successful kqueue returned a valid descriptor owned only here.
+    let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: variadic fcntl receives this valid owned fd, F_SETFD=2 and the
+    // promoted integer FD_CLOEXEC=1. No other owner's descriptor is changed.
+    let cloexec = unsafe { process_observer_fcntl(queue.as_raw_fd(), 2, 1_i32) };
+    assert_eq!(
+        cloexec,
+        0,
+        "observer CLOEXEC: {}",
+        std::io::Error::last_os_error()
+    );
+    queue
+}
+
+fn register_fixture_event(queue: &std::os::fd::OwnedFd, change: &ProcessKevent) {
+    use std::os::fd::AsRawFd as _;
+    let mut receipt = ProcessKevent::default();
+    // SAFETY: SDK-matched repr(C) values live for this call. Counts are one;
+    // queue is owned/live. KEVENT_FLAG_IMMEDIATE=1 obtains a registration
+    // receipt without waiting. No ptrace, signal, waitpid or target mutation.
+    let registered = unsafe {
+        kevent64(
+            queue.as_raw_fd(),
+            std::ptr::from_ref(change),
+            1,
+            &raw mut receipt,
+            1,
+            1,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(
+        registered,
+        1,
+        "watcher registration receipt: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(receipt.ident, change.ident);
+    assert_eq!(receipt.filter, change.filter);
+    assert_ne!(receipt.flags & 0x4000, 0, "EV_RECEIPT missing");
+    assert_eq!(
+        receipt.data, 0,
+        "watcher registration errno for {}",
+        change.ident
+    );
+}
+
+/// Records mutations of one held, private ordinary fixture directory.
+/// The event carries no basename or actor; independently observed filesystem
+/// state and the cooperating fixture supply that attribution.
+#[cfg(test)]
+pub(crate) struct FixtureDirectoryWrites {
+    queue: std::os::fd::OwnedFd,
+    root: fs::File,
+}
+
+#[cfg(test)]
+impl FixtureDirectoryWrites {
+    const FILTER: i16 = -4; // Darwin EVFILT_VNODE
+    const NOTE_WRITE: u32 = 0x0000_0002;
+
+    pub(crate) fn arm(path: &Path) -> Self {
+        use std::os::fd::AsRawFd as _;
+        let root = fs::File::open(path).expect("hold private fixture root");
+        assert!(root.metadata().expect("inspect held root").is_dir());
+        let queue = fixture_kqueue();
+        register_fixture_event(
+            &queue,
+            &ProcessKevent {
+                ident: u64::try_from(root.as_raw_fd()).expect("held descriptor"),
+                filter: Self::FILTER,
+                flags: 0x0001 | 0x0004 | 0x0020 | 0x0040, // ADD | ENABLE | CLEAR | RECEIPT
+                fflags: Self::NOTE_WRITE,
+                ..ProcessKevent::default()
+            },
+        );
+        Self { queue, root }
+    }
+
+    pub(crate) fn take_write(&self) -> bool {
+        use std::os::fd::AsRawFd as _;
+        let timeout = ProcessKeventTimeout {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        let mut event = ProcessKevent::default();
+        loop {
+            // SAFETY: the queue and held directory are live, the event buffer
+            // and timeout have the SDK ABI. No changelist or target mutation.
+            let observed = unsafe {
+                kevent64(
+                    self.queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &raw mut event,
+                    1,
+                    0,
+                    &raw const timeout,
+                )
+            };
+            if observed < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("private fixture directory event: {error}");
+            }
+            if observed == 0 {
+                return false;
+            }
+            assert_eq!(observed, 1);
+            assert_eq!(
+                event.ident,
+                u64::try_from(self.root.as_raw_fd()).expect("held descriptor")
+            );
+            assert_eq!(event.filter, Self::FILTER);
+            assert_eq!(event.flags & 0x4000, 0, "directory filter failed"); // EV_ERROR
+            assert_ne!(event.fflags & Self::NOTE_WRITE, 0, "expected NOTE_WRITE");
+            return true;
+        }
+    }
+}
+
 /// Observes one PID's kernel exit status without reaping it; `OwnedFd` closes
 /// this census. For a fixture-admitted process ([`Self::arm`]) the guardian
 /// remains the sole parent/reaper. For a test-owned child
@@ -332,33 +852,8 @@ impl ProcessExitObserver {
     }
 
     fn arm_with_parent(pid: u32, observer_is_parent: bool) -> Self {
-        use std::os::fd::{AsRawFd as _, FromRawFd as _};
         assert!(pid > 1 && pid != std::process::id(), "fixture-admitted PID");
-        assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
-        assert_eq!(
-            std::mem::align_of::<ProcessKevent>(),
-            8,
-            "SDK kevent64 alignment"
-        );
-        assert_eq!(
-            std::mem::size_of::<ProcessKeventTimeout>(),
-            16,
-            "SDK timespec ABI"
-        );
-        // SAFETY: kqueue takes no arguments and returns a new owned descriptor.
-        let fd = unsafe { kqueue() };
-        assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
-        // SAFETY: successful kqueue returned a valid descriptor owned only here.
-        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        // SAFETY: variadic fcntl receives this valid owned fd, F_SETFD=2 and the
-        // promoted integer FD_CLOEXEC=1. No other owner's descriptor is changed.
-        let cloexec = unsafe { process_observer_fcntl(queue.as_raw_fd(), 2, 1_i32) };
-        assert_eq!(
-            cloexec,
-            0,
-            "observer CLOEXEC: {}",
-            std::io::Error::last_os_error()
-        );
+        let queue = fixture_kqueue();
         let change = ProcessKevent {
             ident: u64::from(pid),
             filter: Self::FILTER,
@@ -366,31 +861,7 @@ impl ProcessExitObserver {
             fflags: Self::EXIT_FLAGS,
             ..ProcessKevent::default()
         };
-        let mut receipt = ProcessKevent::default();
-        // SAFETY: SDK-matched repr(C) values live for this call. Counts are one;
-        // queue is owned/live. KEVENT_FLAG_IMMEDIATE=1 obtains a registration
-        // receipt without waiting. No ptrace, signal, waitpid or target mutation.
-        let registered = unsafe {
-            kevent64(
-                queue.as_raw_fd(),
-                &raw const change,
-                1,
-                &raw mut receipt,
-                1,
-                1,
-                std::ptr::null(),
-            )
-        };
-        assert_eq!(
-            registered,
-            1,
-            "exit watcher receipt: {}",
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(receipt.ident, u64::from(pid));
-        assert_eq!(receipt.filter, Self::FILTER);
-        assert_ne!(receipt.flags & Self::ERROR_FLAG, 0, "EV_RECEIPT missing");
-        assert_eq!(receipt.data, 0, "exit watcher registration errno for {pid}");
+        register_fixture_event(&queue, &change);
         Self {
             pid,
             queue,
@@ -402,9 +873,13 @@ impl ProcessExitObserver {
         self.wait_before(Instant::now() + PROCESS_DEADLINE)
     }
 
+    /// Poll without consuming the child's wait status or allowing PID reuse.
+    pub(crate) fn try_exit_status(&self) -> Option<std::process::ExitStatus> {
+        self.observe(std::time::Duration::ZERO)
+    }
+
     /// Wait for the kernel exit status until the caller's original deadline.
     pub(crate) fn wait_before(self, deadline: Instant) -> std::process::ExitStatus {
-        use std::os::fd::AsRawFd as _;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
@@ -412,59 +887,85 @@ impl ProcessExitObserver {
                 "no kernel exit status for PID {}",
                 self.pid
             );
-            let timeout = ProcessKeventTimeout {
-                seconds: remaining.as_secs().try_into().expect("bounded seconds"),
-                nanoseconds: remaining.subsec_nanos().into(),
-            };
-            let mut event = ProcessKevent::default();
-            // SAFETY: the owned queue, writable one-event repr(C) buffer and
-            // SDK-matched timespec stay live. Null changelist/count zero makes
-            // this a read-only wait for an already registered PID event. This
-            // consumes a census event, never the guardian's child wait status.
-            let observed = unsafe {
-                kevent64(
-                    self.queue.as_raw_fd(),
-                    std::ptr::null(),
-                    0,
-                    &raw mut event,
-                    1,
-                    0,
-                    &raw const timeout,
-                )
-            };
-            if observed < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                panic!("kernel exit census for {} failed: {error}", self.pid);
+            if let Some(status) = self.observe(remaining) {
+                return status;
             }
-            // The kevent wait itself reached the deadline: same outcome.
-            assert!(observed != 0, "no kernel exit status for PID {}", self.pid);
-            assert_eq!(
-                observed, 1,
-                "kernel exit census event count for {}",
-                self.pid
-            );
-            assert_eq!(event.ident, u64::from(self.pid));
-            assert_eq!(event.filter, Self::FILTER);
-            assert_eq!(
-                event.flags & Self::ERROR_FLAG,
-                0,
-                "exit event errno {}",
-                event.data
-            );
-            assert_eq!(event.fflags & Self::EXIT_FLAGS, Self::EXIT_FLAGS);
-            let raw = i32::try_from(event.data).expect("kernel wait status fits i32");
-            let status = std::process::ExitStatus::from_raw(raw);
-            eprintln!(
-                "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent={}",
-                self.pid,
-                status.code(),
-                status.signal(),
-                self.observer_is_parent
-            );
-            return status;
         }
     }
+
+    fn observe(&self, remaining: std::time::Duration) -> Option<std::process::ExitStatus> {
+        use std::os::fd::AsRawFd as _;
+        let timeout = ProcessKeventTimeout {
+            seconds: remaining.as_secs().try_into().expect("bounded seconds"),
+            nanoseconds: remaining.subsec_nanos().into(),
+        };
+        let mut event = ProcessKevent::default();
+        // SAFETY: the owned queue, writable one-event repr(C) buffer and
+        // SDK-matched timespec stay live. The null changelist makes this a
+        // read-only wait for an already registered PID event, never waitpid.
+        let observed = unsafe {
+            kevent64(
+                self.queue.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                &raw mut event,
+                1,
+                0,
+                &raw const timeout,
+            )
+        };
+        if observed < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                return None;
+            }
+            panic!("kernel exit census for {} failed: {error}", self.pid);
+        }
+        if observed == 0 {
+            return None;
+        }
+        assert_eq!(
+            observed, 1,
+            "kernel exit census event count for {}",
+            self.pid
+        );
+        assert_eq!(event.ident, u64::from(self.pid));
+        assert_eq!(event.filter, Self::FILTER);
+        assert_eq!(
+            event.flags & Self::ERROR_FLAG,
+            0,
+            "exit event errno {}",
+            event.data
+        );
+        assert_eq!(event.fflags & Self::EXIT_FLAGS, Self::EXIT_FLAGS);
+        let raw = i32::try_from(event.data).expect("kernel wait status fits i32");
+        let status = std::process::ExitStatus::from_raw(raw);
+        eprintln!(
+            "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent={}",
+            self.pid,
+            status.code(),
+            status.signal(),
+            self.observer_is_parent
+        );
+        Some(status)
+    }
+}
+
+/// Resume only the stopped child retained by this test; never a discovered PID.
+pub(crate) fn resume_owned_child(child: &std::process::Child) {
+    const SIGCONT: i32 = 19; // Darwin sys/signal.h
+    let pid = i32::try_from(child.id()).expect("owned PID fits Darwin pid_t");
+    assert!(
+        pid > 1 && pid != i32::try_from(std::process::id()).expect("test PID fits"),
+        "owned fixture child PID"
+    );
+    // SAFETY: the caller retained the spawned, stopped child and has not reaped
+    // it. This positive PID cannot have been recycled, even if the child exited.
+    let status = unsafe { kill_process(pid, SIGCONT) };
+    assert_eq!(
+        status,
+        0,
+        "resume owned child: {}",
+        std::io::Error::last_os_error()
+    );
 }

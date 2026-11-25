@@ -1,3 +1,4 @@
+use crate::support::process::{ProcessExitObserver, resume_owned_child};
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
@@ -85,8 +86,8 @@ pub(crate) fn accept_before_observing<L: FixtureListener>(
     }
 }
 
-/// Accept the next queued peer, retrying only an empty queue until the
-/// caller's ORIGINAL deadline. The deadline is checked before every native
+/// Accept the next queued peer, retrying an empty or interrupted accept
+/// until the caller's ORIGINAL deadline. The deadline is checked before every native
 /// attempt, so no attempt starts after it. A peer dequeued by the last
 /// attempt that started before the deadline is accepted even if that one
 /// `accept` syscall returns just after it; that window is one syscall wide.
@@ -106,13 +107,11 @@ pub(crate) fn try_accept_before_observing<L: FixtureListener>(
                 L::normalize_blocking(&stream).map_err(AcceptFailure::Normalize)?;
                 return Ok(stream);
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 on_empty();
+                thread::yield_now();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 thread::yield_now();
             }
             Err(error) => return Err(AcceptFailure::Accept(error)),
@@ -137,6 +136,41 @@ pub(crate) fn file_status_flags(descriptor: &impl AsRawFd) -> std::ffi::c_int {
         std::io::Error::last_os_error()
     );
     flags
+}
+
+#[test]
+fn accept_before_retries_interruption_without_observing_an_empty_queue() {
+    use std::cell::Cell;
+    use std::io::{ErrorKind, Result};
+
+    struct ScriptedListener(Cell<u8>);
+
+    impl FixtureListener for ScriptedListener {
+        type Stream = ();
+
+        fn accept_stream(&self) -> Result<()> {
+            let attempt = self.0.get() + 1;
+            self.0.set(attempt);
+            match attempt {
+                1 => Err(ErrorKind::Interrupted.into()),
+                2 => Err(ErrorKind::WouldBlock.into()),
+                3 => Ok(()),
+                _ => panic!("unexpected accept attempt"),
+            }
+        }
+
+        fn normalize_blocking(_stream: &()) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let listener = ScriptedListener(Cell::new(0));
+    let mut empty_attempts = Vec::new();
+    accept_before_observing(&listener, Instant::now() + super::EVENT_DEADLINE, || {
+        empty_attempts.push(listener.0.get());
+    });
+    assert_eq!(listener.0.get(), 3);
+    assert_eq!(empty_attempts, [2]);
 }
 
 #[test]
@@ -209,11 +243,14 @@ fn accept_before_returns_a_blocking_unix_stream_from_a_nonblocking_listener() {
 #[test]
 fn accept_before_refuses_a_queued_peer_after_the_original_deadline() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("own native listener");
+    listener
+        .set_nonblocking(true)
+        .expect("make the queue check nonblocking");
     let deadline = Instant::now();
     let peer = TcpStream::connect(listener.local_addr().expect("native listener address"))
         .expect("queued native peer");
-    // A blocking listener with a completed connect has a dequeuable peer, so
-    // only the deadline can refuse it.
+    // A completed connect leaves a queued peer. Check with one nonblocking
+    // accept so a regression that consumes it fails instead of hanging.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         accept_before(&listener, deadline)
     }));
@@ -245,11 +282,18 @@ pub(crate) fn wait_child_output(child: Child, timeout: Duration) -> Output {
 pub(crate) fn wait_child_output_observing(
     child: Child,
     timeout: Duration,
+    observe: impl FnMut(),
+) -> Output {
+    // Rust's Child alone does not kill/reap on Drop.
+    wait_owned_child_output_observing(ReapOnDrop(child), timeout, observe)
+}
+
+/// Preserve a caller's existing custody through the bounded output wait.
+pub(crate) fn wait_owned_child_output_observing(
+    mut child: ReapOnDrop,
+    timeout: Duration,
     mut observe: impl FnMut(),
 ) -> Output {
-    // Install custody before pipe setup or callbacks can fail. Rust's Child
-    // alone does not kill/reap on Drop.
-    let mut child = ReapOnDrop(child);
     let mut stdout = PipeCapture::new(child.0.stdout.take());
     let mut stderr = PipeCapture::new(child.0.stderr.take());
     let deadline = Instant::now() + timeout;
@@ -283,6 +327,205 @@ pub(crate) fn wait_child_output_observing(
             redacted_stderr_markers(&stderr.bytes),
         );
         thread::yield_now();
+    }
+}
+
+/// Run a stopped child and its native sampler under one Rust owner. Keep the
+/// child's PID reserved until the watcher acknowledges its final sample.
+pub(crate) fn observe_owned_stopped_child(
+    mut child: ReapOnDrop,
+    mut watcher: ReapOnDrop,
+    timeout: Duration,
+    mut observe: impl FnMut(),
+) -> (Output, Output) {
+    let child_exit = ProcessExitObserver::arm_own_child(&child.0);
+    let mut child_capture = ChildCapture::new(&mut child.0);
+    let mut watcher_capture = ChildCapture::new(&mut watcher.0);
+    let mut watcher_control = watcher.0.stdin.take().expect("owned watcher control pipe");
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        watcher_capture.drain();
+        watcher_capture.assert_running(&mut watcher.0);
+        assert!(
+            child_exit.try_exit_status().is_none(),
+            "child exited before READY"
+        );
+        if watcher_capture.stdout.bytes == b"READY\n" {
+            break;
+        }
+        assert!(
+            b"READY\n".starts_with(&watcher_capture.stdout.bytes),
+            "invalid watcher READY"
+        );
+        yield_before(deadline, "watcher READY");
+    }
+    assert!(Instant::now() < deadline, "watcher READY was late");
+    resume_owned_child(&child.0);
+
+    let terminal = loop {
+        child_capture.drain();
+        watcher_capture.drain();
+        watcher_capture.assert_running(&mut watcher.0);
+        if let Some(terminal) = child_exit.try_exit_status() {
+            assert!(Instant::now() < deadline, "owned child exit was late");
+            break terminal;
+        }
+        observe();
+        yield_before(deadline, "owned child exit");
+    };
+
+    // The kernel reported the exact child's terminal state, but Rust has not
+    // reaped it. The watcher has no authority to signal or retire the child.
+    watcher_control
+        .write_all(b"F")
+        .expect("request watcher final sample");
+    drop(watcher_control);
+    let watcher_status = watcher_capture.wait(&mut watcher.0, deadline, || {
+        child_capture.drain();
+    });
+    assert!(
+        watcher_status.success() && watcher_capture.stdout.bytes.ends_with(b"\nDONE\n"),
+        "watcher did not complete final sample: {watcher_status}, {:?}",
+        String::from_utf8_lossy(&watcher_capture.stderr.bytes),
+    );
+    drop(watcher);
+
+    let status = child_capture.wait(&mut child.0, deadline, || {});
+    assert_eq!(
+        status, terminal,
+        "kernel status must match owned child reap"
+    );
+    (
+        child_capture.output(status),
+        watcher_capture.output(watcher_status),
+    )
+}
+
+#[test]
+fn native_watch_handoff_refuses_invalid_ready_and_early_eof() {
+    use crate::support::process::await_process_state;
+    use std::process::{Command, Stdio};
+
+    for (script, expected) in [
+        (
+            "printf 'INVALID\n'; read -r ignored",
+            "invalid watcher READY",
+        ),
+        ("exit 0", "watcher retired before final sample"),
+    ] {
+        let fixture = tempfile::tempdir().expect("create handoff fixture");
+        let resumed = fixture.path().join("resumed");
+        let child = ReapOnDrop(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "kill -STOP $$; printf resumed > \"$1\"",
+                    "handoff-fixture",
+                ])
+                .arg(&resumed)
+                .spawn()
+                .expect("start owned shell"),
+        );
+        await_process_state(child.0.id(), 'T');
+        let watcher = ReapOnDrop(
+            Command::new("/bin/sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start inert watcher"),
+        );
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            observe_owned_stopped_child(child, watcher, crate::support::EVENT_DEADLINE, || {});
+        }))
+        .expect_err("invalid watcher handshake cannot pass");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("handoff assertion message");
+        assert!(
+            message.contains(expected),
+            "unexpected rejection: {message}"
+        );
+        assert!(
+            !resumed.exists(),
+            "child resumed before verified watcher READY"
+        );
+    }
+}
+
+fn yield_before(deadline: Instant, phase: &str) {
+    assert!(
+        Instant::now() < deadline,
+        "{phase} exceeded fixture deadline"
+    );
+    thread::yield_now();
+}
+
+struct ChildCapture {
+    stdout: PipeCapture<std::process::ChildStdout>,
+    stderr: PipeCapture<std::process::ChildStderr>,
+}
+
+impl ChildCapture {
+    fn new(child: &mut Child) -> Self {
+        Self {
+            stdout: PipeCapture::new(child.stdout.take()),
+            stderr: PipeCapture::new(child.stderr.take()),
+        }
+    }
+
+    fn drain(&mut self) {
+        const MAX_CAPTURE_BYTES_PER_STREAM: usize = 1024 * 1024;
+        self.stdout.read_once();
+        self.stderr.read_once();
+        assert!(
+            self.stdout.bytes.len() <= MAX_CAPTURE_BYTES_PER_STREAM
+                && self.stderr.bytes.len() <= MAX_CAPTURE_BYTES_PER_STREAM,
+            "owned fixture capture exceeded its byte bound",
+        );
+    }
+
+    fn assert_running(&self, child: &mut Child) {
+        assert!(
+            child.try_wait().expect("inspect watcher exit").is_none(),
+            "watcher retired before final sample: {:?}",
+            String::from_utf8_lossy(&self.stderr.bytes),
+        );
+    }
+
+    fn wait(
+        &mut self,
+        child: &mut Child,
+        deadline: Instant,
+        mut observe: impl FnMut(),
+    ) -> std::process::ExitStatus {
+        let mut status = None;
+        loop {
+            self.drain();
+            observe();
+            if status.is_none() {
+                status = child.try_wait().expect("inspect child exit");
+            }
+            yield_before(deadline, "owned child output completion");
+            if let Some(status) = status
+                && self.stdout.pipe.is_none()
+                && self.stderr.pipe.is_none()
+            {
+                return status;
+            }
+        }
+    }
+
+    fn output(self, status: std::process::ExitStatus) -> Output {
+        Output {
+            status,
+            stdout: self.stdout.bytes,
+            stderr: self.stderr.bytes,
+        }
     }
 }
 

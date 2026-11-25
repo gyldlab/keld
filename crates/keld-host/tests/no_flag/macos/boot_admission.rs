@@ -2,10 +2,10 @@ use crate::support::EVENT_DEADLINE;
 use crate::support::TITLE;
 use crate::support::admission::{NativeAbsenceWatcher, PolicyReadFault};
 use crate::support::control::wait_child_output;
-use crate::support::control::wait_child_output_observing;
+use crate::support::control::{ReapOnDrop, observe_owned_stopped_child};
 use crate::support::invalid_stage::{InvalidBoot, InvalidPolicy};
 use crate::support::native_window::native_windows;
-use crate::support::process::{await_process_state, session_dirs_for};
+use crate::support::process::{SessionDirCensus, await_process_state};
 use crate::support::product::ProductFixture;
 use std::fs;
 use std::io::Write;
@@ -124,6 +124,7 @@ fn invalid_dev_lease_contract_fails_before_app_resources() {
         ("stdin-v1", "requires the CLI-owned pipe reader"),
     ] {
         let stage = fixture.stage();
+        let sessions = SessionDirCensus::before_launch();
         let child = Command::new(stage.host())
             .env("KELD_DEV_LEASE", value)
             .stdin(Stdio::null())
@@ -139,7 +140,7 @@ fn invalid_dev_lease_contract_fails_before_app_resources() {
         assert!(stderr.contains(expected), "{stderr}");
         assert_eq!(native_windows(pid, TITLE), [] as [u32; 0]);
         assert!(
-            session_dirs_for(pid).is_empty(),
+            sessions.dirs_for(pid).is_empty(),
             "invalid lease created an app-link session"
         );
     }
@@ -257,40 +258,42 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     } else {
         command.env_remove("KELD_DEV_LEASE");
     }
-    let mut child = command.spawn().expect("start suspended invalid host");
+    let sessions = SessionDirCensus::before_launch();
+    let roots = sessions
+        .watcher_roots()
+        .expect("represent exact census roots in watcher arguments");
+    let mut child = ReapOnDrop(command.spawn().expect("start suspended invalid host"));
     // Retain the valid lease writer until the real host has exited. Legacy
     // callers still select the lease-less invalid-stage path above.
-    let _dev_lease = child.stdin.take();
-    let host_pid = child.id();
+    let _dev_lease = child.0.stdin.take();
+    let host_pid = child.0.id();
     await_process_state(host_pid, 'T');
-    let native = watcher.spawn(host_pid);
+    let native = watcher.spawn(host_pid, &roots, sessions.watcher_baseline(host_pid));
     let mut forbidden_control = false;
-    let output = wait_child_output_observing(child, EVENT_DEADLINE, || match listener.accept() {
-        Ok((mut stream, _)) => {
-            forbidden_control = true;
-            stream
-                .write_all(b"QUIT\n")
-                .expect("stop forbidden app through its owned lifecycle path");
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-        Err(error) => panic!("inspect invalid-stage control: {error}"),
-    });
+    let (output, native_output) =
+        observe_owned_stopped_child(child, native, EVENT_DEADLINE, || match listener.accept() {
+            Ok((mut stream, _)) => {
+                forbidden_control = true;
+                stream
+                    .write_all(b"QUIT\n")
+                    .expect("stop forbidden app through its owned lifecycle path");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("inspect invalid-stage control: {error}"),
+        });
     assert!(!forbidden_control, "{case}: Bun entered before preflight");
     assert!(
         !output.status.success(),
         "{case}: invalid boot became success"
     );
-    let native_output = native
-        .wait_with_output()
-        .expect("wait native absence watcher");
-    assert!(
-        native_output.status.success(),
-        "{case}: watcher failed: {native_output:?}"
-    );
+    // Native samples can miss activity between observations. The host ledger
+    // covers its instrumented startup points, not every native resource:
+    // Guardian bootstrap attempts, completed guarded-primary registration,
+    // and initial renderer window creation attempts.
     let observations = String::from_utf8(native_output.stdout).expect("watcher output UTF-8");
     assert_eq!(
         observations, "READY\nDONE\n",
-        "{case}: transient resource: {observations}"
+        "{case}: resource observed by native sampler: {observations}"
     );
     let stderr = std::str::from_utf8(&output.stderr).expect("typed stderr UTF-8");
     assert!(stderr.contains(expected_code), "{case}: {stderr}");
@@ -310,7 +313,7 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
         "{case}: Bun reached the control observer"
     );
     assert!(
-        session_dirs_for(host_pid).is_empty(),
+        sessions.dirs_for(host_pid).is_empty(),
         "{case}: app-link directory remains"
     );
     let _ = fs::remove_file(control_path);
