@@ -205,7 +205,11 @@ if (mode?.startsWith("scope-")) {
     mode === "zero-will-throw"
   ) {
     handlers.onLastWindowClosed();
-    assert.equal(allClosed, 1, "same-turn notification survives a will-quit veto");
+    assert.equal(
+      allClosed,
+      1,
+      "same-turn notification survives a will-quit veto",
+    );
     await nested;
     assert.equal(before, 1);
     assert.equal(willQuit, 1, "will-quit must fire before terminal Quit");
