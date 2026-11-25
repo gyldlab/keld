@@ -2,11 +2,90 @@
 # Five distinct Microsoft-signed SDK binaries serve ONLY as non-Keld test data;
 # no Keld signature, PublicTrust profile or catalogue authority is simulated.
 # Every invocation must refuse before creating a compiled installer or output.
-[CmdletBinding()]
-param([string]$BuilderOverride)
+[CmdletBinding(DefaultParameterSetName = 'NegativeSuite')]
+param(
+    [Parameter(ParameterSetName = 'NegativeSuite')]
+    [string]$BuilderOverride,
+
+    [Parameter(Mandatory = $true, ParameterSetName = 'OrdinaryFixtureCleanup')]
+    [switch]$OrdinaryFixtureCleanup,
+
+    [Parameter(Mandatory = $true, ParameterSetName = 'OwnedFixtureSmoke')]
+    [string]$OwnedFixtureSmokeRoot
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($PSCmdlet.ParameterSetName -ceq 'OrdinaryFixtureCleanup') {
+    if (-not $OrdinaryFixtureCleanup) {
+        throw 'OrdinaryFixtureCleanup must be enabled explicitly'
+    }
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw 'Ordinary NSIS fixture cleanup requires Windows'
+    }
+    # Check exact discovery before execution: Cargo accepts a zero-match filter.
+    $prefix = 'windows_fs::tests::nsis_fixture::nsis_fixture_ordinary_cleanup_'
+    $expected = @(
+        ($prefix + 'after_powershell_payload_refusal: test')
+        ($prefix + 'after_powershell_smoke: test')
+        ($prefix + 'retains_independent_extra_file: test')
+        ($prefix + 'uses_only_owned_handles: test')
+    )
+    Push-Location (Split-Path -Parent $PSScriptRoot)
+    try {
+        $listing = @(& cargo test --locked -p keld-update --lib $prefix -- --list)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ordinary NSIS fixture cleanup discovery failed (cargo exit $LASTEXITCODE)"
+        }
+        $registered = @($listing | Where-Object { $_ -cmatch ': (test|benchmark)$' })
+        if ($registered.Count -ne $expected.Count -or
+            @($expected | Where-Object { $_ -cnotin $registered }).Count -ne 0) {
+            throw 'Ordinary NSIS fixture cleanup discovery did not match the four expected test names'
+        }
+        $results = @(& cargo test --locked -p keld-update --lib $prefix -- --test-threads=1)
+        $exitCode = $LASTEXITCODE
+        $results | Write-Output
+        if ($exitCode -ne 0) {
+            throw "Ordinary NSIS fixture cleanup tests failed (cargo exit $exitCode)"
+        }
+        if (@($results | Where-Object { $_ -cmatch '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured;' }).Count -ne 1) {
+            throw 'Ordinary NSIS fixture cleanup did not pass all four expected tests'
+        }
+    } finally {
+        Pop-Location
+    }
+    return
+}
+
+if ($PSCmdlet.ParameterSetName -ceq 'OwnedFixtureSmoke') {
+    # The same-process Rust test owns creation and cleanup. This child only
+    # consumes a fixed, non-sensitive fixture payload; it never deletes or
+    # accepts a builder override in this mode.
+    if ($OwnedFixtureSmokeRoot -cnotmatch '^[A-Za-z]:[\\/]' -or
+        [IO.Path]::GetFileName($OwnedFixtureSmokeRoot) -cnotmatch '^keld-nsis-fixture-[0-9a-f]{32}$') {
+        throw 'KEL270_NSIS_OWNED_FIXTURE_SMOKE: expected an absolute local fixture path'
+    }
+    $payloadPath = Join-Path $OwnedFixtureSmokeRoot 'stage/payload'
+    $expected = [Text.Encoding]::ASCII.GetBytes('owned test bytes')
+    $sharing = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $payload = [IO.File]::Open($payloadPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $sharing)
+    try {
+        foreach ($byte in $expected) {
+            if ($payload.ReadByte() -ne $byte) {
+                throw 'KEL270_NSIS_OWNED_FIXTURE_SMOKE: fixture content differs'
+            }
+        }
+        if ($payload.ReadByte() -ne -1) {
+            throw 'KEL270_NSIS_OWNED_FIXTURE_SMOKE: fixture content differs'
+        }
+    } finally {
+        $payload.Dispose()
+    }
+    Write-Output 'KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true'
+    return
+}
+
 $builder = Join-Path $PSScriptRoot 'windows_v2_nsis_build.ps1'
 if (-not [string]::IsNullOrWhiteSpace($BuilderOverride)) {
     $builder = $BuilderOverride

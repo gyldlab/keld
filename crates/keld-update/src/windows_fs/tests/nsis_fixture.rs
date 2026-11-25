@@ -155,16 +155,97 @@ fn create_file(parent: &File, path: &Path, name: &str, bytes: &[u8]) -> OwnedFix
 
 #[test]
 fn nsis_fixture_ordinary_cleanup_uses_only_owned_handles() {
+    run_ordinary_cleanup(b"owned test bytes", false).expect("clean up the ordinary fixture");
+}
+
+#[test]
+fn nsis_fixture_ordinary_cleanup_after_powershell_smoke() {
+    run_ordinary_cleanup(b"owned test bytes", true)
+        .expect("PowerShell read-only owned fixture smoke");
+}
+
+#[test]
+fn nsis_fixture_ordinary_cleanup_after_powershell_payload_refusal() {
+    let error = run_ordinary_cleanup(b"ordinary fixture mismatch", true)
+        .expect_err("the child must refuse different ordinary bytes");
+    assert!(
+        error.to_string().contains("fixture content differs"),
+        "{error}"
+    );
+}
+
+#[test]
+fn nsis_fixture_ordinary_cleanup_retains_independent_extra_file() {
     let fixture = Fixture::new();
+    let extra = create_file(
+        &fixture.root,
+        &fixture.path,
+        "extra",
+        b"independent fixture data",
+    );
+    clean_owned_stage(&fixture, b"owned test bytes", false).expect("clean only our stage");
+
+    let Fixture {
+        temp_parent,
+        root,
+        root_token,
+        root_name,
+        path,
+    } = fixture;
+    drop(root);
+    let error = root_token
+        .remove(&temp_parent, &root_name)
+        .expect_err("must not discard a non-empty fixture");
+    assert_eq!(error.kind(), io::ErrorKind::DirectoryNotEmpty);
+    assert_eq!(
+        fs::read(path.join("extra")).expect("independent fixture entry retained"),
+        b"independent fixture data"
+    );
+
+    // This is the independent test author's own token, never available to
+    // the cleanup path under test. Only it may dispose of the extra file.
+    let root = retained_directory(&path);
+    root_token
+        .require_same(&root)
+        .expect("fixture root unchanged");
+    extra
+        .remove(&root, "extra")
+        .expect("release independently owned extra");
+    drop(extra);
+    assert_absent(&root, "extra");
+    drop(root);
+    root_token
+        .remove(&temp_parent, &root_name)
+        .expect("dispose of our empty test root");
+    drop(root_token);
+    assert_absent(&temp_parent, &root_name);
+}
+
+fn run_ordinary_cleanup(bytes: &[u8], run_smoke: bool) -> io::Result<()> {
+    let fixture = Fixture::new();
+    let result = clean_owned_stage(&fixture, bytes, run_smoke);
+    fixture.finish();
+    result
+}
+
+fn clean_owned_stage(fixture: &Fixture, bytes: &[u8], run_smoke: bool) -> io::Result<()> {
     let nested = create_directory_relative(&fixture.root, "stage").expect("create-new stage");
     let nested_path = fixture.path.join("stage");
     let nested_token =
         OwnedFixtureEntry::capture(&nested, &nested_path, EntryKind::Directory).expect("pin stage");
-    let payload = create_file(&nested, &nested_path, "payload", b"owned test bytes");
+    let payload = create_file(&nested, &nested_path, "payload", bytes);
     assert_eq!(
         fs::read(nested_path.join("payload")).expect("ordinary payload"),
-        b"owned test bytes"
+        bytes
     );
+    // The child reports only whether its ordinary read worked; it is not
+    // an identity witness. Never give the child a deletion token, and never
+    // skip cleanup of our original entries because it refused the fixture.
+    let result = if run_smoke {
+        read_fixture_through_runner(&fixture.path)
+    } else {
+        Ok(())
+    };
     payload
         .remove(&nested, "payload")
         .expect("delete owned payload");
@@ -176,7 +257,40 @@ fn nsis_fixture_ordinary_cleanup_uses_only_owned_handles() {
         .expect("delete owned empty stage");
     drop(nested_token);
     assert_absent(&fixture.root, "stage");
-    fixture.finish();
+    result
+}
+
+fn read_fixture_through_runner(root: &Path) -> io::Result<()> {
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| io::Error::other("Windows SystemRoot is unavailable"))?;
+    let powershell = system_root
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    let runner =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/windows_v2_nsis_build_test.ps1");
+    let output = std::process::Command::new(powershell)
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(runner)
+        .arg("-OwnedFixtureSmokeRoot")
+        .arg(root)
+        .output()?;
+    if output.status.success()
+        && String::from_utf8_lossy(&output.stdout).trim()
+            == "KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true"
+        && output.stderr.is_empty()
+    {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "owned fixture smoke failed: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
 }
 
 #[test]
