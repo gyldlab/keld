@@ -233,3 +233,17 @@ describe("GH451 D2 local before-quit preflight", () => {
     });
   }
 });
+
+test("GH451 accepted native Quit notifies once under reentrant and later calls", async () => {
+  child = Bun.spawn({
+    cmd: [process.execPath, "./native_quit_requested.ts", "zero-duplicate"],
+    cwd: fixtures,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+  });
+  const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+  expect(code).toBe(0);
+  expect(stderr).toBe("");
+  expect(stdout).toContain("PASS native-quit-requested-source zero-duplicate");
+});

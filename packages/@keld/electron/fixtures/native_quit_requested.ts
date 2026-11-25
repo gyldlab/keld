@@ -87,13 +87,14 @@ let allClosed = 0;
 let quitArgs: unknown[] | undefined;
 const sequence: string[] = [];
 let nested: Promise<void> | undefined;
+let reentrantAccepted: Promise<void> | undefined;
 app.on("before-quit", (event: unknown) => {
   before++;
   sequence.push("before-quit");
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
-if (mode?.startsWith("zero-will")) {
+if (mode?.startsWith("zero-will") || mode === "zero-duplicate") {
   app.on("will-quit", (event: unknown) => {
     willQuit++;
     sequence.push("will-quit");
@@ -103,7 +104,10 @@ if (mode?.startsWith("zero-will")) {
     }
     if (mode === "zero-will-throw" && willQuit === 1)
       throw new Error("controlled will-quit listener failure");
-    if (mode === "zero-will-veto" || willQuit === 1)
+    if (
+      mode === "zero-will-veto" ||
+      (willQuit === 1 && mode !== "zero-duplicate")
+    )
       (event as { preventDefault(): void }).preventDefault();
   });
   app.on("window-all-closed", () => {
@@ -112,6 +116,7 @@ if (mode?.startsWith("zero-will")) {
   app.on("quit", (...args: unknown[]) => {
     quitEvents++;
     sequence.push("quit");
+    if (mode === "zero-duplicate") reentrantAccepted = app.quit();
     // Listener exceptions are intentionally isolated. Check arguments
     // outside the callback so a regression cannot swallow the assertion.
     quitArgs = args;
@@ -241,6 +246,17 @@ if (mode?.startsWith("scope-")) {
         ? ["before-quit", "will-quit", "before-quit", "will-quit"]
         : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
     );
+  } else if (mode === "zero-duplicate") {
+    await nested;
+    await reentrantAccepted;
+    await app.quit();
+    assert.equal(terminals, 1, "one accepted terminal request");
+    assert.equal(
+      quitEvents,
+      1,
+      "reentrant and later calls cannot emit quit twice",
+    );
+    assert.deepEqual(sequence, ["before-quit", "will-quit", "quit"]);
   } else if (mode === "zero-will-create") {
     await assert.rejects(nested, /KELD-COMPAT-012/);
     assert.deepEqual(sequence, ["before-quit", "will-quit"]);
