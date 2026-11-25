@@ -167,6 +167,14 @@ jobs:
                 p === "crates/keld-wv/examples/linux_media_guard.rs" ||
                 p === "docs/audits/verify.py" ||
                 p === "docs/audits/test_verify.py" ||
+                // Catalogue Python imports can execute preexisting sourceless
+                // bytecode even with -B, or load native/archived helper code.
+                // Protect executable sidecars without blocking evidence JSON.
+                (p.startsWith("docs/engineering/evidence/kel270-catalogue-admission-v2/") &&
+                  ([".py", ".pyc", ".pyo", ".pyw", ".pyd", ".so", ".dll", ".dylib",
+                    ".bundle", ".pth", ".pyz", ".pyzw", ".zip", ".whl", ".egg",
+                    ".exe", ".sh", ".bat", ".cmd", ".ps1", ".psm1"].some((ext) => p.endsWith(ext)) ||
+                   /\.so\.\d+(?:\.\d+)*$/.test(p))) ||
                 p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
                 p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
                 p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||
