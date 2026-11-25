@@ -175,3 +175,5 @@ fn dev_signer_refuses_missing_duplicate_or_public_trust_ekus() {
         );
     }
 }
+
+mod receipt_model;
