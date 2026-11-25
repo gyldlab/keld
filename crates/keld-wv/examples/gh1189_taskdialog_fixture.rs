@@ -1,4 +1,5 @@
-// GH-1189 TEST-ONLY REVIEW DRAFT. Do not build/run before independent exact-target/FFI approval.
+//! GH-1189 isolated Windows TaskDialog lifecycle and one-fault controls.
+//! Native execution requires independent exact-target review and a fresh RAMANI slot.
 #![deny(unsafe_op_in_unsafe_fn)]
 #[cfg(target_os = "windows")]
 mod native {
@@ -18,7 +19,9 @@ mod native {
     use tao::event::Event;
     use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
     use tao::platform::run_return::EventLoopExtRunReturn;
-    use tao::platform::windows::{EventLoopBuilderExtWindows, WindowExtWindows};
+    use tao::platform::windows::{
+        EventLoopBuilderExtWindows, WindowBuilderExtWindows, WindowExtWindows,
+    };
     use tao::window::WindowBuilder;
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -33,10 +36,40 @@ mod native {
     enum Wake {
         Open,
         Finish,
+        RetireParent,
         Ack,
     }
 
+    // One explicit mode per disposable child; no combination is accepted.
+    // The default path keeps the independently verified positive fixture behavior.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Fault {
+        None,
+        TrailingByte,
+        OwnedDecoy,
+        SuppressDismissal,
+        HoldParent,
+    }
+
+    impl Fault {
+        fn from_args() -> Self {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            match args.as_slice() {
+                [] => Self::None,
+                [flag, mode] if flag == "--gh1189-fault" => match mode.as_str() {
+                    "trailing-byte" => Self::TrailingByte,
+                    "owned-decoy" => Self::OwnedDecoy,
+                    "suppress-dismissal" => Self::SuppressDismissal,
+                    "hold-parent" => Self::HoldParent,
+                    _ => panic!("unrecognized GH1189 test-only fault"),
+                },
+                _ => panic!("expected either no arguments or --gh1189-fault <one mode>"),
+            }
+        }
+    }
+
     struct State {
+        fault: Fault,
         cancel: Arc<AtomicBool>,
         visible_tx: mpsc::SyncSender<()>,
         visible_sent: AtomicBool,
@@ -124,7 +157,9 @@ mod native {
                     state.timeout.store(true, Ordering::SeqCst);
                 }
                 if (cancelled || timed_out) && state.requested.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return true;
+                    // One-fault control: the observer sent cancel, but this UI callback
+                    // deliberately withholds the physical TDM_CLICK_BUTTON.
+                    return state.fault != Fault::SuppressDismissal;
                 }
             }
             false
@@ -156,6 +191,7 @@ mod native {
 
     #[allow(unsafe_code)]
     pub(super) fn run() {
+        let fault = Fault::from_args();
         // The observer must first install its process-filtered hook, then write R.
         let mut ready = [0_u8; 1];
         std::io::stdin()
@@ -215,11 +251,17 @@ mod native {
                     }
                 }
             }
+            if ok && fault == Fault::TrailingByte {
+                // One-fault control: the three valid phase records remain unchanged.
+                // The independent reader must reject this single surplus byte.
+                ok = output.write_all(b"!").and_then(|_| output.flush()).is_ok();
+            }
             let _ = trace_done_tx.try_send(ok);
         });
         // Deliberately retain one bounded State allocation until process termination.
         // No destructor or reclamation races a late callback in this process.
         let state: &'static State = Box::leak(Box::new(State {
+            fault,
             cancel,
             visible_tx,
             visible_sent: AtomicBool::new(false),
@@ -297,10 +339,11 @@ mod native {
             .send(event_loop.create_proxy())
             .expect("controller proxy");
         let mut owned_window = Some(window);
+        let mut owned_decoy = None;
         let mut acknowledged = false;
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut armed = false;
-        event_loop.run_return(|event, _, flow| {
+        event_loop.run_return(|event, target, flow| {
             *flow = ControlFlow::WaitUntil(deadline);
             if Instant::now() >= deadline {
                 *flow = ControlFlow::Exit;
@@ -312,8 +355,35 @@ mod native {
                     pending.set(true);
                     event_proxy.send_event(Wake::Open).expect("fixture wake");
                 }
-                Event::UserEvent(Wake::Finish) => {
-                    // Tao posts destruction; keep its event loop alive to dispatch it.
+                Event::UserEvent(Wake::Finish) => match fault {
+                    Fault::OwnedDecoy => {
+                        // A second *fixture-owned* HWND appears only after the real
+                        // TaskDialog has returned. Tao owns creation/destruction;
+                        // the independent WinEvent hook must reject its SHOW.
+                        let owner = owned_window.as_ref().expect("live parent").hwnd();
+                        owned_decoy = Some(
+                            WindowBuilder::new()
+                                .with_title("GH1189 owned late decoy")
+                                .with_owner_window(owner)
+                                .with_visible(true)
+                                .build(target)
+                                .expect("owned test decoy"),
+                        );
+                        event_proxy
+                            .send_event(Wake::RetireParent)
+                            .expect("retire after decoy SHOW");
+                    }
+                    Fault::HoldParent => {
+                        // One-fault control: do not retire this owned parent when
+                        // the dialog is finished. Observer's parent-fence bound fails.
+                    }
+                    _ => {
+                        // Tao posts destruction; keep the loop alive to dispatch it.
+                        drop(owned_window.take());
+                    }
+                },
+                Event::UserEvent(Wake::RetireParent) => {
+                    drop(owned_decoy.take());
                     drop(owned_window.take());
                 }
                 Event::UserEvent(Wake::Ack) => {
@@ -325,6 +395,7 @@ mod native {
                 _ => {}
             }
         });
+        drop(owned_decoy);
         drop(owned_window);
         drop(event_loop);
         assert!(acknowledged, "observer fence acknowledgement missing");
