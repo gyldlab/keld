@@ -57,15 +57,29 @@ let requestCalls = 0;
 let terminalCalls = 0;
 let resolveClose;
 let rejectClose;
+let deferTerminal = false;
+let resolveTerminal;
+let rejectTerminal;
 const selectedWindow = { id: 7, incarnation: 258n };
 let windowFactCallback = () => {};
 function onWindowFactApplied(callback) { windowFactCallback = callback; }
 const stateDefineProperty = Object.defineProperty;
+const stateApply = Reflect.apply;
+const observeThen = Promise.prototype.then;
 const nativeFacadeBootSelected = true;
 function observeWindowCreateActivity() { return { epoch: 0n, pending: 0 }; }
 const apiApp = {
   isReady: () => true,
-  quit: () => { terminalCalls++; trace.push("terminal"); return Promise.resolve(); },
+  quit: () => {
+    terminalCalls++;
+    trace.push("terminal");
+    if (deferTerminal)
+      return new Promise((resolve, reject) => {
+        resolveTerminal = resolve;
+        rejectTerminal = reject;
+      });
+    return Promise.resolve();
+  },
 };
 function emit(name, event) {
   trace.push(name);
@@ -409,3 +423,71 @@ test("will-quit veto clears D2 before an already-queued next-turn Quit retry", a
   ]);
   expect(f.read<number>("terminalCalls")).toBe(1);
 });
+
+for (const route of ["close", "terminal"] as const) {
+  for (const outcome of ["success", "rejection"] as const) {
+    test(`Quit ${route} ignores premature duplicate Promise ${outcome}`, async () => {
+      const f = fixture();
+      f.run(`
+        nativeAlive = ${route === "close"};
+        deferTerminal = true;
+        let settlement = "pending";
+        let spoofedCalls = 0;
+        Promise.prototype.then = function(onFulfilled, onRejected) {
+          spoofedCalls++;
+          if (${outcome === "success"} && typeof onFulfilled === "function") {
+            onFulfilled({variant:"CloseRequested",close_seq:999n});
+            onFulfilled({variant:"CloseRequested",close_seq:999n});
+          } else if (${outcome === "rejection"} && typeof onRejected === "function") {
+            onRejected(new Error("forged denial"));
+            onRejected(new Error("duplicate denial"));
+          }
+          return this;
+        };
+        const first = quit();
+        stateApply(observeThen, first, [
+          () => { settlement = "fulfilled"; },
+          (error) => { settlement = error.message; },
+        ]);
+      `);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.read<string>("settlement")).toBe("pending");
+      expect(f.read<number>("spoofedCalls")).toBe(0);
+      expect(f.read<number>("requestCalls")).toBe(route === "close" ? 1 : 0);
+      expect(f.read<number>("terminalCalls")).toBe(
+        route === "terminal" ? 1 : 0,
+      );
+      expect(f.run<boolean>("quit() === first")).toBe(true);
+
+      if (outcome === "rejection") {
+        f.run(
+          route === "close"
+            ? 'rejectClose(new Error("actual Host denial"))'
+            : 'rejectTerminal(new Error("actual Host denial"))',
+        );
+      } else {
+        f.run(
+          route === "close"
+            ? 'resolveClose({variant:"CloseRequested",close_seq:3n})'
+            : "resolveTerminal()",
+        );
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.read<string>("settlement")).toBe(
+        outcome === "success" ? "fulfilled" : "actual Host denial",
+      );
+      expect(f.read<number>("spoofedCalls")).toBe(0);
+      // A genuine close-request response is still not physical Destroyed,
+      // and Host terminal admission is still not the public quit event.
+      expect(f.read<boolean>("nativeAlive")).toBe(route === "close");
+      expect(f.read<number>("terminalCalls")).toBe(
+        route === "terminal" ? 1 : 0,
+      );
+      expect(f.read<string[]>("trace")).toEqual(
+        route === "close"
+          ? ["before-quit"]
+          : ["before-quit", "will-quit", "terminal"],
+      );
+    });
+  }
+}

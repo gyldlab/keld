@@ -176,3 +176,114 @@ test("genuine failed Host Create releases the reservation exactly once", async (
   expect(f.run<number>("observeWindowCreateActivity().pending")).toBe(0);
   expect(f.run<boolean>("hostOpening")).toBe(false);
 });
+
+test("forged rejection cannot release Create before genuine Host rejection", async () => {
+  const f = fixture();
+  f.run(`
+    let observedOutcome = "pending";
+    Promise.prototype.then = function(onFulfilled, onRejected) {
+      spoofedThenCalls++;
+      if (typeof onRejected === "function") {
+        onRejected(new Error("premature rejection"));
+        onRejected(new Error("duplicate rejection"));
+      }
+      return this;
+    };
+    const outstandingCreate = invokeWindow(createRequest);
+    stateApply(trustedWindowPromiseThen, outstandingCreate, [
+      () => { observedOutcome = "unexpected success"; },
+      (error) => { observedOutcome = error.message; },
+    ]);
+  `);
+  expect(f.run<number>("hostCalls")).toBe(1);
+  expect(f.run<boolean>("hostOpening")).toBe(true);
+  expect(f.run<number>("spoofedThenCalls")).toBe(0);
+  expect(f.run<string>("observedOutcome")).toBe("pending");
+  expect(f.run<number>("observeWindowCreateActivity().pending")).toBe(1);
+  expect(f.run<boolean>("createRacedWithQuit(quitStartEpoch)")).toBe(true);
+
+  f.run('rejectRawHost(new Error("actual Host refusal"))');
+  await drainReactions();
+  expect(f.run<boolean>("hostOpening")).toBe(false);
+  expect(f.run<number>("observeWindowCreateActivity().pending")).toBe(0);
+  expect(f.run<string>("observedOutcome")).toBe("actual Host refusal");
+  expect(f.run<number>("spoofedThenCalls")).toBe(0);
+});
+
+const quitApi = new Bun.Transpiler({ loader: "ts" }).transformSync(
+  [
+    section(
+      apiSource,
+      "const trustedWindowPromiseThen =",
+      "\n// Supplemental role-local",
+    ),
+    section(apiSource, "function ignoreIfUnawaited(", "\nfunction ensureLink("),
+    section(apiSource, "function closedByQuit(", "\nexport const app:"),
+  ].join("\n"),
+);
+
+for (const result of ["success", "rejection"] as const) {
+  test(`actual ready API Quit waits for Host ${result} despite Promise replacement`, async () => {
+    const ctx = vm.createContext(Object.create(null), {
+      codeGeneration: { strings: false, wasm: false },
+    });
+    vm.runInContext(
+      `
+      const stateApply = Reflect.apply;
+      const observeThen = Promise.prototype.then;
+      const hostLaunchFacts = undefined;
+      let hostReady = true;
+      let linkDead;
+      let calls = 0;
+      let cleanups = 0;
+      let forgedCalls = 0;
+      let settlement = "pending";
+      let resolveHost, rejectHost;
+      const connectedLink = {
+        quit() {
+          calls++;
+          return new Promise((resolve, reject) => {
+            resolveHost = resolve;
+            rejectHost = reject;
+          });
+        }
+      };
+      function ensureLink() { throw new Error("Ready Quit must use current link"); }
+      function failReadyWaiters(error) { cleanups++; linkDead = error; }
+      ${quitApi}
+      Promise.prototype.then = function(onFulfilled, onRejected) {
+        forgedCalls++;
+        if (typeof onFulfilled === "function") onFulfilled();
+        return Promise.resolve();
+      };
+      const done = sendQuit();
+      stateApply(observeThen, done, [
+        () => { settlement = "fulfilled"; },
+        (error) => { settlement = error.message; },
+      ]);
+    `,
+      ctx,
+      { timeout: 500 },
+    );
+    const read = <T>(code: string): T =>
+      vm.runInContext(code, ctx, { timeout: 500 }) as T;
+    await drainReactions();
+    expect(read<number>("calls")).toBe(1);
+    expect(read<string>("settlement")).toBe("pending");
+    expect(read<number>("forgedCalls")).toBe(0);
+    expect(read<number>("cleanups")).toBe(0);
+    read("hostReady = false");
+    read(
+      result === "success"
+        ? "resolveHost()"
+        : 'rejectHost(new Error("Host Quit denied"))',
+    );
+    await drainReactions();
+    expect(read<string>("settlement")).toBe(
+      result === "success" ? "fulfilled" : "Host Quit denied",
+    );
+    expect(read<number>("cleanups")).toBe(1);
+    expect(read<string>("linkDead.code")).toBe("KELD-IPC-022");
+    expect(read<number>("forgedCalls")).toBe(0);
+  });
+}

@@ -25,6 +25,7 @@ use objc2::{MainThreadMarker, class, ffi, msg_send, sel};
 use tao::event_loop::EventLoopProxy;
 
 use super::WkUserEvent;
+use super::native_quit_queue::QueuedNativeQuit;
 use crate::error::WvError;
 
 struct Owner {
@@ -32,7 +33,7 @@ struct Owner {
     delegate: usize,
     proxy: EventLoopProxy<WkUserEvent>,
     source_attempt: Arc<AtomicU32>,
-    pending: Cell<bool>,
+    pending: QueuedNativeQuit,
     delivery_failed: Cell<bool>,
 }
 
@@ -74,7 +75,7 @@ impl NativeQuitBridge {
             delegate,
             proxy,
             source_attempt,
-            pending: Cell::new(false),
+            pending: QueuedNativeQuit::default(),
             delivery_failed: Cell::new(false),
         });
         OWNER
@@ -102,8 +103,8 @@ impl NativeQuitBridge {
     /// Retire the posted Quit intent so later OS requests can be diagnosed.
     /// A native close request cannot prove that the legacy renderer accepted
     /// its close, so no window is touched until GH451's veto owner is qualified.
-    pub(super) fn retain_unqualified_quit(&self) {
-        self.owner.pending.set(false);
+    pub(super) fn retain_unqualified_quit(&self, source_attempt: u32) {
+        self.owner.pending.retire(source_attempt);
     }
 }
 
@@ -219,8 +220,7 @@ unsafe extern "C-unwind" fn should_terminate(
         // Capture Core's original role on this AppKit callback, before Tao
         // can buffer the event across a recovery. Zero is a safe cancel.
         let source_attempt = owner.source_attempt.load(Ordering::Acquire);
-        if source_attempt != 0
-            && !owner.pending.replace(true)
+        if owner.pending.try_enqueue(source_attempt)
             && owner
                 .proxy
                 .send_event(WkUserEvent::NativeQuitRequested { source_attempt })

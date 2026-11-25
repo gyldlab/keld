@@ -40,8 +40,8 @@ if (mutation === "omit-late-fatal")
   );
 if (mutation === "premature-detach")
   code = code.replace(
-    "void terminal(attempt).then(",
-    "activeQuitAttempt = undefined;\n    void terminal(attempt).then(",
+    "void stateApply(trustedQuitPromiseThen, terminal(attempt), [",
+    "activeQuitAttempt = undefined;\n    void stateApply(trustedQuitPromiseThen, terminal(attempt), [",
   );
 const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
 
@@ -54,6 +54,7 @@ function setup() {
 // This VM runs the exact extracted handoff logic without module imports.
 // Native captured-intrinsic behavior is exercised by native_quit_requested.
 const stateDefineProperty = Object.defineProperty;
+const stateApply = Reflect.apply;
 let beforeCalls=0;
 function emit() { beforeCalls++; return false; }
 const trace=[], lateErrors=[];

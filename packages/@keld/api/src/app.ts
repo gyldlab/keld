@@ -366,7 +366,7 @@ function failReadyWaiters(err: Error): void {
 }
 
 function ignoreIfUnawaited(promise: Promise<unknown>): void {
-  void promise.catch(() => {});
+  void stateApply(trustedWindowPromiseThen, promise, [undefined, () => {}]);
 }
 
 function ensureLink(): Promise<LifecycleLink> {
@@ -434,11 +434,20 @@ function sendQuit(): Promise<void> {
     hostReady && connectedLink
       ? connectedLink.quit()
       : ensureLink().then((link) => link.quit());
-  const done = requested.finally(() => {
+  const finish = (): void => {
     // The Quit closed the link, which suppresses onLinkDead: a whenReady
     // still waiting can never see Ready, so it rejects with the close.
     if (!hostReady && linkDead === undefined) failReadyWaiters(closedByQuit());
-  });
+  };
+  // Promise.finally consults the receiver's application-mutable then.
+  // Observe only the genuine link settlement and preserve its exact error.
+  const done = stateApply(trustedWindowPromiseThen, requested, [
+    finish,
+    (error: unknown): never => {
+      finish();
+      throw error;
+    },
+  ]) as Promise<void>;
   ignoreIfUnawaited(done);
   return done;
 }

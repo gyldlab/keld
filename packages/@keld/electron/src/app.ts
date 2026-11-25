@@ -37,7 +37,10 @@ import {
 } from "./app-session-facts.ts";
 
 import { UnsupportedMemberError } from "./unsupported.ts";
-import type { WindowRef } from "@keld/api/internal/window-codec";
+import type {
+  WindowRef,
+  WindowResponse,
+} from "@keld/api/internal/window-codec";
 
 type AppListener = (...args: never[]) => void;
 
@@ -109,7 +112,7 @@ export function emitNativeAppEvent(event: string, ...args: unknown[]): void {
 }
 
 function ignoreIfUnawaited(promise: Promise<unknown>): void {
-  void promise.catch(() => {});
+  void stateApply(trustedQuitPromiseThen, promise, [undefined, () => {}]);
 }
 
 function observeReady(): Promise<void> {
@@ -269,6 +272,9 @@ interface QuitAttempt {
   closing: boolean;
   handoff?: OriginalWindowQuitScope;
 }
+// The facade's private Host replies must not settle through an application
+// replacement of Promise.prototype.then after the framework has loaded.
+const trustedQuitPromiseThen = Promise.prototype.then;
 let activeQuitAttempt: QuitAttempt | undefined;
 
 // The nonterminal original close handoff settles its JS Promise at an
@@ -413,7 +419,10 @@ function requestQuitAfterBeforeEvent(
   };
   try {
     // Same-turn terminal admission remains essential for the zero-window path.
-    void terminal(attempt).then(() => fulfillQuitAttempt(attempt), failed);
+    void stateApply(trustedQuitPromiseThen, terminal(attempt), [
+      () => fulfillQuitAttempt(attempt),
+      failed,
+    ]);
   } catch (error) {
     failed(error);
   }
@@ -477,32 +486,34 @@ function quit(): Promise<void> {
             joinOriginalQuitBeforeClose(scope.window, pending)
           )
             return Promise.resolve();
-          return scope.requestClose().then((reply) => {
-            if (
-              reply.variant !== "CloseRequested" &&
-              reply.variant !== "Merged" &&
-              reply.variant !== "AlreadyClosing"
-            )
-              throw linkError(
-                "KELD-IPC-003",
-                "original single-window Quit handoff received an invalid close response",
-              );
-            if (
-              reply.variant === "AlreadyClosing" &&
-              pendingOriginalQuitClose?.attempt === attempt &&
-              pendingOriginalQuitClose.closeSeq === null
-            ) {
-              throw linkError(
-                "KELD-CORE-054",
-                "original Quit cannot bind an already-closing window without its dispatched close sequence",
-              );
-            }
-            if (reply.variant !== "AlreadyClosing") {
-              const claim = pendingOriginalQuitClose;
-              if (claim?.attempt === attempt && claim.closeSeq === null)
-                claim.closeSeq = reply.close_seq;
-            }
-          });
+          return stateApply(trustedQuitPromiseThen, scope.requestClose(), [
+            (reply: WindowResponse) => {
+              if (
+                reply.variant !== "CloseRequested" &&
+                reply.variant !== "Merged" &&
+                reply.variant !== "AlreadyClosing"
+              )
+                throw linkError(
+                  "KELD-IPC-003",
+                  "original single-window Quit handoff received an invalid close response",
+                );
+              if (
+                reply.variant === "AlreadyClosing" &&
+                pendingOriginalQuitClose?.attempt === attempt &&
+                pendingOriginalQuitClose.closeSeq === null
+              ) {
+                throw linkError(
+                  "KELD-CORE-054",
+                  "original Quit cannot bind an already-closing window without its dispatched close sequence",
+                );
+              }
+              if (reply.variant !== "AlreadyClosing") {
+                const claim = pendingOriginalQuitClose;
+                if (claim?.attempt === attempt && claim.closeSeq === null)
+                  claim.closeSeq = reply.close_seq;
+              }
+            },
+          ]) as Promise<void>;
         }
       }
       if (live.length !== 0) {
@@ -563,16 +574,19 @@ onWindowFactApplied((fact) => {
 onNativeQuitRequested(() => {
   // Same framework Quit owner/D2 preflight, never a caller MenuItem click or
   // a forceful Host terminal request while the original document is live.
-  void quit().catch((error: unknown) => {
-    try {
-      console.error(
-        "KELD native menu Quit failed; inspect the current original role/link:",
-        error,
-      );
-    } catch {
-      /* Diagnostic replacement cannot retry, force Quit or change the actual cause. */
-    }
-  });
+  void stateApply(trustedQuitPromiseThen, quit(), [
+    undefined,
+    (error: unknown) => {
+      try {
+        console.error(
+          "KELD native menu Quit failed; inspect the current original role/link:",
+          error,
+        );
+      } catch {
+        /* Diagnostic replacement cannot retry, force Quit or change the actual cause. */
+      }
+    },
+  ]);
 });
 // `name` and `isPackaged` are defined below as non-enumerable accessors, as
 // Electron defines them; literal getters would be enumerable and make a spread

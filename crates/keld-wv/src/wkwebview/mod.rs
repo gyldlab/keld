@@ -61,6 +61,7 @@ mod macos_resource_native;
 mod macos_resource_source;
 mod macos_termination;
 mod managed_windows;
+mod native_quit_queue;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 pub use application_name_fixture::run_application_name_fixture_child;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -1033,7 +1034,7 @@ impl WkWebViewEngine {
                         // close/preventDefault decision for legacy windows. Core
                         // may forward only a qualified selected original intent;
                         // it never receives native authority to destroy a view.
-                        native_quit.retain_unqualified_quit();
+                        native_quit.retain_unqualified_quit(source_attempt);
                         if let Err(error) = forward_native_quit_intent(&events, source_attempt) {
                             main_owner_failure.get_or_insert(error);
                             // A lost Core observer cannot give a renderer close
