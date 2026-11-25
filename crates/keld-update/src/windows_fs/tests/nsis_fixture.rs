@@ -783,3 +783,84 @@ fn nsis_fixture_ordinary_lifecycle_move_then_retire_child_before_parent() {
     assert_absent(&fixture.root, stage_name);
     fixture.finish();
 }
+
+#[test]
+fn nsis_fixture_ordinary_staging_cleans_partial_population() {
+    use std::io::{Cursor, Read as _};
+
+    struct RefusingInput;
+    impl io::Read for RefusingInput {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("ordinary fixture source refused"))
+        }
+    }
+
+    fn stage_input(
+        fixture: &Fixture,
+        owned: &mut Vec<(&'static str, OwnedFixtureEntry)>,
+        name: &'static str,
+        source: &mut impl io::Read,
+    ) -> io::Result<()> {
+        let mut writer = create_file_relative_with_profile(
+            &fixture.root,
+            name,
+            keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+        )?;
+        let owner = OwnedFixtureEntry::capture(&writer, &fixture.path.join(name), EntryKind::File)?;
+        // Capture from creation before a copy can fail after emitting some bytes.
+        // A name collision or failed identity capture never grants cleanup authority.
+        owned.push((name, owner));
+        io::copy(source, &mut writer)?;
+        writer.sync_all()
+    }
+
+    let fixture = Fixture::new();
+    let independent = create_file(&fixture.root, &fixture.path, "independent", b"preserve me");
+    let mut owned = Vec::new();
+    stage_input(
+        &fixture,
+        &mut owned,
+        "first",
+        &mut Cursor::new(b"complete data"),
+    )
+    .expect("stage first ordinary input");
+    let mut interrupted = Cursor::new(b"partial").chain(RefusingInput);
+    let error = stage_input(&fixture, &mut owned, "second", &mut interrupted)
+        .expect_err("reject the interrupted ordinary input");
+    assert_eq!(error.to_string(), "ordinary fixture source refused");
+    assert_eq!(
+        fs::read(fixture.path.join("first")).expect("first bytes"),
+        b"complete data"
+    );
+    assert_eq!(
+        fs::read(fixture.path.join("second")).expect("partial bytes"),
+        b"partial"
+    );
+
+    let collision = stage_input(
+        &fixture,
+        &mut owned,
+        "independent",
+        &mut Cursor::new(b"replace"),
+    )
+    .expect_err("staging must not adopt a distinct preexisting file");
+    assert_eq!(collision.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(owned.len(), 2);
+    for (name, owner) in owned.into_iter().rev() {
+        owner
+            .remove(&fixture.root, name)
+            .expect("retire only claimed inputs");
+        drop(owner);
+        assert_absent(&fixture.root, name);
+    }
+    assert_eq!(
+        fs::read(fixture.path.join("independent")).expect("independent bytes"),
+        b"preserve me"
+    );
+    independent
+        .remove(&fixture.root, "independent")
+        .expect("retire independently owned input");
+    drop(independent);
+    assert_absent(&fixture.root, "independent");
+    fixture.finish();
+}
