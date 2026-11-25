@@ -22,6 +22,9 @@ const DATA_MAX = 16384;
 const CONTROL_MAX = 4096;
 const VALUE_MAX = 4096;
 
+// Capture the allocator while the trusted module initializes.
+const OwnedPayloadBytes = Uint8Array;
+
 function invalid(detail: string): never {
   throw kipcError("KELD-IPC-003", detail);
 }
@@ -119,7 +122,7 @@ function readBytes(bytes: Uint8Array, at: number): [Uint8Array, number] {
   const [count, start] = decodeVarint(bytes, at);
   if (count > VALUE_MAX || count > bytes.byteLength - start)
     return invalid("compat endpoint bytes exceed declared bound");
-  const copied = new Uint8Array(count);
+  const copied = new OwnedPayloadBytes(count);
   for (let i = 0; i < count; i++) copied[i] = bytes[start + i]!;
   return [copied, start + count];
 }
