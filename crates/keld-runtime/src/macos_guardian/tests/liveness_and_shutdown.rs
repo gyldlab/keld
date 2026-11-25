@@ -18,7 +18,10 @@ use super::super::{
     GUARDIAN_SHUTDOWN_DEADLINE, HostGuardian, RuntimeError, run_with_registration,
     terminate_registered_group,
 };
-use super::test_support::{assert_gone, liveness_pipe, long_running_command, test_group_identity};
+use super::test_support::{
+    NativeChildOwner, assert_gone, liveness_pipe, long_running_command,
+    reap_owned_child_with_deadline, test_group_identity,
+};
 
 mod bootstrap_admission;
 mod cleanup_authority;
@@ -124,7 +127,7 @@ fn registered_group_fallback_terminates_a_live_leader() {
 fn guardian_death_is_typed_and_cannot_leave_the_group() {
     let mut group_command = long_running_command();
     group_command.process_group(0);
-    let mut group = group_command.spawn().expect("spawn registered group");
+    let group = NativeChildOwner::new(group_command.spawn().expect("spawn registered group"));
     let group_pid = group.id();
 
     let mut guardian_command = Command::new("/usr/bin/tail");
@@ -144,6 +147,9 @@ fn guardian_death_is_typed_and_cannot_leave_the_group() {
     )
     .expect("kill guardian while host remains live");
 
+    // The Guardian normally owns the Bun child wait. Reap the test-owned
+    // stand-in concurrently; otherwise its zombie makes dual ESRCH impossible.
+    let group_reaper = reap_owned_child_with_deadline(group);
     let error = owner
         .wait_fatal()
         .expect_err("guardian death must be a fatal session event");
@@ -155,7 +161,7 @@ fn guardian_death_is_typed_and_cannot_leave_the_group() {
             ..
         } if observed == group_pid
     ));
-    let status = group.wait().expect("wait fail-safe-killed group");
+    let status = group_reaper.join().expect("exact test-owned group reaped");
     assert_eq!(status.signal(), Some(9));
     assert_eq!(owner.group_pid(), None);
 }
@@ -164,7 +170,7 @@ fn guardian_death_is_typed_and_cannot_leave_the_group() {
 fn orderly_shutdown_closes_the_same_liveness_writer() {
     let mut group_command = long_running_command();
     group_command.process_group(0);
-    let mut group = group_command.spawn().expect("spawn registered group");
+    let group = NativeChildOwner::new(group_command.spawn().expect("spawn registered group"));
     let group_pid = group.id();
     let group_birth = test_group_identity(group_pid);
     let mut guardian_command = Command::new("/bin/sh");
@@ -177,6 +183,7 @@ fn orderly_shutdown_closes_the_same_liveness_writer() {
     let writer = guardian.stdin.take().expect("guardian liveness writer");
     let mut owner = HostGuardian::from_registered_parts(guardian, writer, None, group_birth)
         .expect("register host guardian owner");
+    let group_reaper = reap_owned_child_with_deadline(group);
     let status = owner.shutdown().expect("orderly EOF shutdown");
     assert!(status.success());
     assert_eq!(owner.group_pid(), None);
@@ -184,7 +191,7 @@ fn orderly_shutdown_closes_the_same_liveness_writer() {
         .shutdown()
         .expect_err("terminal owner must not reuse its numeric group id");
     assert!(error.to_string().contains("already terminal"), "{error}");
-    let group_status = group.wait().expect("wait orderly-shutdown test group");
+    let group_status = group_reaper.join().expect("exact test-owned group reaped");
     assert_eq!(group_status.signal(), Some(9));
     // Darwin may report EPERM for a killed but unreaped group leader.
     terminate_attested_group(group_birth).expect("confirm exact original group is gone");
@@ -195,7 +202,7 @@ fn orderly_shutdown_closes_the_same_liveness_writer() {
 fn zero_exit_guardian_shutdown_reaps_still_registered_group() {
     let mut cmd = long_running_command();
     cmd.process_group(0);
-    let mut group = cmd.spawn().expect("independent registered group");
+    let group = NativeChildOwner::new(cmd.spawn().expect("independent registered group"));
     let group_pid = group.id();
     let mut cmd = Command::new("/bin/sh");
     cmd.args(["-c", "read ignored || exit 0"])
@@ -208,22 +215,16 @@ fn zero_exit_guardian_shutdown_reaps_still_registered_group() {
         HostGuardian::from_registered_parts(guardian, writer, None, test_group_identity(group_pid))
             .expect("registered owner");
 
+    let group_reaper = reap_owned_child_with_deadline(group);
     let status = owner.shutdown().expect("successful guardian shutdown");
     assert!(status.success());
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut retired = group.try_wait().expect("inspect registered group");
-    while retired.is_none() && Instant::now() < deadline {
-        thread::yield_now();
-        retired = group.try_wait().expect("observe group retirement");
-    }
-    let group_reaped = retired.is_some();
-    if !group_reaped {
-        terminate_registered_group(group_pid).expect("test fallback signal");
-        group.wait().expect("test fallback reap");
-    }
-    assert!(
-        group_reaped,
-        "zero-status guardian stranded its registered group"
+    assert_eq!(
+        group_reaper
+            .join()
+            .expect("exact test-owned group reaped")
+            .signal(),
+        Some(9),
+        "zero-status Guardian must terminate the enrolled group before CLEAR"
     );
     assert_eq!(owner.group_pid(), None);
 }
@@ -296,7 +297,7 @@ fn dropping_wedged_registered_guardian_enforces_shutdown_deadline() {
 fn orderly_shutdown_deadline_kills_guardian_and_registered_group() {
     let mut group_command = long_running_command();
     group_command.process_group(0);
-    let mut group = group_command.spawn().expect("spawn timeout group");
+    let group = NativeChildOwner::new(group_command.spawn().expect("spawn timeout group"));
     let group_pid = group.id();
     let mut guardian_command = long_running_command();
     guardian_command.stdin(Stdio::piped());
@@ -311,7 +312,10 @@ fn orderly_shutdown_deadline_kills_guardian_and_registered_group() {
         .shutdown_until(Instant::now())
         .expect_err("wedged guardian must hit the shutdown deadline");
     assert!(error.to_string().contains("shutdown deadline"), "{error}");
-    assert_eq!(owner.group_pid(), None);
+    // This caller deliberately supplied an already-expired absolute deadline.
+    // Group absence cannot be proved within that budget: retain the original
+    // birth witness instead of claiming successful retirement.
+    assert_eq!(owner.group_pid(), Some(group_pid));
     assert_eq!(
         kill(
             Pid::from_raw(i32::try_from(guardian_pid).expect("guardian pid fits i32")),
@@ -319,7 +323,9 @@ fn orderly_shutdown_deadline_kills_guardian_and_registered_group() {
         ),
         Err(Errno::ESRCH)
     );
-    let group_status = group.wait().expect("wait timeout-killed group");
+    let group_status = reap_owned_child_with_deadline(group)
+        .join()
+        .expect("exact test-owned group reaped after timeout");
     assert_eq!(group_status.signal(), Some(9));
 }
 

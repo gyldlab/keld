@@ -92,7 +92,7 @@ fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
     assert_eq!(parts.first().copied(), Some("HELLO"), "{hello}");
     let bun_pid = parse_pid(parts.get(1).copied(), &hello);
     assert!(parts.get(2).is_some_and(|locator| locator.contains('#')));
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
@@ -183,7 +183,7 @@ fn shipping_schema_two_stalled_init_exits_through_the_binary_terminal_once() {
     let parts: Vec<_> = hello.split_whitespace().collect();
     assert_eq!(parts.first().copied(), Some("HELLO"), "{hello}");
     let bun_pid = parse_pid(parts.get(1).copied(), &hello);
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
     // No readiness token is permitted while the genuine Tao Init is absent.
     let mut remaining = String::new();
@@ -320,7 +320,7 @@ fn electron_facade_ready_and_when_ready_agree_on_the_real_zero_window_host() {
     assert_eq!(fields.first().copied(), Some("FACADE_READY"), "{ready}");
     let bun_pid = parse_pid(fields.get(1).copied(), &ready);
     assert_eq!(fields.get(2).copied(), Some("eventCount=1"), "{ready}");
-    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    cleanup.record_direct_host_groups(process_group(host_pid), process_group(bun_pid));
     assert_zero_native_app_windows(host_pid);
 
     writer.write_all(b"QUIT\n").expect("facade Quit request");

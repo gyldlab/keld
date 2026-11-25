@@ -214,17 +214,50 @@ impl std::fmt::Display for RuntimeError {
     }
 }
 
-impl std::error::Error for RuntimeError {}
+impl std::error::Error for RuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Spawn(source)
+            | Self::Lifecycle { source, .. }
+            | Self::GuardianExited {
+                cleanup_error: Some(source),
+                ..
+            } => Some(source),
+            Self::CrashLoop { .. }
+            | Self::ChildCrashed { .. }
+            | Self::GuardianExited {
+                cleanup_error: None,
+                ..
+            } => None,
+        }
+    }
+}
+
+fn clone_runtime_io_error(source: &std::io::Error) -> std::io::Error {
+    #[cfg(target_os = "macos")]
+    if let Some(causes) = source
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<macos_guardian::GuardianCleanupCauses>())
+    {
+        return std::io::Error::other(causes.clone());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(denied) = macos_guardian::clone_unproven_denied_signal(source) {
+        return denied;
+    }
+    if let Some(errno) = source.raw_os_error() {
+        return std::io::Error::from_raw_os_error(errno);
+    }
+    std::io::Error::new(source.kind(), source.to_string())
+}
 
 impl Clone for RuntimeError {
     fn clone(&self) -> Self {
         match self {
-            Self::Spawn(source) => {
-                Self::Spawn(std::io::Error::new(source.kind(), source.to_string()))
-            }
+            Self::Spawn(source) => Self::Spawn(clone_runtime_io_error(source)),
             Self::Lifecycle { phase, source } => Self::Lifecycle {
                 phase,
-                source: std::io::Error::new(source.kind(), source.to_string()),
+                source: clone_runtime_io_error(source),
             },
             Self::CrashLoop {
                 crashes,
@@ -253,9 +286,7 @@ impl Clone for RuntimeError {
             } => Self::GuardianExited {
                 group_pid: *group_pid,
                 exit_code: *exit_code,
-                cleanup_error: cleanup_error
-                    .as_ref()
-                    .map(|source| std::io::Error::new(source.kind(), source.to_string())),
+                cleanup_error: cleanup_error.as_ref().map(clone_runtime_io_error),
             },
         }
     }
