@@ -42,7 +42,20 @@ Keld migrate report — my-electron-app
 
 Nothing else. No `src-tauri/`, no Rust files, no new IDL in the migration path.
 
-`keld.config.ts` sketch:
+`keld.config.ts` destination sketch (not the current parser contract):
+
+Current boot consumers use root fields such as `name` and `entry`; the original-app
+integration also owns root `version`. The approved
+[local macOS packaging specification](../specs/gh1404-macos-local-app-packaging/index.md) proposes one
+root `id` alongside those fields and a bounded literal `keld.build.ts` subset. It
+does not make the nested `app` example below a second accepted metadata source.
+[PR #1407's delegated implementation approval](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030)
+covers historical revision `3c490596`. The owner subsequently recorded
+[exact-content B-1 approval](https://github.com/gyldlab/keld/issues/1404#issuecomment-7032207831)
+for the amended specification on 2026-11-20. Its status is now `approved`.
+This is not personal human PR reviewer sign-off, installed-product acceptance
+or merge clearance. [GH-1404](https://github.com/gyldlab/keld/issues/1404)
+tracks those separate gates.
 
 ```ts
 import { defineConfig } from "@keld/cli";
