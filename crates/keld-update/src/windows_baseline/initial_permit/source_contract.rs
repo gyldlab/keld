@@ -170,6 +170,58 @@ fn all_three_legacy_modes_recheck_native_guard_before_first_effect() {
 }
 
 #[test]
+fn bootstrap_preparation_is_separate_from_the_native_create() {
+    let visible = hide_non_code(LEGACY_INITIALIZER).expect("visible bootstrap source");
+    let start = visible
+        .find("pub(super) fn acquire_bootstrap_lock(")
+        .expect("bootstrap wrapper");
+    let end = visible
+        .find("pub(super) fn recheck_bootstrap_scaffold(")
+        .expect("post-create scaffold check");
+    let actual = code(&visible[start..end])
+        .split_whitespace()
+        .collect::<String>();
+    let reviewed = r#"
+pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError> {
+    let prepared = prepare_bootstrap_lock(roots)?;
+    create_prepared_bootstrap_lock(prepared)
+}
+struct PreparedBootstrapLock {
+    update: File,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+}
+fn prepare_bootstrap_lock(roots: &Roots) -> Result<PreparedBootstrapLock, UpdateError> {
+    let profile = roots.profile();
+    let install = roots.install().map_err(|cause| error("install root", cause))?;
+    let update_name = roots.trust.installation.update_root.file_name()
+        .and_then(|value| value.to_str()).ok_or_else(|| error("topology", "update name absent"))?;
+    exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
+    exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
+    exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
+    let update = roots.update.try_clone()
+        .map_err(|cause| error("exclusive bootstrap parent", cause))?.into_std_file();
+    Ok(PreparedBootstrapLock { update, profile })
+}
+fn create_prepared_bootstrap_lock(prepared: PreparedBootstrapLock) -> Result<File, UpdateError> {
+    let PreparedBootstrapLock { update, profile } = prepared;
+    let lock = create_file_relative_exclusive_with_profile(&update, "bootstrap.lock", profile)
+        .map_err(|cause| error("exclusive bootstrap lock", cause))?;
+    keld_guard::validate_windows_install_file(&lock, profile)
+        .map_err(|cause| error("bootstrap lock profile", cause))?;
+    lock.sync_all().map_err(|cause| error("bootstrap lock flush", cause))?;
+    Ok(lock)
+}
+"#;
+    let expected = code(&hide_non_code(reviewed).expect("visible review contract"))
+        .split_whitespace()
+        .collect::<String>();
+    assert_eq!(
+        actual, expected,
+        "unreviewed bootstrap preparation or creation"
+    );
+}
+
+#[test]
 fn native_effect_recheck_single_fault_mutations_are_refused() {
     let recheck = "require_native_baseline_authority(authority)\n        .map_err(|cause| error(\"bootstrap authority recheck\", cause))?;";
     for (label, before, after) in [

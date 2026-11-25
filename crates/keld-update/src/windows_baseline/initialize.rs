@@ -310,6 +310,18 @@ mod publication;
 use publication::{publish_baseline_version, seed_baseline_pointers};
 
 pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError> {
+    let prepared = prepare_bootstrap_lock(roots)?;
+    create_prepared_bootstrap_lock(prepared)
+}
+
+struct PreparedBootstrapLock {
+    update: File,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+}
+
+// Read-only preparation. Retaining the parent does not reserve a namespace
+// or grant installation authority.
+fn prepare_bootstrap_lock(roots: &Roots) -> Result<PreparedBootstrapLock, UpdateError> {
     let profile = roots.profile();
     let install = roots
         .install()
@@ -329,6 +341,11 @@ pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError>
         .try_clone()
         .map_err(|cause| error("exclusive bootstrap parent", cause))?
         .into_std_file();
+    Ok(PreparedBootstrapLock { update, profile })
+}
+
+fn create_prepared_bootstrap_lock(prepared: PreparedBootstrapLock) -> Result<File, UpdateError> {
+    let PreparedBootstrapLock { update, profile } = prepared;
     let lock = create_file_relative_exclusive_with_profile(&update, "bootstrap.lock", profile)
         .map_err(|cause| error("exclusive bootstrap lock", cause))?;
     keld_guard::validate_windows_install_file(&lock, profile)
