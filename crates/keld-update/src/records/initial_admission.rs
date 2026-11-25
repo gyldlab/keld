@@ -463,4 +463,6 @@ fn decode_bounded<T: serde::de::DeserializeOwned + Serialize>(
 }
 
 #[cfg(test)]
+mod fresh_v2_leaf;
+#[cfg(test)]
 mod tests;
