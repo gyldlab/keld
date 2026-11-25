@@ -22,6 +22,75 @@ pub(crate) struct RendererBeacon {
     activate_deadline: mpsc::Sender<Instant>,
 }
 
+/// A nonblocking snapshot taken only when the surrounding startup has failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BeaconFailureObservation {
+    Pending,
+    Succeeded,
+    Failed,
+    Disconnected,
+}
+
+impl BeaconFailureObservation {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Pending => "renderer beacon worker result not yet published",
+            Self::Succeeded => "renderer beacon worker reported success",
+            Self::Failed => "renderer beacon worker reported an error (details withheld)",
+            Self::Disconnected => "renderer beacon worker ended without a result",
+        }
+    }
+}
+
+impl RendererBeacon {
+    /// Inspect only an already-published result; dropping preserves the original
+    /// failure cleanup and does not activate a deadline or join the worker.
+    pub(crate) fn observe_on_failure(self) -> BeaconFailureObservation {
+        match self.observed.try_recv() {
+            Ok(Ok(())) => BeaconFailureObservation::Succeeded,
+            Ok(Err(_)) => BeaconFailureObservation::Failed,
+            Err(mpsc::TryRecvError::Empty) => BeaconFailureObservation::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => BeaconFailureObservation::Disconnected,
+        }
+    }
+}
+
+pub(crate) fn catch_beacon_failure<T>(
+    beacon: &mut Option<RendererBeacon>,
+    run: impl FnOnce(&mut Option<RendererBeacon>) -> T,
+) -> (std::thread::Result<T>, Option<BeaconFailureObservation>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(beacon)));
+    let observation = if result.is_err() {
+        beacon.take().map(RendererBeacon::observe_on_failure)
+    } else {
+        None
+    };
+    (result, observation)
+}
+
+pub(crate) fn write_beacon_failure(
+    sink: &mut impl Write,
+    observation: BeaconFailureObservation,
+) -> std::io::Result<()> {
+    writeln!(sink, "KELD-BEACON-ON-FAILURE: {}", observation.message())
+}
+
+pub(crate) fn finish_beacon_failure<W: Write>(
+    failure: Box<dyn std::any::Any + Send>,
+    beacon: Option<BeaconFailureObservation>,
+    cleanup: impl FnOnce(),
+    open_sink: impl FnOnce() -> W,
+) -> ! {
+    cleanup();
+    if let Some(beacon) = beacon
+        && let Err(_report_error) = write_beacon_failure(&mut open_sink(), beacon)
+    {
+        // A broken diagnostic sink cannot deliver its own error. Cleanup is
+        // complete and the original panic remains the primary failure.
+    }
+    std::panic::resume_unwind(failure);
+}
+
 pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
     let (observed_tx, observed) = mpsc::channel();
     let (activate_deadline, deadline_rx) = mpsc::channel();
@@ -296,3 +365,7 @@ impl HeldRendererRequest {
         self.worker.join().expect("held renderer worker joins");
     }
 }
+
+#[cfg(test)]
+#[path = "renderer/failure_observation_tests.rs"]
+mod failure_observation_tests;
