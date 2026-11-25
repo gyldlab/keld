@@ -894,16 +894,40 @@ export function installApp(
       code?: string;
       message?: string;
     } = { status: "no-listener" };
+    let settleAcknowledgedStop: (() => void) | undefined;
     try {
       const topic = event.channel;
       const args = decodeEndpointArguments(new Uint8Array(event.payload));
       if (topic === "mainResp") {
-        const response = args[0] as { reqId?: unknown };
-        if (
-          typeof response?.reqId !== "number" ||
-          !requests.get(response.reqId)?.active
-        )
+        const response = args[0] as { reqId?: unknown; error?: unknown };
+        const id = response?.reqId;
+        const request = typeof id === "number" ? requests.get(id) : undefined;
+        if (typeof id !== "number" || !request?.active)
           refuse("response belongs to an absent or retired original request");
+        const path = request.unwatchPath;
+        if (!response.error && path) {
+          // Capture the admitted Host acknowledgment before user callbacks can
+          // throw or mutate their arguments. They own delivery, not the stop.
+          settleAcknowledgedStop = () => {
+            if (requests.get(id) !== request) return;
+            requests.delete(id);
+            charged -= request.bytes;
+            const owner = watches.get(path);
+            if (owner === undefined || owner < request.call) {
+              activeWatches.delete(path);
+              if (owner !== undefined) {
+                watches.delete(path);
+                retireUnownedWatch(owner);
+              }
+            }
+            // Keep earlier pending response callbacks until they settle,
+            // without letting them reacquire acknowledged event delivery.
+            for (const pending of requests.values())
+              if (pending.watchPath === path && pending.call < request.call)
+                pending.watchStopped = true;
+            releaseCall(request.call);
+          };
+        }
       }
       if (topic === "fileChanged") {
         const response = args[0] as { path?: unknown };
@@ -931,7 +955,7 @@ export function installApp(
           }
         }
         disposition = { status: "consumed" };
-        if (topic === "mainResp") {
+        if (topic === "mainResp" && !settleAcknowledgedStop) {
           const response = args[0] as { reqId?: unknown; error?: unknown };
           const req =
             typeof response?.reqId === "number"
@@ -948,22 +972,6 @@ export function installApp(
                 if (previous !== undefined) retireUnownedWatch(previous);
               }
             }
-            if (!response.error && req.unwatchPath) {
-              const path = req.unwatchPath;
-              const owner = watches.get(path);
-              if (owner === undefined || owner < req.call) {
-                activeWatches.delete(path);
-                if (owner !== undefined) {
-                  watches.delete(path);
-                  retireUnownedWatch(owner);
-                }
-              }
-              // An older pending response still owns its response callbacks,
-              // but it cannot reacquire event delivery after this stop.
-              for (const pending of requests.values())
-                if (pending.watchPath === path && pending.call < req.call)
-                  pending.watchStopped = true;
-            }
             if (req.watchPath) retireUnownedWatch(req.call);
             else if (![...watches.values()].includes(req.call))
               releaseCall(req.call);
@@ -979,6 +987,8 @@ export function installApp(
             ? error.message.slice(0, 512)
             : "original handler threw",
       };
+    } finally {
+      settleAcknowledgedStop?.();
     }
     post({
       v: 2,

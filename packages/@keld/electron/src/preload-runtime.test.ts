@@ -331,6 +331,61 @@ describe("original preload runtime only", () => {
     }
   });
 
+  test("an acknowledged stop retires the watcher when its original callback throws", () => {
+    const f = fixture();
+    try {
+      const path = "/test/watch-callback-failure.xml";
+      const released: number[] = [];
+      f.page.document.addEventListener(
+        "__keld_page_refusal_data_v1",
+        (event) => {
+          released.push((event as CustomEvent<number>).detail);
+        },
+      );
+      function request(
+        action: string,
+        success: () => void,
+        failure: () => void,
+      ) {
+        const call = f.call(
+          "request",
+          action === "watchFile"
+            ? { action, path, listener: () => {} }
+            : { action, path },
+          success,
+          failure,
+        );
+        const { reqId } = decodeEndpointArguments(
+          new Uint8Array(f.sends().at(-1)!.payload as number[]),
+        )[0] as { reqId: number };
+        return { call: call.call as number, reqId };
+      }
+      const throwing = () => {
+        throw new Error("page callback failure");
+      };
+      const noop = () => {};
+      const watch = request("watchFile", noop, noop);
+      f.event("mainResp", [{ reqId: watch.reqId, data: true }]);
+      const failedStop = request("unwatchFile", noop, throwing);
+      expect(
+        f.event(
+          "mainResp",
+          [{ reqId: failedStop.reqId, error: "not stopped" }],
+          2,
+        ).disposition,
+      ).toMatchObject({ status: "refused", message: "page callback failure" });
+      expect(released).not.toContain(watch.call);
+      const stopped = request("unwatchFile", throwing, noop);
+      expect(
+        f.event("mainResp", [{ reqId: stopped.reqId, data: true }], 3)
+          .disposition,
+      ).toMatchObject({ status: "refused", message: "page callback failure" });
+      expect(released).toEqual([watch.call, stopped.call]);
+    } finally {
+      f.restore();
+    }
+  });
+
   test("an acknowledged stop does not retire a newer watch on the same path", () => {
     const f = fixture();
     try {
