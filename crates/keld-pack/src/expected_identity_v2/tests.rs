@@ -32,7 +32,7 @@ fn fields<'a>(
     }
 }
 
-fn dev_fields<'a>(app_spki_sha256: &'a str) -> V2IdentityFields<'a> {
+fn dev_fields(app_spki_sha256: &str) -> V2IdentityFields<'_> {
     V2IdentityFields {
         signing_profile: V2SigningProfile::LocalDevelopmentAppSpkiSha256(app_spki_sha256),
         ..fields(APP, "stable", "windows-x64", OID)

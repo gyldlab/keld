@@ -65,8 +65,8 @@ fn dev_pe() -> Vec<u8> {
 fn expected_refusal(result: Result<ExpectedAppIdentityV2, PackError>, detail: &'static str) {
     assert!(
         matches!(
-            result,
-            Err(PackError::ExpectedIdentityInvalid { detail: actual }) if actual == detail
+            result.err(),
+            Some(PackError::ExpectedIdentityInvalid { detail: actual }) if actual == detail
         ),
         "expected {detail} byte refusal"
     );

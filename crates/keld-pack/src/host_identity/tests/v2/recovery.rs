@@ -1,5 +1,5 @@
 //! Negative source-only D-RECOVERY PE-shape tests. No native signer, complete
-//! canonical directive, installed RecoveryPolicy, or role authority exists.
+//! canonical directive, installed `RecoveryPolicy`, or role authority exists.
 
 use super::super::fixture::{
     self, CERTIFICATE_TABLE, RAW_SIZE, SECTION_CHARACTERISTICS, VIRTUAL_SIZE, build, data,

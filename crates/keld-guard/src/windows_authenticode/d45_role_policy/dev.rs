@@ -2,7 +2,7 @@
 //!
 //! The production Public Trust policy remains separate. These values must
 //! eventually come from independent, authenticated D-WIRE policy and the same
-//! retained native WinTrust signer. This module has neither producer and
+//! retained native `WinTrust` signer. This module has neither producer and
 //! exports no admission, verified-image, installer permit or native FFI.
 
 use super::{CODE_SIGNING_OID, PUBLIC_TRUST_OID, WindowsD45HostRole, contains_once, refusal};
@@ -12,13 +12,13 @@ const DEV_PROVIDER: u8 = 2;
 const DEV_ROOT_POLICY: u8 = 3;
 const ANY_EKU_OID: &str = "2.5.29.37.0";
 
-/// SHA-256 facts for one native selected signer, not a trust decision.
+/// SHA-256 digests of the named DER or SPKI bytes for one native selected signer, not a trust decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DevSignerPins {
-    root_certificate_sha256: [u8; 32],
-    leaf_issuer_spki_sha256: [u8; 32],
-    leaf_certificate_sha256: [u8; 32],
-    leaf_spki_sha256: [u8; 32],
+    root_certificate_der: [u8; 32],
+    leaf_issuer_spki: [u8; 32],
+    leaf_certificate_der: [u8; 32],
+    leaf_spki: [u8; 32],
 }
 
 /// Exact expected role selected by the authenticated operation, not the image.
@@ -59,15 +59,15 @@ fn compare_dev_signer(
             "the development signer's signed app ID differs from policy",
         ));
     }
-    if policy.app.leaf_spki_sha256 == policy.recovery.leaf_spki_sha256
-        || policy.app.leaf_certificate_sha256 == policy.recovery.leaf_certificate_sha256
+    if policy.app.leaf_spki == policy.recovery.leaf_spki
+        || policy.app.leaf_certificate_der == policy.recovery.leaf_certificate_der
     {
         return Err(refusal(
             "development APP and RECOVERY share a leaf key or certificate",
         ));
     }
-    if policy.app.root_certificate_sha256 != policy.recovery.root_certificate_sha256
-        || policy.app.leaf_issuer_spki_sha256 != policy.recovery.leaf_issuer_spki_sha256
+    if policy.app.root_certificate_der != policy.recovery.root_certificate_der
+        || policy.app.leaf_issuer_spki != policy.recovery.leaf_issuer_spki
     {
         return Err(refusal(
             "development APP and RECOVERY do not share the pinned local CA",
@@ -85,16 +85,16 @@ fn compare_dev_signer(
         WindowsD45HostRole::Ordinary => policy.app,
         WindowsD45HostRole::DedicatedRecovery => policy.recovery,
     };
-    if facts.pins.root_certificate_sha256 != expected.root_certificate_sha256 {
+    if facts.pins.root_certificate_der != expected.root_certificate_der {
         return Err(refusal("development signer has a foreign root certificate"));
     }
-    if facts.pins.leaf_issuer_spki_sha256 != expected.leaf_issuer_spki_sha256 {
+    if facts.pins.leaf_issuer_spki != expected.leaf_issuer_spki {
         return Err(refusal("development signer has a foreign leaf issuer SPKI"));
     }
-    if facts.pins.leaf_certificate_sha256 != expected.leaf_certificate_sha256 {
+    if facts.pins.leaf_certificate_der != expected.leaf_certificate_der {
         return Err(refusal("development signer has a foreign leaf certificate"));
     }
-    if facts.pins.leaf_spki_sha256 != expected.leaf_spki_sha256 {
+    if facts.pins.leaf_spki != expected.leaf_spki {
         return Err(refusal("development signer has a foreign leaf SPKI"));
     }
     Ok(DevRolePolicyMatch { _non_authority: () })

@@ -1,7 +1,7 @@
 //! Source-only observation of a DEV D-RECOVERY two-section PE image.
 //!
 //! This is a bounded byte-shape reader, NOT a signature verifier, canonical
-//! JSON verifier, RecoveryPolicy check, or recovery authority. The bytes are
+//! JSON verifier, `RecoveryPolicy` check, or recovery authority. The bytes are
 //! untrusted until the original retained hFile has been checked by Guard and
 //! a separate D-61/D-62 owner authenticates the directive and installed policy.
 

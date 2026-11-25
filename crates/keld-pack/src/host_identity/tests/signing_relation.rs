@@ -17,8 +17,7 @@ fn relation(unsigned: &[u8], signed: &[u8]) -> Result<(), PackError> {
     // additional pre-certificate alignment padding is needed in this profile.
     if start != before.len
         || start % 8 != 0
-        || size < 8
-        || size > 1024 * 1024
+        || !(8..=1024 * 1024).contains(&size)
         || size % 8 != 0
         || start + size != after.len
         || before.nt != after.nt

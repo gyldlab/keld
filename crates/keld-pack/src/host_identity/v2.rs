@@ -148,7 +148,7 @@ pub(super) fn read_ordinary_v2_handle(
 /// This parses a container, not an Authenticode signature or trusted publisher.
 /// The caller must independently retain and authenticate its source and policy.
 /// This ORDINARY APP path intentionally refuses `.keldrec`. A dedicated
-/// RecoveryImage requires a separately qualified D-RECOVERY reader that binds
+/// `RecoveryImage` requires a separately qualified D-RECOVERY reader that binds
 /// both signed sections from the same retained file and the independent role
 /// policy; DEV APP observation alone cannot authorize recovery.
 pub(super) fn observe_local_development_v2_bytes(

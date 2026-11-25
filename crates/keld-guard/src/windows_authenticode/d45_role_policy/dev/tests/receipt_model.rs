@@ -45,7 +45,7 @@ impl SyntheticPolicyMatch {
         Some(Self {
             operation: expected_operation,
             verified_image,
-            root_digest: independent_facts.pins.root_certificate_sha256,
+            root_digest: independent_facts.pins.root_certificate_der,
             _signer: compare_dev_signer(expected_policy, independent_facts).ok()?,
         })
     }
