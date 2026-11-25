@@ -12,8 +12,8 @@ use rustix::fs::{Dir, Mode, OFlags, RenameFlags, openat, renameat_with};
 use sha2::Digest as _;
 
 use crate::{
-    MACOS_APP_RELATIVE_PATH, MACOS_BUN_RELATIVE_PATH, MACOS_HOST_EXECUTABLE, MacosBundleMetadata,
-    validate_macos_macho_target,
+    MACOS_APP_RELATIVE_PATH, MACOS_BUN_RELATIVE_PATH, MACOS_HOST_EXECUTABLE, MACOS_LOCAL_TARGET,
+    MacosBundleMetadata, validate_macos_macho_target,
 };
 
 use super::capture::{
@@ -68,6 +68,24 @@ where
     )
 }
 
+fn require_approved_local_target(metadata: &MacosBundleMetadata) -> Result<(), MacosPackError> {
+    // The shared producer owns the approved local cell, regardless of caller.
+    // Broader metadata and scanner support is preparatory, not admission.
+    if !cfg!(target_arch = "aarch64") {
+        return Err(MacosPackError::new(
+            "local target",
+            "native arm64 macOS host is required",
+        ));
+    }
+    if metadata.target != MACOS_LOCAL_TARGET {
+        return Err(MacosPackError::new(
+            "local target",
+            "target must be exactly macos-arm64",
+        ));
+    }
+    Ok(())
+}
+
 fn produce_transaction<F>(
     input: &MacosPackageInput,
     finalize: Option<F>,
@@ -75,6 +93,7 @@ fn produce_transaction<F>(
 where
     F: FnOnce(&Path, &File, &[FileReceipt]) -> Result<MacosGraphCompiled, MacosPackError>,
 {
+    require_approved_local_target(&input.metadata)?;
     input
         .metadata
         .validate()
@@ -436,11 +455,7 @@ fn write_receipt(
         "osVersion": os.stdout.trim(), "developerTools": developer_tools.stdout.trim(),
         "toolSha256": tool_digests, "nativeToolResults": assembly.tools,
         "versionQualification": "declared labels only; externally qualified input versions and original app/provider commits require independent evidence",
-        "installedWorkflowQualification": if input.metadata.target == "macos-arm64" {
-            "required separately; assembly and copy checks do not establish application behavior"
-        } else {
-            "blocked: Core source admission is implemented, but qualified signed x64/universal Host/Bun input identities, native Intel installed workflows and release signing are unverified"
-        }
+        "installedWorkflowQualification": "required separately; assembly and copy checks do not establish application behavior"
     });
     let receipt_bytes = serde_json::to_vec_pretty(&receipt)
         .map_err(|error| MacosPackError::new("artifact receipt", error))?;

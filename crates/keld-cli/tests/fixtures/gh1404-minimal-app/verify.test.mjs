@@ -757,7 +757,7 @@ test("Pack's declared capture roots retain root graph inputs and future provider
 });
 
 test(
-  "real Pack graph transaction copies root inputs before intentional pre-sign refusal",
+  "real Pack graph transaction copies root inputs on arm64 and refuses unsupported hosts before capture",
   {
     skip:
       (!process.env.KELD_B3_PACK_RLIB || process.platform !== "darwin") &&
@@ -803,10 +803,32 @@ test(
         0,
         `real Pack capture rejected: ${captured.stderr || captured.error?.message}`,
       );
-      assert.match(
-        captured.stdout,
-        /GH1404_B3_PACK_CAPTURE_PASS_REAL_TRANSACTION/,
-      );
+      // Match the compiled Rust probe target, not Node's possible translated architecture.
+      const cfg = spawnSync("rustc", ["--print", "cfg"], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      assert.equal(cfg.status, 0, cfg.stderr || cfg.error?.message);
+      const arm64 = cfg.stdout.split(/\r?\n/).includes('target_arch="aarch64"');
+      if (arm64) {
+        assert.match(
+          captured.stdout,
+          /GH1404_B3_PACK_CAPTURE_PASS_REAL_TRANSACTION/,
+        );
+        assert.doesNotMatch(
+          captured.stdout,
+          /GH1404_B3_PACK_CAPTURE_REFUSED_UNSUPPORTED_HOST/,
+        );
+      } else {
+        assert.match(
+          captured.stdout,
+          /GH1404_B3_PACK_CAPTURE_REFUSED_UNSUPPORTED_HOST/,
+        );
+        assert.doesNotMatch(
+          captured.stdout,
+          /GH1404_B3_PACK_CAPTURE_PASS_REAL_TRANSACTION/,
+        );
+      }
       assert.equal(existsSync(join(copied, "dist")), false);
     } finally {
       rmSync(scratch, { recursive: true, force: true });

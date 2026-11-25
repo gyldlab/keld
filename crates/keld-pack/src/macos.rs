@@ -55,7 +55,7 @@ pub struct MacosGeneratedFile {
     pub bytes: Vec<u8>,
 }
 
-/// One closed-architecture native macOS local ad-hoc packaging request.
+/// One native arm64 macOS local ad-hoc packaging request.
 #[derive(Debug)]
 pub struct MacosPackageInput {
     /// Canonical invocation directory; there is no ancestor project search.
@@ -152,12 +152,13 @@ pub fn validate_macos_executable_metadata(metadata: &Metadata) -> Result<(), Mac
 
 /// Assemble, sign, verify, construct and copy-check a local `.app` and DMG.
 ///
-/// Native macOS assembles the exact pinned architecture set. Every candidate lives in one newly owned
-/// staging directory on the destination filesystem. An exclusive atomic directory
+/// Only native arm64 macOS with the exact `macos-arm64` target is admitted.
+/// Every candidate lives in one newly owned staging directory on the destination filesystem. An exclusive atomic directory
 /// rename publishes the complete output set; errors never overwrite an old output.
 ///
 /// # Errors
-/// Returns [`MacosPackError`] for invalid, changed, escaping or overlapping inputs,
+/// Returns [`MacosPackError`] for an unsupported host or target before metadata
+/// validation or capture, invalid, changed, escaping or overlapping inputs,
 /// invalid native code/signatures, failed Apple tools, or an existing output path.
 pub fn produce_macos_local(
     input: &MacosPackageInput,
@@ -167,7 +168,9 @@ pub fn produce_macos_local(
 
 /// Compiles graph and boot once from the exact copied application tree.
 ///
-/// This reuses the ordinary capture/sign/image transaction. Graph mode requires
+/// This reuses the ordinary native arm64 `macos-arm64` capture/sign/image
+/// transaction. Unsupported hosts and targets refuse before the callback.
+/// Graph mode requires
 /// empty `input.boot`; it never writes a placeholder boot. The callback receives
 /// Pack's copied path, its matching retained no-follow directory descriptor and
 /// immutable sorted inventory. It must not mutate that tree. Pack rejects changed
@@ -175,7 +178,8 @@ pub fn produce_macos_local(
 /// fixed leaves before signing and exclusive publication.
 ///
 /// # Errors
-/// Refuses pre-supplied authority leaves, invalid copied inputs, compiler failure,
+/// Refuses unsupported hosts or targets before metadata validation or capture,
+/// pre-supplied authority leaves, invalid copied inputs, compiler failure,
 /// oversized output, changed members, or native packaging failure. A failed
 /// transaction publishes no output. Runtime admission remains Core-owned.
 pub fn produce_macos_local_with_graph<E, F>(

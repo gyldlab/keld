@@ -6,7 +6,7 @@ use std::fs::File;
 
 #[cfg(test)]
 use keld_pack::read_macos_macho_architectures;
-use keld_pack::{MacosBundleMetadata, validate_macos_macho_target};
+use keld_pack::{MACOS_LOCAL_TARGET, MacosBundleMetadata, validate_macos_macho_target};
 
 use super::{HostAppError, admission_error};
 
@@ -22,17 +22,13 @@ pub(super) fn admit_bundle_architectures(
     bun: &File,
     metadata: &MacosBundleMetadata,
 ) -> Result<(), HostAppError> {
-    let running = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else if cfg!(target_arch = "x86_64") {
-        "x86_64"
-    } else {
+    if !cfg!(target_arch = "aarch64") || metadata.target != MACOS_LOCAL_TARGET {
         return Err(admission_error(
             "installed Mach-O target",
-            "this Host process architecture is unsupported",
+            "the approved local macOS artifact requires an arm64 Host and macos-arm64 target",
         ));
-    };
-    admit_bundle_architectures_for_process(host, bun, metadata, running)
+    }
+    admit_bundle_architectures_for_process(host, bun, metadata, "arm64")
 }
 
 fn admit_bundle_architectures_for_process(
@@ -173,6 +169,40 @@ mod tests {
         assert!(!admitted(&x64, &arm, "macos-x64", "x86_64"));
         assert!(!admitted(&arm, &arm, "macos-arm64", "x86_64"));
         assert!(!admitted(&x64, &x64, "macos-x64", "arm64"));
+    }
+
+    #[test]
+    fn installed_admission_retains_the_approved_arm64_scope() {
+        let arm = thin(ARM64, 0);
+        let intel = thin(X64, 3);
+        let universal = fat(false, false);
+        let accepted = super::admit_bundle_architectures(
+            &retain(&arm),
+            &retain(&arm),
+            &selected("macos-arm64"),
+        );
+        if cfg!(target_arch = "aarch64") {
+            assert!(accepted.is_ok(), "approved arm64 thin inputs must pass");
+        } else {
+            let error = accepted.expect_err("unsupported process must refuse arm64 input");
+            assert_eq!(error.code, "KELD-CORE-036");
+            assert_eq!(error.phase, "installed Mach-O target");
+            assert!(error.detail.contains("requires an arm64 Host"));
+        }
+        for (target, binary) in [
+            ("macos-universal", universal.as_slice()),
+            ("macos-x64", intel.as_slice()),
+        ] {
+            let error = super::admit_bundle_architectures(
+                &retain(binary),
+                &retain(binary),
+                &selected(target),
+            )
+            .expect_err("unsupported target must refuse at installed admission");
+            assert_eq!(error.code, "KELD-CORE-036");
+            assert_eq!(error.phase, "installed Mach-O target");
+            assert!(error.detail.contains("requires an arm64 Host"));
+        }
     }
 
     #[test]

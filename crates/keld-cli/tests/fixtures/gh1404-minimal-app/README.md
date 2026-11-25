@@ -44,7 +44,10 @@ isolated temporary directory and invokes the actual
 `produce_macos_local_with_graph` copied-tree callback. It creates only an
 **empty** temporary `node_modules` directory, never an SDK/provider,
 verifies both root manifests and that directory in Pack's copied inventory,
-and deliberately refuses graph compilation before signing or publication.
+and deliberately refuses graph compilation before signing or publication on
+native arm64 macOS. On an unsupported host the probe instead asserts the
+producer's early scope refusal, zero callback invocations and no output;
+that distinct result is not a capture-topology PASS.
 The `resources` declaration includes these roots for the future
 independently qualified installed provider graph; an empty directory is
 strictly a capture-topology test, never graph/provider qualification.

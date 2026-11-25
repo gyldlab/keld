@@ -313,6 +313,12 @@ impl ValidatedMacLocalBundle {
     /// Every fixed root is opened without following symlinks, and Bun bytes
     /// must equal the digest in the sealed Info.plist.
     pub(super) fn from_current_process() -> Result<Self, HostAppError> {
+        if !cfg!(target_arch = "aarch64") {
+            return Err(admission_error(
+                "local bundle target",
+                "the first local macOS artifact admits only an arm64 Host process",
+            ));
+        }
         let signing = verified_current_local_bundle_signing_info()
             .map_err(|error| admission_error("current local code signature", error))?;
         verify_running_bundle_location(&signing)?;

@@ -12,10 +12,11 @@ use tempfile::TempDir;
 
 use super::capture::{Capture, ReceiptKind, copy_executable, create_0755_directory, digest_file};
 use super::{
-    MacosExecutableInput, MacosGeneratedFile, MacosPackageInput, ProducedMacosLocal,
-    produce_macos_local, validate_macos_executable_metadata,
+    MacosExecutableInput, MacosGeneratedFile, MacosGraphCompiled, MacosPackError,
+    MacosPackageInput, ProducedMacosLocal, produce_macos_local, produce_macos_local_with_graph,
+    validate_macos_executable_metadata,
 };
-use crate::MacosBundleMetadata;
+use crate::{MACOS_LOCAL_TARGET, MacosBundleMetadata};
 
 #[path = "graph_tests.rs"]
 mod graph;
@@ -26,12 +27,7 @@ fn fixture(root: &Path) -> MacosPackageInput {
     MacosPackageInput {
         project_root: fs::canonicalize(root).expect("canonical fixture root"),
         metadata: MacosBundleMetadata {
-            target: if cfg!(target_arch = "x86_64") {
-                "macos-x64"
-            } else {
-                "macos-arm64"
-            }
-            .to_owned(),
+            target: MACOS_LOCAL_TARGET.to_owned(),
             app_id: "org.example.keld.localfixture".to_owned(),
             name: "Keld Fixture".to_owned(),
             version: "1.2.3".to_owned(),
@@ -61,7 +57,88 @@ fn fixture(root: &Path) -> MacosPackageInput {
     }
 }
 
+const HOST_SCOPE_ERROR: &str = "KELD-PACK-014: macOS local packaging failed during local target: native arm64 macOS host is required";
+const TARGET_SCOPE_ERROR: &str = "KELD-PACK-014: macOS local packaging failed during local target: target must be exactly macos-arm64";
+
+fn assert_scope_error(error: &MacosPackError, expected: &str) {
+    assert_eq!(error.code(), "KELD-PACK-014");
+    assert_eq!(error.to_string(), expected);
+}
+
+fn assert_no_staging(root: &Path) {
+    assert!(fs::read_dir(root).expect("project inventory").all(|entry| {
+        !entry
+            .expect("directory entry")
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".keld-macos-build-")
+    }));
+}
+
+fn assert_no_publication(root: &Path) {
+    assert!(!root.join("output").exists());
+    assert_no_staging(root);
+}
+
+fn refuses_unsupported_host(input: &MacosPackageInput) -> bool {
+    if cfg!(target_arch = "aarch64") {
+        return false;
+    }
+    let error = produce_macos_local(input).expect_err("unsupported native host must refuse");
+    assert_scope_error(&error, HOST_SCOPE_ERROR);
+    assert_no_publication(&input.project_root);
+    true
+}
+
+#[test]
+fn both_public_producers_refuse_out_of_scope_before_metadata_capture_or_finalizer() {
+    for target in [
+        "macos-x64",
+        "macos-universal",
+        "macos-unknown",
+        MACOS_LOCAL_TARGET,
+    ] {
+        // The approved cell has its own real positive tests below. All other
+        // combinations must refuse before the deliberately invalid metadata.
+        if cfg!(target_arch = "aarch64") && target == MACOS_LOCAL_TARGET {
+            continue;
+        }
+        let dir = TempDir::new().expect("scope fixture");
+        let mut input = fixture(dir.path());
+        input.metadata.target = target.to_owned();
+        input.metadata.name.clear();
+        let root = input.project_root.clone();
+        input.project_root = root.join("not-created");
+        let expected = if cfg!(target_arch = "aarch64") {
+            TARGET_SCOPE_ERROR
+        } else {
+            HOST_SCOPE_ERROR
+        };
+        let plain = produce_macos_local(&input).expect_err("plain producer scope");
+        assert_scope_error(&plain, expected);
+        input.boot.clear();
+        let calls = std::cell::Cell::new(0);
+        let graph = produce_macos_local_with_graph(&input, |_, _, _| {
+            calls.set(calls.get() + 1);
+            Err::<MacosGraphCompiled, _>("unexpected finalizer")
+        })
+        .expect_err("graph producer scope");
+        assert_scope_error(&graph, expected);
+        assert_eq!(calls.get(), 0);
+        assert!(!input.project_root.exists());
+        assert_no_publication(&root);
+    }
+}
+
 fn must_fail_before_publication(input: &MacosPackageInput) {
+    // Preserve the capture-specific negative even on a host that cannot produce.
+    assert!(
+        Capture::plan(input).is_err(),
+        "invalid capture must refuse independently"
+    );
+    if refuses_unsupported_host(input) {
+        return;
+    }
     let output = input.project_root.join("output");
     let error = produce_macos_local(input).expect_err("invalid build must refuse");
     assert_eq!(error.code(), "KELD-PACK-014", "{error}");
@@ -322,7 +399,21 @@ fn rejects_modified_source_native_resource_and_overlapping_output() {
         b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01",
     )
     .expect("native resource");
-    must_fail_before_publication(&request);
+    // Planning inventories the resource. The retained-file copy boundary owns
+    // the native-code refusal, including on a host that cannot produce an app.
+    let capture = Capture::plan(&request).expect("native resource has a valid capture plan");
+    let target = request.project_root.join("materialized");
+    create_0755_directory(&target).expect("private capture destination");
+    let expected = "KELD-PACK-014: macOS local packaging failed during resource native code: unclassified native code is not an inert resource: assets/native.node";
+    let error = capture
+        .materialize(&target)
+        .expect_err("native resource must refuse during copy");
+    assert_scope_error(&error, expected);
+    if !refuses_unsupported_host(&request) {
+        let error = produce_macos_local(&request).expect_err("native resource producer refusal");
+        assert_scope_error(&error, expected);
+        assert_no_publication(&request.project_root);
+    }
 
     let dir = TempDir::new().expect("temporary project");
     request = fixture(dir.path());
@@ -340,21 +431,26 @@ fn rejects_modified_source_native_resource_and_overlapping_output() {
 fn refuses_preexisting_output_with_real_native_pinned_inputs() {
     let dir = TempDir::new().expect("temporary project");
     let mut request = fixture(dir.path());
-    let host = compile_fixture(&request.project_root, "host");
-    let bun = compile_fixture(&request.project_root, "bun");
-    let mut sign_bun = Command::new("/usr/bin/codesign");
-    sign_bun
-        .args(["--sign", "-", "--force", "--timestamp=none"])
-        .arg(&bun);
-    run_tool(sign_bun);
-    request.host.sha256 = digest_file(&host).expect("qualified test Host hash");
-    request.bun.sha256 = digest_file(&bun).expect("qualified signed test Bun hash");
-    request.metadata.bun_sha256 = request.bun.sha256;
     let output = request.project_root.join("output");
     fs::create_dir(&output).expect("existing output");
     fs::write(output.join("keep"), b"must survive").expect("existing output contents");
-    let error = produce_macos_local(&request).expect_err("no-clobber contract");
-    assert!(error.to_string().contains("already exists"), "{error}");
+    if cfg!(target_arch = "aarch64") {
+        let host = compile_fixture(&request.project_root, "host");
+        let bun = compile_fixture(&request.project_root, "bun");
+        let mut sign_bun = Command::new("/usr/bin/codesign");
+        sign_bun
+            .args(["--sign", "-", "--force", "--timestamp=none"])
+            .arg(&bun);
+        run_tool(sign_bun);
+        request.host.sha256 = digest_file(&host).expect("qualified test Host hash");
+        request.bun.sha256 = digest_file(&bun).expect("qualified signed test Bun hash");
+        request.metadata.bun_sha256 = request.bun.sha256;
+        let error = produce_macos_local(&request).expect_err("no-clobber contract");
+        assert!(error.to_string().contains("already exists"), "{error}");
+    } else {
+        let error = produce_macos_local(&request).expect_err("unsupported host before collision");
+        assert_scope_error(&error, HOST_SCOPE_ERROR);
+    }
     assert_eq!(
         fs::read(output.join("keep")).expect("preserved"),
         b"must survive"
@@ -456,13 +552,15 @@ fn wrong_host_or_bun_slice_refuses_before_artifact_publication() {
     for mismatch in ["Host", "Bun"] {
         let dir = TempDir::new().expect("temporary native project");
         let mut request = fixture(dir.path());
-        request.metadata.target = "macos-x64".to_owned();
+        if refuses_unsupported_host(&request) {
+            continue;
+        }
         let host_arch = if mismatch == "Host" {
-            "arm64"
-        } else {
             "x86_64"
+        } else {
+            "arm64"
         };
-        let bun_arch = if mismatch == "Bun" { "arm64" } else { "x86_64" };
+        let bun_arch = if mismatch == "Bun" { "x86_64" } else { "arm64" };
         let host = compile_fixture_for_arch(&request.project_root, "host", host_arch);
         let bun = compile_fixture_for_arch(&request.project_root, "bun", bun_arch);
         let mut sign_bun = Command::new("/usr/bin/codesign");
@@ -487,6 +585,9 @@ fn mismatched_sealed_bun_digest_refuses_before_capturing_any_runtime() {
     let dir = TempDir::new().expect("temporary native project");
     let mut request = fixture(dir.path());
     request.metadata.bun_sha256 = [0x7f; 32];
+    if refuses_unsupported_host(&request) {
+        return;
+    }
     let error = produce_macos_local(&request).expect_err("mismatched Bun pin");
     assert!(error.to_string().contains("sealed Bun/icon facts"));
     assert!(!request.project_root.join("output").exists());
@@ -508,7 +609,7 @@ fn native_signed_bundle_checks_every_directory_under_umask_077() {
     let output = child.output().expect("native umask077 acceptance process");
     assert!(
         output.status.success(),
-        "real macOS signing/DMG failed under umask077: stdout={} stderr={}",
+        "native producer contract failed under umask077: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -518,6 +619,9 @@ fn native_signed_bundle_checks_every_directory_under_umask_077() {
 fn native_assembly_verifies_app_image_copy_and_rejects_mutations() {
     let dir = TempDir::new().expect("temporary native project");
     let mut request = fixture(dir.path());
+    if refuses_unsupported_host(&request) {
+        return;
+    }
     let host = compile_fixture(&request.project_root, "host");
     let bun = compile_fixture(&request.project_root, "bun");
     let mut sign_bun = Command::new("/usr/bin/codesign");
@@ -551,7 +655,11 @@ fn assert_signed_package_receipt(output: &ProducedMacosLocal, original_bun: &[u8
         serde_json::from_slice(&fs::read(&output.receipt).expect("external receipt"))
             .expect("receipt JSON");
     assert_eq!(receipt["artifactClass"], "local-adhoc");
-    assert!(receipt["installedWorkflowQualification"].as_str().is_some());
+    assert_eq!(receipt["target"], MACOS_LOCAL_TARGET);
+    assert_eq!(
+        receipt["installedWorkflowQualification"],
+        "required separately; assembly and copy checks do not establish application behavior"
+    );
     assert_eq!(receipt["finalBunSha256"], super::capture::hex(original_bun));
     let inventory = receipt["signedApplicationFiles"]
         .as_array()
