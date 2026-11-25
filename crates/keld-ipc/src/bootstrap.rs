@@ -1508,6 +1508,23 @@ impl WindowsNamedPipeBootstrapListener {
         Self::bind_at(&endpoint, token)
     }
 
+    /// Creates an atomic current-user plus exact-package LPAC bootstrap pipe.
+    ///
+    /// The trusted caller supplies the SID directly from its prepared Runtime
+    /// profile, never from application configuration. This grant permits opening
+    /// the pipe, not authentication: the unchanged HELLO token is still required.
+    /// This primitive does not establish Strict admission or activate a role.
+    ///
+    /// # Errors
+    /// Returns an input error for a noncanonical/non-package SID, or an I/O error
+    /// if creation, owner validation, or exact security readback fails.
+    pub fn bind_windows_lpac(package_sid: &str) -> io::Result<Self> {
+        let token = SessionToken::random()?;
+        let endpoint = random_pipe_endpoint()?;
+        let server = WindowsNamedPipeServer::bind_windows_lpac(&endpoint, package_sid)?;
+        Ok(Self::from_server(&endpoint, token, server))
+    }
+
     /// Binds an install/user-derived keeper locator with its one-shot HELLO token.
     /// HELLO possession does not prove peer process identity.
     ///
@@ -1537,7 +1554,11 @@ impl WindowsNamedPipeBootstrapListener {
             ));
         }
         let server = WindowsNamedPipeServer::bind(endpoint)?;
-        Ok(Self {
+        Ok(Self::from_server(endpoint, token, server))
+    }
+
+    fn from_server(endpoint: &str, token: SessionToken, server: WindowsNamedPipeServer) -> Self {
+        Self {
             server: Mutex::new(Some(server)),
             admission: Mutex::new(()),
             endpoint: endpoint.to_owned(),
@@ -1547,7 +1568,7 @@ impl WindowsNamedPipeBootstrapListener {
             before_consume: Mutex::new(None),
             #[cfg(test)]
             handshake_witness: Mutex::new(None),
-        })
+        }
     }
 
     /// Canonical endpoint-plus-token value for this bootstrap generation.
@@ -3753,16 +3774,29 @@ socket.end();
 
     #[test]
     fn pending_accept_cancellation_completes_and_joins() {
-        prove_pending_accept_cancellation(false).expect("pending cancellation");
+        prove_pending_accept_cancellation(false, false).expect("pending cancellation");
     }
 
     #[test]
     fn pending_accept_cancellation_with_package_acl_completes_and_joins() {
-        prove_pending_accept_cancellation(true).expect("package ACL pending cancellation");
+        prove_pending_accept_cancellation(true, false).expect("package ACL pending cancellation");
     }
 
-    fn prove_pending_accept_cancellation(package_acl: bool) -> io::Result<()> {
-        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind()?);
+    #[test]
+    fn atomic_lpac_pending_accept_cancellation_completes_and_joins() {
+        prove_pending_accept_cancellation(false, true).expect("atomic LPAC pending cancellation");
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "default, historical ACL and atomic LPAC variants share one native cancellation and joined-cleanup proof"
+    )]
+    fn prove_pending_accept_cancellation(package_acl: bool, atomic: bool) -> io::Result<()> {
+        let listener = Arc::new(if atomic {
+            WindowsNamedPipeBootstrapListener::bind_windows_lpac("S-1-15-2-1-2-3-4-5-6-7")?
+        } else {
+            WindowsNamedPipeBootstrapListener::bind()?
+        });
         if package_acl {
             // Descriptor-only fixture: actual LPAC identity is proved in runtime tests.
             let original = listener.inspect_pipe_handle(|handle| {

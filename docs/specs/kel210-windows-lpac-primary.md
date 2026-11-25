@@ -1,6 +1,10 @@
 # Spec: Windows LPAC primary-role integration
 
 Status: T1 limited qualification approved; later product slices remain draft
+
+The separately scoped [atomic bootstrap constructor amendment](kel210-atomic-lpac-bootstrap.md)
+is implementing under delegated technical decision recorded on KEL-210 on 2026-11-10.
+It does not approve or activate the later Core, supervisor or Strict-admission slices.
 Linear: KEL-210 · Owner: GYLDLAB · Updated: 2026-09-09
 
 On 2026-09-09 the repository owner approved the limited Windows testing scope

@@ -324,6 +324,76 @@ impl WindowsNamedPipeServer {
         Ok(server)
     }
 
+    /// Atomically creates the explicitly selected exact-package LPAC form.
+    pub(crate) fn bind_windows_lpac(endpoint: &str, package_sid: &str) -> io::Result<Self> {
+        let package = validated_package_sid(package_sid)?;
+        let current = current_process_sid()?;
+        let user = ConvertSidToStringSid(&current)?;
+        let package = ConvertSidToStringSid(&package)?;
+        // Fix the owner explicitly; an elevated token's default owner may be
+        // Administrators. Leave the mandatory label to the unchanged OS default.
+        let descriptor: LocalBox<SecurityDescriptor> = format!(
+            "O:{}D:P(A;;0x{PIPE_ACCESS_MASK:08x};;;{})(A;;0x{PIPE_ACCESS_MASK:08x};;;{})",
+            user.to_string_lossy(),
+            user.to_string_lossy(),
+            package.to_string_lossy()
+        )
+        .parse()?;
+        let server = Self::bind_with_descriptor(endpoint, &descriptor)?;
+        let observed = server.lpac_descriptor_readback()?;
+        if observed.descriptor.owner() != Some(&*current) {
+            return Err(io::Error::other(
+                "LPAC named-pipe owner differs from TokenUser; do not launch the role",
+            ));
+        }
+        if let Some(fact) = observed.first_mismatch(&descriptor, PipeSecuritySections::Dacl)? {
+            return Err(io::Error::other(format!(
+                "LPAC named-pipe security readback mismatch: {fact}; do not launch the role"
+            )));
+        }
+        Ok(server)
+    }
+
+    fn lpac_descriptor_readback(&self) -> io::Result<PipeDescriptorReadback> {
+        let observed = self.descriptor_readback()?;
+        #[cfg(test)]
+        let observed = {
+            let fault = LPAC_READBACK_FAULT.with(std::cell::Cell::get);
+            if fault != 0 {
+                LPAC_FAILED_OWNER
+                    .with(|slot| *slot.borrow_mut() = Some(Arc::downgrade(&self.inner)));
+            }
+            let mut observed = observed;
+            match fault {
+                1 => {
+                    let user = current_process_sid()?;
+                    let system: LocalBox<Sid> = "SY".parse()?;
+                    let wrong_owner = if *user == *system { "LS" } else { "SY" };
+                    let dacl = ConvertSecurityDescriptorToStringSecurityDescriptor(
+                        &observed.descriptor,
+                        SecurityInformation::Dacl,
+                    )?;
+                    observed.descriptor =
+                        format!("O:{wrong_owner}{}", dacl.to_string_lossy()).parse()?;
+                }
+                2 => {
+                    let user = current_process_sid()?;
+                    let user = ConvertSidToStringSid(&user)?;
+                    observed.descriptor =
+                        format!("O:{}D:P(A;;0x12019b;;;WD)", user.to_string_lossy()).parse()?;
+                }
+                3 => {
+                    return Err(io::Error::other(
+                        "injected LPAC descriptor readback failure",
+                    ));
+                }
+                _ => {}
+            }
+            observed
+        };
+        Ok(observed)
+    }
+
     /// Creates the only, first instance of `endpoint` under `descriptor`, with
     /// remote clients rejected and a non-inheritable handle. The caller reads
     /// the descriptor back before it relies on it.
@@ -1549,6 +1619,31 @@ impl OwnedEvent {
             ..OVERLAPPED::default()
         }
     }
+}
+
+fn validated_package_sid(text: &str) -> io::Result<LocalBox<Sid>> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LPAC bootstrap requires the canonical SID of the prepared package profile",
+        )
+    };
+    // Windows SID conversion owns parsing; do not interpolate untrusted SDDL.
+    let sid: LocalBox<Sid> = text.parse().map_err(|_| invalid())?;
+    if sid.id_authority() != &[0, 0, 0, 0, 0, 15]
+        || sid.sub_authorities().len() != 8
+        || sid.sub_authorities().first() != Some(&2)
+        || ConvertSidToStringSid(&sid)?.to_string_lossy() != text
+    {
+        return Err(invalid());
+    }
+    Ok(sid)
+}
+
+#[cfg(test)]
+thread_local! {
+    static LPAC_READBACK_FAULT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static LPAC_FAILED_OWNER: RefCell<Option<Weak<ServerInner>>> = const { RefCell::new(None) };
 }
 
 fn current_user_descriptor(sid: &Sid) -> io::Result<LocalBox<SecurityDescriptor>> {
@@ -2896,5 +2991,112 @@ mod revert_failure_tests {
             !String::from_utf8_lossy(&output.stdout).contains(AFTER_REVERT_MARKER),
             "no protocol retry/admission can run after a failed revert"
         );
+    }
+}
+#[cfg(test)]
+mod lpac_constructor_tests {
+    use super::*;
+
+    const PACKAGE: &str = "S-1-15-2-1-2-3-4-5-6-7";
+
+    #[test]
+    fn lpac_constructor_refuses_faulted_readback_and_releases_owner_and_endpoint() {
+        for fault in [1, 2, 3] {
+            let id = crate::bootstrap::random_test_locator().expect("unique endpoint");
+            let endpoint = format!(r"\\.\pipe\keld-lpac-refusal-{id}");
+            LPAC_READBACK_FAULT.with(|slot| slot.set(fault));
+            let result = WindowsNamedPipeServer::bind_windows_lpac(&endpoint, PACKAGE);
+            LPAC_READBACK_FAULT.with(|slot| slot.set(0));
+            let Err(error) = result else {
+                panic!("faulted readback must refuse listener");
+            };
+            if fault == 1 {
+                assert!(error.to_string().contains("owner differs from TokenUser"));
+            }
+            let owner = LPAC_FAILED_OWNER
+                .with(|slot| slot.borrow_mut().take())
+                .expect("created owner witnessed");
+            assert!(
+                owner.upgrade().is_none(),
+                "failed constructor retained native handle owner"
+            );
+            let rebound = WindowsNamedPipeServer::bind(&endpoint)
+                .expect("failed constructor released first-instance endpoint");
+            drop(rebound);
+        }
+    }
+
+    #[test]
+    fn lpac_package_sid_validation_rejects_broad_malformed_and_noncanonical_inputs() {
+        assert!(validated_package_sid(PACKAGE).is_ok());
+        for text in [
+            "",
+            "WD",
+            "S-1-15-2-1",
+            "S-1-15-2-2",
+            "S-1-5-18",
+            "S-1-15-3-1-2-3-4-5-6-7",
+            "S-1-15-2-1-2-3-4-5-6",
+            "S-1-15-2-1-2-3-4-5-6-7-8",
+            "S-1-15-2-01-2-3-4-5-6-7",
+            "S-1-15-2-1-2-3-4-5-6-4294967296",
+            "S-1-15-2-1-2-3-4-5-6-7\0",
+        ] {
+            let Err(error) = validated_package_sid(text) else {
+                panic!("invalid SID");
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn lpac_atomic_descriptor_preserves_default_label_and_exact_owner_and_acl() {
+        for _ in 0..2 {
+            let id = crate::bootstrap::random_test_locator().expect("unique endpoint");
+            let default =
+                WindowsNamedPipeServer::bind(&format!(r"\\.\pipe\keld-lpac-default-{id}"))
+                    .expect("default");
+            let candidate = WindowsNamedPipeServer::bind_windows_lpac(
+                &format!(r"\\.\pipe\keld-lpac-exact-{id}"),
+                PACKAGE,
+            )
+            .expect("atomic candidate");
+            let old = default.descriptor_readback().expect("default readback");
+            let new = candidate.descriptor_readback().expect("candidate readback");
+            let user = current_process_sid().expect("TokenUser");
+            let user_text = ConvertSidToStringSid(&user).expect("SID text");
+            let expected: LocalBox<SecurityDescriptor> = format!(
+                "D:P(A;;0x0012019b;;;{})(A;;0x0012019b;;;{PACKAGE})",
+                user_text.to_string_lossy()
+            )
+            .parse()
+            .expect("independent expected rights");
+            assert_eq!(new.descriptor.owner(), Some(&*user));
+            assert_eq!(
+                new.first_mismatch(&expected, PipeSecuritySections::Dacl)
+                    .expect("compare"),
+                None
+            );
+            assert_eq!(
+                old.first_mismatch(
+                    &current_user_descriptor(&user).expect("default policy"),
+                    PipeSecuritySections::Dacl
+                )
+                .expect("default compare"),
+                None
+            );
+            assert_eq!(
+                ConvertSecurityDescriptorToStringSecurityDescriptor(
+                    &new.descriptor,
+                    SecurityInformation::Label
+                )
+                .expect("label"),
+                ConvertSecurityDescriptorToStringSecurityDescriptor(
+                    &old.descriptor,
+                    SecurityInformation::Label
+                )
+                .expect("default label")
+            );
+        }
     }
 }
