@@ -1086,7 +1086,10 @@ Why this shape (each competitor fails differently — see `docs/research/library
 1. **Compatibility is the product.** The Electron surface is a protocol to implement
    (Rspack/Rolldown lesson). Every design must answer: "how does this behave under
    `@keld/electron`?"
-2. **The host owns privileged OS resources; JS owns the app.** Application APIs expose
+2. **The host owns privileged OS resources; application roles own app logic.**
+   The current application path is Bun/TypeScript. Native application roles remain the
+   draft KEL-75 T9a target below, not available functionality. Bun remains the default
+   and Electron-compatibility runtime. Application APIs expose
    capability-scoped ids, never reusable file/window/process handles. A supervised role
    receives only its IPC endpoint and, when validated, an optional role-private bulk
    mapping handle; those transport handles cannot authorize another OS operation.
@@ -1095,9 +1098,12 @@ Why this shape (each competitor fails differently — see `docs/research/library
 4. **Hot paths are state machines** (Bun-rewrite lesson): the host core runs on platform
    event loops with readiness-driven callbacks; no Tokio in the message path. Async Rust
    is allowed in cold tooling (CLI, packager, updater fetches).
-5. **No Rust toolchain for app developers.** Prebuilt host + npm distribution
-   (esbuild lesson); the host in a shipped app is signed. Rust is the *plugin* path, not
-   the entry fee. Target behaviour on Windows (KEL-19 T3, blocked on an authenticated
+5. **No Rust toolchain for Bun app developers in the target prebuilt workflow.**
+   Prebuilt host + npm distribution is the target (esbuild lesson), not the current
+   source-built demo. The host in a shipped app is signed. Rust is currently the
+   plugin-authoring path; optional native application authoring is a separately
+   qualified target, never a prerequisite for the Bun application path.
+   Target behaviour on Windows (KEL-19 T3, blocked on an authenticated
    Keld release channel): the packaging-input host is distributed unsigned, and
    `keld build` verifies its digest from that channel and embeds the app identity before
    the app publisher applies the only signature
@@ -1289,6 +1295,17 @@ KEL-83 pending a real concurrent-init consumer (Bun boot) to overlap it against.
   differential corpus and no package-name special cases.
 - No CEF-by-default anywhere; pinned engines are opt-in and per-platform. Keld promises
   no bundled Chromium by default, not literal no-Chromium execution on WebView2.
+
+## Proposed native application-role qualification
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) is a draft target, not shipped support.
+The proposed destination is runtime-neutral application roles with Bun as the default and
+Electron-compatibility runtime. The current Bun statements above remain current behavior.
+The first proof is one native AppBound service beside the unchanged Bun primary. Refuse an
+occupied AppBound slot; do not evict another role or generalize to arbitrary service counts.
+Reuse the existing lifecycle implementation with one authority owner per role. Native code
+is ordinary untrusted application code, not an in-host extension or automatic privilege.
+Rust-only primary and additional OS profiles require separate exact-artifact qualification.
 
 ---
 
@@ -1818,6 +1835,20 @@ compromised keeps the host's threat model uniform).
   Non-blocking sockets are unsupported. `read_frame` still cannot retry after
   Timeout. The readiness-driven reader (and credit windows) remain later work.
 
+## Proposed native-service effect mapping
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) defines a draft native caller path.
+It does not change current IPC-022/023/025 meanings or claim native support is implemented.
+For that path, the proposed renderer observable is an Error message beginning exactly with
+`KELD-WV-011:`. It means Unknown outcome, including conservatively collapsed pre-dispatch
+refusals. NotSent remains internal-only; no public `.code` or safe-retry signal is added.
+The Host must preserve trusted emitter and direction, map failure at its own boundary and
+keep the prefix intact through the SDK. Peer text cannot establish non-execution, including
+forged Host/guard codes, IPC-005 or malformed ERR. Unknown is never automatically replayed.
+The qualification probe must exercise this same Host/SDK path and independently assert the
+prefix and durable effect count. Acknowledging transport does not acknowledge a transaction.
+This target must pass exact implementation tests before it is described as current behavior.
+
 ---
 
 ## Source: `docs/architecture/03-security.md`
@@ -2169,6 +2200,17 @@ Architecture 06
   engines — pinned-engine apps inherit an Electron-style update duty; `keld doctor`
   nags on stale pins).
 - No DRM/anti-tamper claims. Signed updates ≠ secure boot.
+
+## Proposed native-role authorization boundary
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) remains draft. The initial native
+Echo service cannot make privileged service-to-Host calls. Authentication is not a grant.
+Later privileged dispatch requires passed KEL-102 T5 integration, its T4 and exact KEL-97
+principal/stale-generation prerequisites, and Host-owned delegation across both hops.
+Authorize the caller for the service operation and the service for its downstream resource;
+do not union authority or trust caller identity in payloads. Retire authority synchronously
+before successor admission. Async revocation telemetry does not prove that fence completed.
+These are acceptance conditions, not claims that named native-role grants already ship.
 
 ---
 
@@ -2733,6 +2775,15 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   Third-party Node/N-API/V8 modules remain a separate operation-level Bun compatibility
   and sandbox problem; a passing artifact may be reused, isolated, or replaced behind
   the same facade. Host plugins have their own reviewed stable ABI.
+
+## Proposed out-of-process native application role
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) is separate from the reviewed
+in-host extension mode above. A native application service does not join the Host TCB.
+Its first renderer operation preserves the existing Echo schema and bridge surface.
+The private qualification declaration is not a public runtime-provider API. The durable
+counter used to prove effect ambiguity is a qualification probe, not a product channel.
+A Rust-only primary, new renderer API or privileged service remains separately gated.
 
 ---
 
@@ -4199,6 +4250,22 @@ attempt. Delta never changes provenance, journal, health, trust-floor, LKG or ro
 - DevTools: system engines expose what they have (CDP on WebView2, Safari inspector on
   macOS, WebKitGTK inspector); `keld dev` prints exact attach instructions per OS —
   no pretending parity exists where it doesn't.
+
+## Proposed native launch-envelope qualification
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) does not alter the current Bun path.
+The first private declaration names one AppBound role, packaged artifact, Echo contract and
+exact containment profile. No public config key or boot schema version is allocated here.
+KEL-96 owns any later serialized declaration. Do not reuse occupied boot versions.
+KEL-75 preparation and KEL-78 admission jointly bind executable/dependency custody, argv,
+cwd, explicit environment, loader behavior and inherited-handle allowlists on every restart.
+KELD_APP_LINK remains the sole bootstrap locator. Child metadata cannot select authority.
+The same lifecycle owner manages each role. A Windows per-generation resource boundary must
+not repurpose the shared Host-death Job. Linux cgroup delegation/membership must be proved
+before execution; namespaces alone are not quotas. Resource-group census is not direct reap.
+Select exact build inputs before the prototype; bind output hashes before qualification.
+Only an exact measured resource/containment record permits product admission. No macOS
+whole-tree quota is inferred from sandboxing or cleanup. Unsupported tuples stay unsupported.
 
 ---
 

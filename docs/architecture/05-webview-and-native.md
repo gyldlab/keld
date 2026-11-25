@@ -334,3 +334,12 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   Third-party Node/N-API/V8 modules remain a separate operation-level Bun compatibility
   and sandbox problem; a passing artifact may be reused, isolated, or replaced behind
   the same facade. Host plugins have their own reviewed stable ABI.
+
+## Proposed out-of-process native application role
+
+[KEL-75 T9a](../specs/kel75-native-role-qualification.md) is separate from the reviewed
+in-host extension mode above. A native application service does not join the Host TCB.
+Its first renderer operation preserves the existing Echo schema and bridge surface.
+The private qualification declaration is not a public runtime-provider API. The durable
+counter used to prove effect ambiguity is a qualification probe, not a product channel.
+A Rust-only primary, new renderer API or privileged service remains separately gated.
