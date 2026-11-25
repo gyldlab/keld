@@ -2,7 +2,7 @@
 - Status: draft
 - Tracker: GH-523
 - Owner: @0monish (draft owner; approval pending)
-- Updated: 2026-11-21
+- Updated: 2026-11-26
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 The original draft was dated 2026-11-06. GH-523 is the tracker of record under #517.
@@ -95,6 +95,20 @@ boundary and approves none of those changes.
   - **At-risk precondition:** The app submits `NaN` or a fractional/out-of-range value.
   - **Expected RED:** The host accepts an invalid code and begins terminal teardown.
 
+### AC-7: Exit and Quit commit only one terminal decision
+
+- **Given:** An authenticated Exit(7) races a reversible GH-451 Quit preparation or its terminal Commit.
+- **When:** The Host lifecycle owner orders the two admission operations.
+- **Then:** Exit first invalidates the preparation and commits Exit(7); Quit first retains its committed cause and code.
+  The later operation cannot change the winner, issue a second terminal receipt, emit a second quit event or repeat cleanup.
+- **Negative control:**
+  - **Single fault:** Allow Exit to overwrite a committed Quit code.
+  - **At-risk precondition:** Quit committed before authenticated Exit(7) reached terminal admission.
+  - **Expected RED:** The terminal receipt or actual process status changes from the Quit winner to 7.
+
+Run the reverse admission order independently. Mutate acceptance of an invalidated Quit token after Exit wins; require RED if
+that Commit succeeds or repeats terminal cleanup.
+
 ## 4. Design
 
 ### 4.1 Single terminal owner
@@ -102,6 +116,14 @@ boundary and approves none of those changes.
 The facade requests exit over the existing authenticated Main call path. The lifecycle owner atomically latches terminal reason
 and validated code before teardown can kill a child. Supervisor recovery consumes that same reason, not a separate facade flag.
 Ordinary crashes retain their existing classification.
+
+GH-451 Prepare is reversible and does not own the terminal latch. Use one ordered Host admission boundary for Exit and the
+GH-451 Commit. A validated, authorized Exit admitted first invalidates the active Quit preparation in that same decision;
+subsequent Commit/Cancel for that token cannot change the winner. If Quit commits first, later Exit receives a typed
+already-terminal refusal while a response path remains available. Do not invent a second successful terminal receipt.
+Duplicate requests for the winning decision may report that same outcome, never a new code or terminal action. The committed
+cause and code remain authoritative for native cleanup, supervisor classification and the actual process status. This proposed
+cross-feature ordering requires joint GH-451/GH-523 and KEL-96 owner approval; it is not a current runtime contract.
 
 ### 4.2 API proposal
 
@@ -151,6 +173,7 @@ architecture, generated schemas, code and unrelated work remain with their exist
 - **Blocked by:** T-1
 - [ ] Implement validated host exit admission and one atomic terminal latch.
 - [ ] Test duplicate requests, stale identities and terminal-vs-crash classification.
+- [ ] Test both GH-451 Commit/Exit admission orders with a reversible preparation and one terminal receipt, event and status.
 
 ### T-3: Connect native exit paths and parent status propagation
 - **Blocked by:** T-2, B-2
@@ -169,7 +192,8 @@ preserve pending-fail/unknown status until the actual implementing commit passes
 
 Use a parent process that records actual child exit status and role-generation events. Tests must distinguish a real host exit
 from a mock response or forced harness kill. Assert cleanup order without arbitrary sleep and keep a normal crash-recovery
-positive control.
+positive control. Use explicit barriers to order Exit admission against Quit Commit, then check one terminal decision,
+receipt, event and actual process status in both orders; also verify rejected invalid Exit leaves the reversible Quit unchanged.
 
 Documentation validation covers immutable source readback, all ten sections, independent controls, proposal wording and file limits.
 Runtime, native and original-app tests remain planned, without new execution evidence from this specification migration.
@@ -185,6 +209,7 @@ Documentation checks in the migration cannot qualify any OS behavior.
 ## 8. Review gates triggered
 
 Public API, wire protocol and lifecycle/CLI owner approval; architecture amendment required before implementation.
+Joint GH-451/GH-523 approval must cover the shared terminal winner, receipt and status rule in section 4.1.
 
 Status remains draft. Implementation admission requires the exact owning decisions in section 10 and approval of this contract.
 Draft PR publication is not that approval.
