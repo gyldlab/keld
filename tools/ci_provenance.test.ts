@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   mkdirSync,
@@ -22,7 +23,28 @@ const AsyncFunction = Object.getPrototypeOf(async function () {})
   .constructor as new (
   ...args: string[]
 ) => (...args: unknown[]) => Promise<void>;
-const evaluate = new AsyncFunction("github", "context", "core", code);
+const evaluate = new AsyncFunction(
+  "github",
+  "context",
+  "core",
+  "require",
+  code,
+);
+const b3ManifestPath =
+  "crates/keld-cli/tests/fixtures/gh1404-minimal-app/package.json";
+const b3LockPath =
+  "crates/keld-cli/tests/fixtures/gh1404-minimal-app/package-lock.json";
+const b3ManifestSha = "a801488a2a69f2eebef9d317b103c3f470906d8c";
+const b3LockSha = "0998abb6a189b27eb6bf68847e43b426e286134c";
+const b3ManifestContent =
+  "ewogICJuYW1lIjogImtlbGQtZ2gxNDA0LW1pbmltYWwtYXBwIiwKICAidmVyc2lvbiI6ICIwLjAuMSIsCiAgInByaXZhdGUiOiB0cnVlLAogICJ0eXBlIjogIm1vZHVsZSIsCiAgImRlcGVuZGVuY2llcyI6IHsKICAgICJAa2VsZC9hcGkiOiAiMC4wLjEiLAogICAgIkBrZWxkL2tpcGMiOiAiMC4wLjEiLAogICAgImVsZWN0cm9uIjogIm5wbTpAa2VsZC9lbGVjdHJvbkAwLjAuMSIKICB9Cn0K";
+const b3LockContent =
+  "ewogICJuYW1lIjogImtlbGQtZ2gxNDA0LW1pbmltYWwtYXBwIiwKICAidmVyc2lvbiI6ICIwLjAuMSIsCiAgImxvY2tmaWxlVmVyc2lvbiI6IDMsCiAgInJlcXVpcmVzIjogdHJ1ZSwKICAicGFja2FnZXMiOiB7CiAgICAiIjogewogICAgICAibmFtZSI6ICJrZWxkLWdoMTQwNC1taW5pbWFsLWFwcCIsCiAgICAgICJ2ZXJzaW9uIjogIjAuMC4xIiwKICAgICAgImRlcGVuZGVuY2llcyI6IHsKICAgICAgICAiQGtlbGQvYXBpIjogIjAuMC4xIiwKICAgICAgICAiQGtlbGQva2lwYyI6ICIwLjAuMSIsCiAgICAgICAgImVsZWN0cm9uIjogIm5wbTpAa2VsZC9lbGVjdHJvbkAwLjAuMSIKICAgICAgfQogICAgfSwKICAgICJub2RlX21vZHVsZXMvQGtlbGQvYXBpIjogewogICAgICAibmFtZSI6ICJAa2VsZC9hcGkiLAogICAgICAidmVyc2lvbiI6ICIwLjAuMSIKICAgIH0sCiAgICAibm9kZV9tb2R1bGVzL0BrZWxkL2tpcGMiOiB7CiAgICAgICJuYW1lIjogIkBrZWxkL2tpcGMiLAogICAgICAidmVyc2lvbiI6ICIwLjAuMSIKICAgIH0sCiAgICAibm9kZV9tb2R1bGVzL2VsZWN0cm9uIjogewogICAgICAibmFtZSI6ICJAa2VsZC9lbGVjdHJvbiIsCiAgICAgICJ2ZXJzaW9uIjogIjAuMC4xIgogICAgfQogIH0KfQo=";
+const b3HeadSha = "d6cfd149e5b3e78b239c486226c14a276f2ba0a3";
+const b3TreeEntries = [
+  { path: b3ManifestPath, mode: "100644", type: "blob", sha: b3ManifestSha },
+  { path: b3LockPath, mode: "100644", type: "blob", sha: b3LockSha },
+];
 
 type ChangedFile = {
   filename: string;
@@ -33,6 +55,7 @@ type ChangedFile = {
 function fixture(
   files: ChangedFile[],
   overrides: {
+    number?: number;
     head?: string;
     base?: string;
     apiHead?: string;
@@ -55,6 +78,11 @@ function fixture(
     wrongTreeSha?: "base" | "head";
     wrongCommitSha?: "base" | "head";
     gitApiFailure?: boolean;
+    mergeParents?: string[];
+    mergeTreeEntries?: Record<string, unknown>[];
+    headCommitTreeSha?: string;
+    blobOverrides?: Record<string, Record<string, unknown>>;
+    mergeChangedOnSecondFetch?: boolean;
   } = {},
 ) {
   const expectedHead = overrides.head ?? "head-commit-1";
@@ -62,8 +90,10 @@ function fixture(
   const mergeBaseSha = overrides.comparisonMergeBase ?? "c".repeat(40);
   const baseTreeSha = "d".repeat(40);
   const headTreeSha = "e".repeat(40);
+  const testMergeSha = "1".repeat(40);
+  const mergeTreeSha = "2".repeat(40);
   const current = {
-    number: 123,
+    number: overrides.number ?? 123,
     state: overrides.state ?? "open",
     changed_files: overrides.changedFiles ?? files.length,
     base: {
@@ -72,6 +102,7 @@ function fixture(
       repo: { full_name: "gyldlab/keld" },
     },
     head: { sha: overrides.apiHead ?? expectedHead },
+    merge_commit_sha: testMergeSha,
   };
   let reads = 0;
   let paginationCalls = 0;
@@ -82,6 +113,17 @@ function fixture(
       git: {
         getCommit: async (args: Record<string, unknown>) => {
           if (overrides.gitApiFailure) throw Error("Git tree API unavailable");
+          if (args.commit_sha === testMergeSha) {
+            return {
+              data: {
+                sha: testMergeSha,
+                tree: { sha: mergeTreeSha },
+                parents: (
+                  overrides.mergeParents ?? [expectedBase, expectedHead]
+                ).map((sha) => ({ sha })),
+              },
+            };
+          }
           const side = args.commit_sha === mergeBaseSha ? "base" : "head";
           expect(args).toEqual({
             owner: "gyldlab",
@@ -101,6 +143,15 @@ function fixture(
         getTree: async (args: Record<string, unknown>) => {
           if (overrides.gitApiFailure) throw Error("Git tree API unavailable");
           treeCalls++;
+          if (args.tree_sha === mergeTreeSha) {
+            return {
+              data: {
+                sha: mergeTreeSha,
+                truncated: false,
+                tree: overrides.mergeTreeEntries ?? b3TreeEntries,
+              },
+            };
+          }
           const side = args.tree_sha === baseTreeSha ? "base" : "head";
           expect(args).toEqual({
             owner: "gyldlab",
@@ -128,6 +179,24 @@ function fixture(
             },
           };
         },
+        getBlob: async (args: Record<string, unknown>) => {
+          const sha = args.file_sha as string;
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            file_sha: sha,
+          });
+          const content =
+            sha === b3ManifestSha ? b3ManifestContent : b3LockContent;
+          return {
+            data: {
+              sha,
+              encoding: "base64",
+              content,
+              ...overrides.blobOverrides?.[sha],
+            },
+          };
+        },
       },
       pulls: {
         get: async () => {
@@ -135,6 +204,9 @@ function fixture(
           reads += 1;
           if (reads === 2 && overrides.changedOnSecondFetch) {
             return { data: { ...current, head: { sha: "newer-head" } } };
+          }
+          if (reads === 2 && overrides.mergeChangedOnSecondFetch) {
+            return { data: { ...current, merge_commit_sha: "9".repeat(40) } };
           }
           if (
             reads === 2 &&
@@ -183,7 +255,7 @@ function fixture(
       expect(args).toEqual({
         owner: "gyldlab",
         repo: "keld",
-        pull_number: 123,
+        pull_number: overrides.number ?? 123,
         per_page: 100,
       });
       return overrides.mutablePrFileList ?? files;
@@ -193,7 +265,7 @@ function fixture(
     repo: { owner: "gyldlab", repo: overrides.repo ?? "keld" },
     payload: {
       pull_request: {
-        number: overrides.badEventNumber ? -123 : 123,
+        number: overrides.badEventNumber ? -123 : (overrides.number ?? 123),
         head: { sha: expectedHead },
         base: { sha: expectedBase },
       },
@@ -208,7 +280,11 @@ function fixture(
     },
   };
   return {
-    run: () => evaluate(github, context, core),
+    run: () =>
+      evaluate(github, context, core, (id: string) => {
+        expect(id).toBe("node:crypto");
+        return { createHash };
+      }),
     getReads: () => reads,
     getPages: () => paginationCalls,
     getComparisons: () => comparisonCalls,
@@ -217,6 +293,96 @@ function fixture(
     outputs,
   };
 }
+
+function reviewedB3Fixture(
+  overrides: Parameters<typeof fixture>[1] = {},
+  files: ChangedFile[] = [
+    { filename: b3ManifestPath, status: "added" },
+    { filename: b3LockPath, status: "added" },
+    { filename: "docs/b3-fixture.md", status: "added" },
+  ],
+) {
+  return fixture(files, {
+    number: 1519,
+    head: b3HeadSha,
+    base: "b".repeat(40),
+    headTreeEntries: b3TreeEntries,
+    mergeTreeEntries: b3TreeEntries,
+    ...overrides,
+  });
+}
+
+test("B-3 fixture is admitted only with independently reviewed SHA-bound manifest and lock in head and test merge", async () => {
+  const f = reviewedB3Fixture();
+  await expect(f.run()).resolves.toBeUndefined();
+  expect(f.outputs.verified_head_sha).toBe(b3HeadSha);
+  expect(f.outputs.verified_base_sha).toBe("b".repeat(40));
+});
+
+test("B-3 manifest, lock, mode, rename, merger and Git-blob tampering fail closed", async () => {
+  const tests = [
+    reviewedB3Fixture({
+      headTreeEntries: [
+        { ...b3TreeEntries[0], mode: "120000" },
+        b3TreeEntries[1],
+      ],
+    }),
+    reviewedB3Fixture({
+      mergeTreeEntries: [
+        { ...b3TreeEntries[0], sha: "9".repeat(40) },
+        b3TreeEntries[1],
+      ],
+    }),
+    reviewedB3Fixture({
+      headTreeEntries: [
+        b3TreeEntries[0],
+        { ...b3TreeEntries[1], sha: "9".repeat(40) },
+      ],
+    }),
+    reviewedB3Fixture({
+      mergeTreeEntries: [
+        b3TreeEntries[0],
+        { ...b3TreeEntries[1], mode: "100755" },
+      ],
+    }),
+    reviewedB3Fixture({ mergeTreeEntries: [b3TreeEntries[0]] }),
+    reviewedB3Fixture({ mergeParents: ["f".repeat(40), b3HeadSha] }),
+    reviewedB3Fixture({ mergeParents: [b3HeadSha, "b".repeat(40)] }),
+    reviewedB3Fixture({ mergeChangedOnSecondFetch: true }),
+    reviewedB3Fixture({
+      blobOverrides: { [b3ManifestSha]: { content: b3LockContent } },
+    }),
+    reviewedB3Fixture({
+      blobOverrides: { [b3LockSha]: { content: b3ManifestContent } },
+    }),
+    reviewedB3Fixture({}, [
+      {
+        filename: b3ManifestPath,
+        previous_filename: "docs/old.json",
+        status: "renamed",
+      },
+      { filename: b3LockPath, status: "added" },
+    ]),
+    reviewedB3Fixture({}, [
+      { filename: b3ManifestPath, status: "added" },
+      { filename: b3LockPath, status: "modified" },
+    ]),
+    reviewedB3Fixture({}, [
+      { filename: b3ManifestPath, status: "added" },
+      { filename: b3LockPath, status: "added" },
+      { filename: "docs/other/package-lock.json", status: "modified" },
+    ]),
+    reviewedB3Fixture({}, [
+      { filename: b3ManifestPath, status: "added" },
+      { filename: b3LockPath, status: "added" },
+      { filename: "docs/other/package.json", status: "added" },
+    ]),
+  ];
+  for (const f of tests) {
+    await expect(f.run()).rejects.toThrow();
+    expect(f.outputs).toEqual({});
+  }
+});
 
 test("base-owned workflow is immutable/read-only and never executes PR code", () => {
   expect(workflow.name).toBe("CI provenance");

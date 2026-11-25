@@ -259,6 +259,106 @@ jobs:
               }
               return [...changed];
             };
+            // REVIEW CANDIDATE ONLY. This narrow exception has no source-owner
+            // authorization until a separate trusted-main policy review lands.
+            // Never trust a PR label, approval, mutable listFiles or branch ref.
+            const reviewedB3Manifest = {
+              path: "crates/keld-cli/tests/fixtures/gh1404-minimal-app/package.json",
+              sha: "a801488a2a69f2eebef9d317b103c3f470906d8c",
+              sha256: "bb9e988bc67c7ca000f2ada2d5d9043903b31db54d46f2ff6487a575ae712a55",
+            };
+            const reviewedB3Lock = {
+              path: "crates/keld-cli/tests/fixtures/gh1404-minimal-app/package-lock.json",
+              sha: "0998abb6a189b27eb6bf68847e43b426e286134c",
+              sha256: "dc3a2fa177d9f416bcfc45e663d94d20121282208dbd2b681a797f7314b81652",
+            };
+            const exactReviewedB3Admission = async (pr, compareFiles) => {
+              // Pin the PR identity and both reviewed byte sequences. GitHub
+              // strict up-to-date protection can rewrite the HEAD SHA after the
+              // trusted policy lands, so pin each current immutable event head
+              // to its own Git commit and synthetic merge parent pair instead.
+              if (pr.number !== 1519 || pr.changed_files >= 300 ||
+                  !Array.isArray(compareFiles) || compareFiles.length !== pr.changed_files) {
+                return false;
+              }
+              const onlyAddition = (path) => {
+                const matching = compareFiles.filter(file =>
+                  file.filename === path || file.previous_filename === path);
+                return matching.length === 1 &&
+                  matching[0].filename === path &&
+                  matching[0].status === "added" &&
+                  !matching[0].previous_filename;
+              };
+              if (!onlyAddition(reviewedB3Manifest.path) ||
+                  !onlyAddition(reviewedB3Lock.path)) return false;
+              // The reviewed lock is the only changed npm/Bun/yarn/pnpm lock.
+              const lockFile = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/i;
+              if (compareFiles.filter(file => lockFile.test(file.filename) ||
+                  lockFile.test(file.previous_filename || "")).length !== 1) {
+                return false;
+              }
+              const isSha = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+              if (!isSha(pr.base?.sha) || !isSha(pr.head?.sha) ||
+                  !isSha(pr.merge_commit_sha)) return false;
+              const readCommit = async (sha) => {
+                const commit = (await github.rest.git.getCommit({
+                  owner, repo, commit_sha: sha,
+                })).data;
+                if (commit?.sha !== sha || !isSha(commit?.tree?.sha)) {
+                  throw new Error("CI provenance refuses unbound B-3 commit");
+                }
+                return commit;
+              };
+              const [head, merge] = await Promise.all([
+                readCommit(pr.head.sha), readCommit(pr.merge_commit_sha),
+              ]);
+              // GitHub's synthetic merge is immutable only after verifying its
+              // exact two parents: protected base first, event HEAD second.
+              if (!Array.isArray(merge.parents) || merge.parents.length !== 2 ||
+                  merge.parents[0]?.sha !== pr.base.sha ||
+                  merge.parents[1]?.sha !== pr.head.sha) return false;
+              const readTree = async (sha) => {
+                const tree = (await github.rest.git.getTree({
+                  owner, repo, tree_sha: sha, recursive: "1",
+                })).data;
+                if (tree?.sha !== sha || tree.truncated !== false ||
+                    !Array.isArray(tree.tree)) {
+                  throw new Error("CI provenance refuses truncated or unbound B-3 tree");
+                }
+                return tree.tree;
+              };
+              const [headTree, mergeTree] = await Promise.all([
+                readTree(head.tree.sha), readTree(merge.tree.sha),
+              ]);
+              const reviewedFiles = [reviewedB3Manifest, reviewedB3Lock];
+              for (const tree of [headTree, mergeTree]) {
+                for (const expected of reviewedFiles) {
+                  const entries = tree.filter(entry => entry?.path === expected.path);
+                  if (entries.length !== 1 || entries[0].type !== "blob" ||
+                      entries[0].mode !== "100644" || entries[0].sha !== expected.sha) {
+                    return false; // changed bytes, deleted, duplicate, executable or symlink
+                  }
+                }
+              }
+              // actions/github-script v9 injects its wrapped Node require.
+              const {createHash} = require("node:crypto");
+              for (const expected of reviewedFiles) {
+                const blob = (await github.rest.git.getBlob({
+                  owner, repo, file_sha: expected.sha,
+                })).data;
+                if (blob?.sha !== expected.sha || blob.encoding !== "base64" ||
+                    typeof blob.content !== "string") {
+                  throw new Error("CI provenance refuses unbound B-3 blob");
+                }
+                const encoded = blob.content.replace(/\s/g, "");
+                const bytes = Buffer.from(encoded, "base64");
+                if (bytes.toString("base64") !== encoded ||
+                    createHash("sha256").update(bytes).digest("hex") !== expected.sha256) {
+                  return false;
+                }
+              }
+              return true;
+            };
             // __IMMUTABLE_CHANGED_PATHS_END__
             const verdicts = [];
             for (const event of snapshots) {
@@ -314,13 +414,19 @@ jobs:
                 }
                 for (const path of changedPaths)
                   if (protectedPath(path)) protectedChanges.push(path);
-                if (protectedChanges.length) {
+                if (protectedChanges.length &&
+                    !(protectedChanges.length === 1 &&
+                      protectedChanges[0] === reviewedB3Manifest.path &&
+                      await exactReviewedB3Admission(before, compare.files))) {
                   verifiedDenied = true; // concrete immutable protected path evidence
                   throw Error('Protected CI authority changed');
                 }
                 const after = await fetchPR();
                 if (!matches(after) || after.changed_files !== before.changed_files)
                   throw Error('PR moved or changed file count after immutable comparison');
+                if (protectedChanges.length &&
+                    after.merge_commit_sha !== before.merge_commit_sha)
+                  throw Error('B-3 test merge moved during immutable comparison');
                 verifiedFileCount = before.changed_files;
                 admitted = true;
                 reason = 'protected-main immutable CI admission passed';
