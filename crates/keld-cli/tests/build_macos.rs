@@ -1,6 +1,6 @@
 //! Native CLI refusal controls for the first GH-1404 local packaging cell.
 
-#![cfg(target_os = "macos")]
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #![allow(clippy::expect_used)] // Integration fixture setup failures must fail the test.
 
 use std::fs;
@@ -58,8 +58,13 @@ fn build(root: &Path) -> Output {
 fn closed_cli_target_and_inert_authoring_target_must_match_before_any_runtime_io() {
     let mismatch = tempfile::tempdir().expect("isolated mismatched-target project");
     write_inputs(mismatch.path());
+    fs::write(
+        mismatch.path().join("keld.build.ts"),
+        build_source().replace("target:'macos-arm64'", "target:'macos-x64'"),
+    )
+    .expect("write mismatched authoring target");
     let result = Command::new(env!("CARGO_BIN_EXE_keld"))
-        .args(["build", "--target", "macos-x64"])
+        .args(["build", "--target", "macos-arm64"])
         .current_dir(mismatch.path())
         .output()
         .expect("native build CLI");
@@ -70,6 +75,26 @@ fn closed_cli_target_and_inert_authoring_target_must_match_before_any_runtime_io
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!mismatch.path().join("output").exists());
+    assert!(!mismatch.path().join(".keld/dev").exists());
+}
+
+#[test]
+fn unsupported_architecture_targets_refuse_before_reading_authoring_or_writing_output() {
+    let isolated = tempfile::tempdir().expect("isolated unsupported-target project");
+    for target in ["macos-x64", "macos-universal"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_keld"))
+            .args(["build", "--target", target])
+            .current_dir(isolated.path())
+            .output()
+            .expect("run unsupported native build CLI");
+        assert_eq!(result.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("unsupported macOS architecture target")
+        );
+        assert!(!isolated.path().join("output").exists());
+        assert!(!isolated.path().join(".keld/dev").exists());
+    }
 }
 
 fn refused_without_output(root: &Path, expected: &str) {

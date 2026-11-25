@@ -29,7 +29,7 @@ RUNNERS = {
     "macos-26": (26, "arm64", "ARM64"),
 }
 RECORD_FIELDS = frozenset({
-    "schema", "sourceCommit", "target", "bundleIdentifier", "hostSha256",
+    "schema", "sourceCommit", "target", "bundleIdentifier", "hostInputSha256", "hostFinalSha256",
     "bunSha256", "bunSignatureIdentifier", "bunTeamIdentifier",
     "bunSigningFlags", "bunEntitlementsSha256",
 })
@@ -63,11 +63,11 @@ def qualification_record(text: str) -> dict[str, object]:
         raise QualificationError(f"GH1404-CI-001: invalid qualification JSON: {exc}") from exc
     require(isinstance(record, dict), "qualification must be a JSON object")
     require(set(record) == RECORD_FIELDS, "qualification record has missing or unknown fields")
-    require(type(record["schema"]) is int and record["schema"] == 1, "qualification schema must be 1")
+    require(type(record["schema"]) is int and record["schema"] == 2, "qualification schema must be 2")
     require(isinstance(record["sourceCommit"], str) and bool(SHA.fullmatch(record["sourceCommit"])),
             "qualification sourceCommit must be a full SHA-1")
     require(record["target"] == "macos-universal", "qualification requires macos-universal target")
-    for field in ("hostSha256", "bunSha256", "bunEntitlementsSha256"):
+    for field in ("hostInputSha256", "hostFinalSha256", "bunSha256", "bunEntitlementsSha256"):
         require(isinstance(record[field], str) and bool(HEX_64.fullmatch(record[field])),
                 f"qualification {field} requires lowercase SHA-256")
     for field in ("bundleIdentifier", "bunSignatureIdentifier", "bunTeamIdentifier", "bunSigningFlags"):
@@ -169,6 +169,15 @@ def _archs(file: Path, runner: Callable[..., subprocess.CompletedProcess[bytes]]
     return sorted(tokens)
 
 
+def _require_bundle_shape(app: Path, host: Path, bun: Path, info: Path) -> None:
+    require(app.name.endswith(".app") and app.is_dir() and not app.is_symlink(), "invalid .app root")
+    for parent in (app / "Contents", host.parent, bun.parent):
+        require(parent.is_dir() and not parent.is_symlink(),
+                f"bundle executable parent is linked or missing: {parent.name}")
+    for file, executable in ((host, True), (bun, True), (info, False)):
+        _pin_regular(file, executable=executable)
+
+
 def verify_bundle(app: Path, receipt: Mapping[str, object], source_commit: str,
                   runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run) -> dict[str, object]:
     """Compare signed output to qualified external pins; no application execution."""
@@ -177,11 +186,7 @@ def verify_bundle(app: Path, receipt: Mapping[str, object], source_commit: str,
     host = app / "Contents/MacOS/keld-host"
     bun = app / "Contents/Helpers/bun"
     info = app / "Contents/Info.plist"
-    for parent in (app / "Contents", host.parent, bun.parent):
-        require(parent.is_dir() and not parent.is_symlink(),
-                f"bundle executable parent is linked or missing: {parent.name}")
-    for file, executable in ((host, True), (bun, True), (info, False)):
-        _pin_regular(file, executable=executable)
+    _require_bundle_shape(app, host, bun, info)
     # Core's strict XML parser and Apple Security.framework are still authoritative.
     with info.open("rb") as stream:
         document = stream.read(65537)
@@ -204,7 +209,9 @@ def verify_bundle(app: Path, receipt: Mapping[str, object], source_commit: str,
     require(local.get("bunSha256") == receipt["bunSha256"], "sealed Bun digest differs from external pin")
     host_hash, bun_hash = _digest(host), _digest(bun)
     metadata_hash = hashlib.sha256(document).hexdigest()
-    require(host_hash == receipt["hostSha256"], "Host bytes differ from qualified input")
+    # The external record attests input provenance; the installed Host can only
+    # be compared with the separately approved post-sign digest.
+    require(host_hash == receipt["hostFinalSha256"], "Host bytes differ from qualified final artifact")
     require(bun_hash == receipt["bunSha256"], "Bun bytes differ from qualified signed input")
     _archs(host, runner)
     _archs(bun, runner)
@@ -221,11 +228,18 @@ def verify_bundle(app: Path, receipt: Mapping[str, object], source_commit: str,
     require(bool(entitlements), "Bun lacks independently pinned entitlements")
     require(hashlib.sha256(entitlements).hexdigest() == receipt["bunEntitlementsSha256"],
             "Bun entitlements differ from qualified signed input")
+    # Recheck path shape as well as content: equal bytes alone do not preserve
+    # executable mode or the no-symlink contract. These observations still
+    # require an independently controlled, stable app copy.
+    _require_bundle_shape(app, host, bun, info)
     require(_digest(host) == host_hash and _digest(bun) == bun_hash
             and _digest(info) == metadata_hash,
             "signed bundle files changed during native preflight")
+    _require_bundle_shape(app, host, bun, info)
     return {"status": "signed-bundle-preflight-only", "target": receipt["target"],
-            "sourceCommit": source_commit, "hostSha256": host_hash, "bunSha256": bun_hash,
+            "sourceCommit": source_commit,
+            "hostInputSha256": receipt["hostInputSha256"],
+            "hostFinalSha256": host_hash, "bunSha256": bun_hash,
             "archs": ["arm64", "x86_64"], "minimumSystemVersion": minimum,
             "bunSigner": bun_facts}
 
@@ -244,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runner-label", required=True, choices=tuple(RUNNERS))
     parser.add_argument("--app", type=Path, required=True, help="Installed signed app copy")
     parser.add_argument("--qualification", type=Path, required=True,
-                        help="Independently authenticated external signed-input record")
+                        help="Independently authenticated external input and final-artifact record")
     parser.add_argument("--qualification-sha256", required=True,
                         help="SHA-256 pinned by an independent trusted CI owner, outside PR input")
     parser.add_argument("--source-commit", required=True, help="Exact checkout SHA")
@@ -263,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         with args.output.open("x", encoding="utf-8") as output:
             json.dump(evidence, output, indent=2, sort_keys=True)
             output.write("\n")
-        print(f"GH1404-CI-PREFLIGHT: signed input and native runner verified: {args.output}")
+        print(f"GH1404-CI-PREFLIGHT: signed artifact and native runner verified: {args.output}")
         return 0
     except (QualificationError, FileExistsError, OSError, UnicodeError) as exc:
         print(f"GH1404-CI-REFUSED: {exc}", file=sys.stderr)

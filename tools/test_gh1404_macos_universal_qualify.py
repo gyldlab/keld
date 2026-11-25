@@ -73,11 +73,12 @@ class QualificationContracts(unittest.TestCase):
         self.bun.chmod(0o755)
         self.native = NativeToolFixture()
         self.record: dict[str, object] = {
-            "schema": 1,
+            "schema": 2,
             "sourceCommit": SOURCE,
             "target": "macos-universal",
             "bundleIdentifier": "org.keld.native.fixture",
-            "hostSha256": gate._digest(self.host),
+            "hostInputSha256": hashlib.sha256(b"pre-sign fixture host").hexdigest(),
+            "hostFinalSha256": hashlib.sha256(b"host qualified bytes").hexdigest(),
             "bunSha256": gate._digest(self.bun),
             "bunSignatureIdentifier": "org.bun.fixture",
             "bunTeamIdentifier": TEAM,
@@ -113,6 +114,26 @@ class QualificationContracts(unittest.TestCase):
         self.assertTrue(any("--deep" in call for call in self.native.calls))
         self.assertTrue(any("--entitlements" in call for call in self.native.calls))
 
+    def test_distinct_input_and_final_host_pins(self) -> None:
+        input_digest = hashlib.sha256(b"independently qualified pre-sign host").hexdigest()
+        final_digest = hashlib.sha256(b"host qualified bytes").hexdigest()
+        self.assertNotEqual(input_digest, final_digest)
+        record = {key: value for key, value in self.record.items()
+                  if key not in ("hostSha256", "hostInputSha256", "hostFinalSha256")}
+        record.update(schema=2, hostInputSha256=input_digest, hostFinalSha256=final_digest)
+        raw = json.dumps(record).encode("utf-8")
+        trusted = hashlib.sha256(raw).hexdigest()
+        qualified = gate.pinned_qualification_record(raw, trusted)
+        evidence = gate.verify_bundle(self.app, qualified, SOURCE, self.native)
+        self.assertEqual(evidence["hostInputSha256"], input_digest)
+        self.assertEqual(evidence["hostFinalSha256"], final_digest)
+        with self.assertRaisesRegex(gate.QualificationError, "Host bytes differ"):
+            gate.verify_bundle(self.app, dict(qualified, hostFinalSha256=input_digest),
+                               SOURCE, self.native)
+        altered = json.dumps(dict(record, hostInputSha256="a" * 64)).encode("utf-8")
+        with self.assertRaisesRegex(gate.QualificationError, "independently supplied pin"):
+            gate.pinned_qualification_record(altered, trusted)
+
     def test_modified_host_and_bun_rejected_against_independent_pins(self) -> None:
         self.host.write_bytes(b"different host bytes")
         self.assert_refusal("Host bytes differ")
@@ -123,6 +144,26 @@ class QualificationContracts(unittest.TestCase):
     def test_native_signing_time_substitution_cannot_keep_old_digest(self) -> None:
         self.native.on_bun_verify = lambda: self.bun.write_bytes(b"replaced after input pin")
         self.assert_refusal("changed during native preflight")
+
+    def test_same_byte_leaf_link_during_preflight_refused(self) -> None:
+        def mutate() -> None:
+            retained = self.root / "retained-bun"
+            self.bun.rename(retained)
+            self.bun.symlink_to(retained)
+        self.native.on_bun_verify = mutate
+        self.assert_refusal("symlink")
+
+    def test_executable_mode_removal_during_preflight_refused(self) -> None:
+        self.native.on_bun_verify = lambda: self.bun.chmod(0o644)
+        self.assert_refusal("not executable")
+
+    def test_same_byte_parent_link_during_preflight_refused(self) -> None:
+        def mutate() -> None:
+            retained = self.root / "retained-helpers"
+            self.bun.parent.rename(retained)
+            self.bun.parent.symlink_to(retained, target_is_directory=True)
+        self.native.on_bun_verify = mutate
+        self.assert_refusal("parent is linked")
 
     def test_self_consistent_plist_digest_is_insufficient(self) -> None:
         foreign = "ef" * 32
@@ -196,6 +237,11 @@ class QualificationContracts(unittest.TestCase):
         with self.assertRaisesRegex(gate.QualificationError, "duplicate qualification key"):
             gate.qualification_record(canonical[:-1] + ',"target":"macos-universal"}')
         for changed in [dict(self.record, unknown=True),
+                        dict(self.record, schema=1),
+                        {key: val for key, val in self.record.items() if key != "hostInputSha256"},
+                        {key: val for key, val in self.record.items() if key != "hostFinalSha256"},
+                        dict(self.record, hostInputSha256="FA" * 32),
+                        dict(self.record, hostFinalSha256="FA" * 32),
                         {key: val for key, val in self.record.items() if key != "bunSha256"},
                         dict(self.record, bunSha256="FA" * 32),
                         dict(self.record, target="macos-arm64"),

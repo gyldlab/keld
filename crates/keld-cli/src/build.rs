@@ -67,7 +67,7 @@ impl fmt::Display for BuildError {
         write!(
             formatter,
             "KELD-CLI-052: local macOS build refused during {}: {}. \
-             Use `keld build --target macos-arm64|macos-x64|macos-universal` with closed literal authoring \
+             Use `keld build --target macos-arm64` with closed literal authoring \
              files, independently pinned binaries and a new output directory.",
             self.phase, self.detail
         )
@@ -110,21 +110,21 @@ fn require_graph_pairing(
     }
 }
 
+const LOCAL_BUILD_TARGET: &str = "macos-arm64";
+
 fn parse_args(args: &[String]) -> Result<&str, BuildError> {
     let target = match args {
         [flag, target] if flag == "--target" => target.as_str(),
-        [arg] => arg.strip_prefix("--target=").ok_or_else(|| {
-            BuildError::invocation(
-                "expected exactly --target <macos-arm64|macos-x64|macos-universal>",
-            )
-        })?,
+        [arg] => arg
+            .strip_prefix("--target=")
+            .ok_or_else(|| BuildError::invocation("expected exactly --target <macos-arm64>"))?,
         _ => {
             return Err(BuildError::invocation(
-                "expected exactly --target <macos-arm64|macos-x64|macos-universal>",
+                "expected exactly --target <macos-arm64>",
             ));
         }
     };
-    if matches!(target, "macos-arm64" | "macos-x64" | "macos-universal") {
+    if target == LOCAL_BUILD_TARGET {
         Ok(target)
     } else {
         Err(BuildError::invocation(
@@ -144,9 +144,9 @@ fn parse_args(args: &[String]) -> Result<&str, BuildError> {
 /// source/runtime qualification remains the caller's separate evidence obligation.
 pub fn run_build(args: &[String]) -> Result<(), BuildError> {
     let target = parse_args(args)?;
-    if !cfg!(target_os = "macos") {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(BuildError::invocation(
-            "native macOS tooling is required to assemble and sign the requested target",
+            "native macOS tooling on arm64 is required to assemble and sign the requested target",
         ));
     }
     #[cfg(target_os = "macos")]
@@ -510,14 +510,16 @@ mod tests {
     }
 
     #[test]
-    fn only_three_concrete_mac_targets_are_accepted() {
+    fn only_approved_arm64_target_is_accepted() {
         assert!(parse_args(&["--target".into(), "macos-arm64".into()]).is_ok());
         assert!(parse_args(&["--target=macos-arm64".into()]).is_ok());
-        assert!(parse_args(&["--target".into(), "macos-x64".into()]).is_ok());
-        assert!(parse_args(&["--target=macos-universal".into()]).is_ok());
         for args in [
             vec![],
             vec!["macos-arm64".into()],
+            vec!["--target".into(), "macos-x64".into()],
+            vec!["--target=macos-x64".into()],
+            vec!["--target".into(), "macos-universal".into()],
+            vec!["--target=macos-universal".into()],
             vec!["--target".into(), "macos-arm".into()],
             vec!["--target".into(), "macos-universal2".into()],
             vec!["--target".into(), "windows-x64".into()],
@@ -530,7 +532,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
     fn unsupported_host_refuses_before_reading_cwd_or_writing_output() {
         let error =
