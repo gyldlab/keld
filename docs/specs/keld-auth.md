@@ -551,11 +551,11 @@ Linux:
 | 2. Custom scheme | Opt-in only where IdP-allowed and `.desktop` registration exists | Host owns registration + correlation | v0: no `.desktop` emitter; Google: skipped by policy |
 | 3. Loopback + PKCE + external browser | Default honest path | Host owns portal parent-window id, `OpenURI` request (interface v3, returns a Request handle), loopback listener | Portal/session bus missing → typed error naming the reviewed launch policy |
 
-**Linux availability (D10; premise refreshed 2026-09-09).** At this note's
+**Linux availability (D10; premise refreshed 2026-09-09).** At its
 original pin (`c6e14f1`) Keld's no-flag host failed closed on Linux and
-KEL-96/T4 was open. **That edge has since landed**: `c41ec5e`
+KEL-96/T4 was open. **That edge landed**: `c41ec5e`
 (`feat(linux): wire no-flag host sessions`, #145, 2026-09-04) checks
-`kel96-no-flag-host-boot.md` T4; `KELD-CORE-034` is now gated
+T4 (now in `kel96-no-flag-host-boot/lifecycle.md`); `KELD-CORE-034` is gated
 `#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]`
 (`crates/keld-core/src/app_session.rs`), i.e. it fires only outside
 mac/linux/windows, and `crates/keld-host/tests/no_flag_linux.rs` exists.

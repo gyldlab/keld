@@ -86,7 +86,7 @@ Non-goals (owners in parentheses):
   id 5, no frame or `HELLO` change); `03-security.md`; `04-electron-compat.md` (#1181
   sentence "Linux and Windows currently refuse facade-window subscription");
   `05-webview-and-native.md` §3 "Window ownership" (`:302-304`).
-- `docs/specs/kel96-no-flag-host-boot.md`; `kel259-windows-test-layout.md` (test
+- `kel96-no-flag-host-boot/index.md`; `kel259-windows-test-layout.md` (test
   families; `support/window.rs` owns HWND observation); `kel135-persistent-profile-identity.md`
   (profile lifecycle record owner; A21 reads its "store/context attached"); `kel254-windows-installed-root-boot.md`
   (installed/persistent harness); KEL-53 §4 handover (`crates/keld-wv/src/engine.rs:93-99`).
