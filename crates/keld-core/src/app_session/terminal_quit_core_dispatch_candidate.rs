@@ -1,11 +1,13 @@
 //! A test-only adapter of the draft transaction to the real Core reader.
 //! One existing Quit frame is a fixture carrier; outcomes travel out of band.
-//! No conditional wire tag, accepted legacy Quit reply or terminal tail is
-//! synthesized. The opt-in is owned by the exact test router/link.
+//! No conditional wire tag is allocated. The cut-only witness has no wire
+//! reply; the separate legacy-tail witness uses the existing real reply and
+//! shutdown sequence. The opt-in is owned by the exact test router/link.
 
 use super::super::super::super::{
-    ConditionalQuitFixtureDispatch, HostAppError, PrimaryCallerContext, PrimaryLinkIdentity,
-    PrimaryRouterHandle, SESSION_LIFECYCLE_QUIT, app_detail, with_primary_caller_locked,
+    ActivePrimaryGeneration, ConditionalQuitFixtureDispatch, ConditionalQuitFixtureDisposition,
+    HostAppError, PrimaryCallerContext, PrimaryLinkIdentity, PrimaryRouterHandle,
+    SESSION_LIFECYCLE_QUIT, app_detail, with_primary_caller_locked,
 };
 use super::super::super::WindowOwner;
 use super::{HostFacts, Outcome, TerminalQuit};
@@ -18,12 +20,12 @@ use std::sync::{Arc, Weak, atomic::Ordering, mpsc};
 fn owner_cut<R>(
     handle: &PrimaryRouterHandle,
     caller: &PrimaryCallerContext,
-    apply: impl FnOnce(HostFacts, u64) -> R,
+    apply: impl FnOnce(HostFacts, u64, &mut ActivePrimaryGeneration) -> Result<R, HostAppError>,
 ) -> Result<Option<R>, HostAppError> {
     let mut result = None;
     with_primary_caller_locked(&handle.current, &handle.shutdown, caller, |current| {
         let active = current
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| app_detail("conditional Quit fixture", "validated owner disappeared"))?;
         let windows = handle
             .windows
@@ -66,7 +68,8 @@ fn owner_cut<R>(
                 fs_terminal_drained: drained,
             },
             incarnation,
-        ));
+            active,
+        )?);
         Ok(())
     })?;
     Ok(result)
@@ -80,6 +83,25 @@ impl PrimaryRouterHandle {
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
     ) -> Result<mpsc::Receiver<(CorrelationId, String)>, HostAppError> {
+        self.arm_conditional_quit_fixture_mode(caller, correlation, false)
+    }
+
+    /// Separate clean-cut witness for the existing reserved legacy tail.
+    /// It does not implement conditional reply semantics.
+    pub(in crate::app_session) fn arm_conditional_quit_tail_fixture(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+    ) -> Result<mpsc::Receiver<(CorrelationId, String)>, HostAppError> {
+        self.arm_conditional_quit_fixture_mode(caller, correlation, true)
+    }
+
+    fn arm_conditional_quit_fixture_mode(
+        &self,
+        caller: &PrimaryCallerContext,
+        correlation: CorrelationId,
+        finish_legacy_tail: bool,
+    ) -> Result<mpsc::Receiver<(CorrelationId, String)>, HostAppError> {
         if correlation.0 == 0 {
             return Err(app_detail(
                 "conditional Quit fixture",
@@ -88,8 +110,8 @@ impl PrimaryRouterHandle {
         }
         let mut transaction = TerminalQuit::new();
         let Some((Outcome::Prepared(token), initial_incarnation)) =
-            owner_cut(self, caller, |facts, incarnation| {
-                (transaction.prepare(facts), incarnation)
+            owner_cut(self, caller, |facts, incarnation, _| {
+                Ok((transaction.prepare(facts), incarnation))
             })?
         else {
             return Err(app_detail(
@@ -112,7 +134,7 @@ impl PrimaryRouterHandle {
             caller: caller.clone(),
             correlation,
             run: Box::new(move |handle, caller, correlation| {
-                let initial = owner_cut(handle, caller, |facts, incarnation| {
+                let initial = owner_cut(handle, caller, |facts, incarnation, active| {
                     // From an empty Prepare cut a later live/adoptable window
                     // requires a new Create identity. Reuse the registry's
                     // existing non-recycled incarnation for this fixture.
@@ -121,7 +143,17 @@ impl PrimaryRouterHandle {
                     if incarnation != initial_incarnation {
                         transaction.admit_create();
                     }
-                    transaction.begin_commit(token, facts)
+                    let initial = transaction.begin_commit(token, facts);
+                    if finish_legacy_tail && initial == Outcome::DrainRequired {
+                        if active.pending_quit.is_some() {
+                            return Err(app_detail(
+                                "conditional Quit tail fixture",
+                                "legacy reply already pending",
+                            ));
+                        }
+                        active.pending_quit = Some(correlation);
+                    }
+                    Ok(initial)
                 })?
                 .unwrap_or(Outcome::Unknown);
                 let outcome = if initial == Outcome::DrainRequired {
@@ -136,13 +168,13 @@ impl PrimaryRouterHandle {
                             "FS owner lost during drain",
                         ));
                     }
-                    owner_cut(handle, caller, |facts, incarnation| {
+                    owner_cut(handle, caller, |facts, incarnation, _| {
                         if incarnation != initial_incarnation {
                             transaction.admit_create();
                         }
-                        transaction.finish_commit(token, facts, || {
+                        Ok(transaction.finish_commit(token, facts, || {
                             handle.shutdown.reserve_guarded(SESSION_LIFECYCLE_QUIT)
-                        })
+                        }))
                     })?
                     .unwrap_or(Outcome::Unknown)
                 } else {
@@ -153,10 +185,23 @@ impl PrimaryRouterHandle {
                     .map_err(|error| {
                         app_detail("conditional Quit fixture receipt", error.to_string())
                     })?;
-                // A committed cut stops this reader; no synthetic legacy
-                // acknowledgement or production cleanup is invoked. Retained
-                // resumes the same reader; all carrier settlement stays test-only.
-                Ok(outcome != Outcome::Retained)
+                if finish_legacy_tail {
+                    if outcome != Outcome::Committed {
+                        return Err(app_detail(
+                            "conditional Quit tail fixture",
+                            "clean legacy-tail witness did not commit",
+                        ));
+                    }
+                    // The same reader enters the already-reserved production
+                    // tail; it must not try to reserve a second time.
+                    return Ok(ConditionalQuitFixtureDisposition::FinishReservedLegacyTail);
+                }
+                // The original cut-only fixture never sends a wire reply.
+                Ok(if outcome == Outcome::Retained {
+                    ConditionalQuitFixtureDisposition::Resume
+                } else {
+                    ConditionalQuitFixtureDisposition::Stop
+                })
             }),
         });
         Ok(received)
@@ -166,7 +211,7 @@ impl PrimaryRouterHandle {
         &self,
         caller: &PrimaryCallerContext,
         correlation: CorrelationId,
-    ) -> Result<Option<bool>, HostAppError> {
+    ) -> Result<Option<ConditionalQuitFixtureDisposition>, HostAppError> {
         let dispatch = {
             let mut hooks = self
                 .quit_drain_hooks

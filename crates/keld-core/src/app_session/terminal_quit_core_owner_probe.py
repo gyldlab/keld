@@ -176,6 +176,7 @@ struct PrimaryCallerContext {
 }
 struct ActivePrimaryGeneration {
     attempt: u32, identity: PrimaryLinkIdentity, reader_stop: Arc<AtomicBool>,
+    pending_quit: Option<CorrelationId>,
 }
 struct FsDispatchState {
     in_flight: usize, call_outstanding: bool,

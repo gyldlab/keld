@@ -407,3 +407,96 @@ fn exercise_drain() -> TestResult {
     );
     fixture.finish()
 }
+
+/// A distinct component witness: the test-only conditional cut must enter
+/// the real reserved legacy tail without reserving again. This is not a
+/// conditional wire, native-window, or operating-system Quit oracle.
+#[test]
+fn authenticated_reader_reserved_cut_enters_existing_legacy_tail() -> TestResult {
+    run_case(
+        "authenticated_reader_reserved_cut_enters_existing_legacy_tail",
+        exercise_reserved_tail,
+    )
+}
+
+fn exercise_reserved_tail() -> TestResult {
+    use crate::app_session::{QuitDrainEnd, SESSION_LIFECYCLE_QUIT, SESSION_RUNNING};
+
+    let mut fixture = Fixture::new()?;
+    let handle = fixture.guarded.router.handle();
+    let caller = Fixture::caller(&handle)?;
+    // Subscribe was the only prior Call on this fixture link.
+    let receipt = handle.arm_conditional_quit_tail_fixture(&caller, CorrelationId(2))?;
+    let (end_tx, end_rx) = mpsc::sync_channel(1);
+    handle.observe_next_quit_drain_end(end_tx);
+    send_call(
+        &mut fixture.control,
+        "CARRIER",
+        &encode(&LifecycleRequest::Quit)?,
+    )?;
+    assert_eq!(
+        receipt
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|e| io::Error::other(format!("conditional cut receipt: {e}")))?,
+        (CorrelationId(2), "Committed".to_owned())
+    );
+    let GuardianOwnerCommand::PrepareAcceptedShutdown(prepare) = fixture
+        .guarded
+        .guardian
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|e| io::Error::other(format!("prepare owner receipt: {e}")))?
+    else {
+        return Err(io::Error::other("reserved tail did not request owner receipt").into());
+    };
+    let cause_before_receipt = handle.shutdown.cause();
+    let started_before_receipt = handle.shutdown.tail_started.load(Ordering::Acquire);
+    prepare.send(Ok(()))?;
+    assert_eq!(
+        read_control(&mut fixture.control),
+        format!("CARRIER-REPLY:{}", hex(&encode(&LifecycleResponse::Quit)?))
+    );
+    fixture.control.get_mut().write_all(b"STOP\n")?;
+    assert_eq!(
+        end_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|e| io::Error::other(format!("peer drain end: {e}")))?,
+        QuitDrainEnd::PeerClosed
+    );
+    let GuardianOwnerCommand::Shutdown(stopped) = fixture
+        .guarded
+        .guardian
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|e| io::Error::other(format!("guardian shutdown command: {e}")))?
+    else {
+        return Err(io::Error::other("reserved tail did not request shutdown").into());
+    };
+    stopped.send(Ok(()))?;
+    assert!(matches!(
+        fixture
+            .guarded
+            .window
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|e| io::Error::other(format!("UI quit command: {e}")))?,
+        AppWindowCommand::Quit
+    ));
+    fixture.guarded.router.shutdown()?;
+    assert_eq!(cause_before_receipt, SESSION_RUNNING);
+    assert!(!started_before_receipt);
+    assert_eq!(handle.shutdown.cause(), SESSION_LIFECYCLE_QUIT);
+    assert!(handle.shutdown.tail_started.load(Ordering::Acquire));
+    assert!(handle.shutdown.tail_ended.load(Ordering::Acquire));
+    assert!(
+        handle
+            .current
+            .lock()
+            .map_err(|_| io::Error::other("current poisoned"))?
+            .is_none()
+    );
+    assert!(fixture.guarded.guardian.try_recv().is_err());
+    assert!(fixture.guarded.window.try_recv().is_err());
+    assert!(matches!(
+        fixture.role.finish(),
+        Some(keld_runtime::SupervisorOutcome::Stopped)
+    ));
+    Ok(())
+}

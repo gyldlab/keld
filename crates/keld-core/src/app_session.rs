@@ -6815,9 +6815,17 @@ type ConditionalQuitFixtureHandler = Box<
             &PrimaryRouterHandle,
             &PrimaryCallerContext,
             CorrelationId,
-        ) -> Result<bool, HostAppError>
+        ) -> Result<ConditionalQuitFixtureDisposition, HostAppError>
         + Send,
 >;
+
+#[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
+#[derive(Debug, PartialEq, Eq)]
+enum ConditionalQuitFixtureDisposition {
+    Resume,
+    Stop,
+    FinishReservedLegacyTail,
+}
 
 #[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
 struct ConditionalQuitFixtureDispatch {
@@ -9572,16 +9580,30 @@ fn read_primary_frames(
                     }
                     LifecycleRequest::Quit => {
                         // Only a specifically armed test fixture uses this
-                        // existing frame as a carrier. It never allocates a
-                        // wire tag or synthesizes a successful Quit reply.
+                        // existing frame as a carrier. A separately armed tail
+                        // witness exercises the genuine legacy reply and tail;
+                        // neither fixture allocates a conditional wire tag.
                         #[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
-                        if let Some(stop) =
+                        if let Some(disposition) =
                             handle.dispatch_conditional_quit_fixture(caller, header.corr())?
                         {
-                            if stop {
-                                return Ok(());
+                            match disposition {
+                                ConditionalQuitFixtureDisposition::Resume => continue,
+                                ConditionalQuitFixtureDisposition::Stop => return Ok(()),
+                                ConditionalQuitFixtureDisposition::FinishReservedLegacyTail => {
+                                    let reply =
+                                        encode(&LifecycleResponse::Quit).map_err(|source| {
+                                            app_ipc("lifecycle Quit reply", &source)
+                                        })?;
+                                    handle.finish_reserved_lifecycle_quit(
+                                        attempt,
+                                        header.corr(),
+                                        &reply,
+                                        reader,
+                                    )?;
+                                    return Ok(());
+                                }
                             }
-                            continue;
                         }
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
