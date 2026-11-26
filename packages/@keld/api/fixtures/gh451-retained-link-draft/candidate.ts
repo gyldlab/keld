@@ -9,7 +9,10 @@ import {
   type CorrelationLease,
 } from "./reservation.ts";
 
-export { DraftCorrelationLedger, type CorrelationLease } from "./reservation.ts";
+export {
+  DraftCorrelationLedger,
+  type CorrelationLease,
+} from "./reservation.ts";
 export type Effect = "prepare" | "cancel" | "commit";
 export type Token = string; // Opaque fixture match value issued by the peer.
 export type Original = Readonly<{
@@ -30,7 +33,16 @@ export type Disposition =
   | Readonly<{ kind: "competing-terminal" }>;
 export type Outcome =
   | Disposition
-  | Readonly<{ kind: "refused"; reason: "unsupported" | "unavailable" | "busy" | "wrong-phase" | "receipt-pending" | "capacity" }>
+  | Readonly<{
+      kind: "refused";
+      reason:
+        | "unsupported"
+        | "unavailable"
+        | "busy"
+        | "wrong-phase"
+        | "receipt-pending"
+        | "capacity";
+    }>
   | Readonly<{ kind: "unknown"; original: Original }>;
 export type ResolvedReceipt = Readonly<{
   original: Original;
@@ -60,28 +72,39 @@ type Phase =
   | { kind: "competing-terminal" };
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object"
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined;
 }
 function sameOriginal(value: unknown, expected: Original): boolean {
   const r = record(value);
-  return r !== undefined &&
+  return (
+    r !== undefined &&
     r.operation === expected.operation &&
     r.correlation === expected.correlation &&
-    r.token === expected.token;
+    r.token === expected.token
+  );
 }
-function disposition(operation: Effect, value: unknown): Disposition | undefined {
+function disposition(
+  operation: Effect,
+  value: unknown,
+): Disposition | undefined {
   const r = record(value);
   if (!r) return undefined;
-  if (operation === "prepare" && r.kind === "prepared" &&
-      typeof r.token === "string" && r.token.length > 0) {
+  if (
+    operation === "prepare" &&
+    r.kind === "prepared" &&
+    typeof r.token === "string" &&
+    r.token.length > 0
+  ) {
     return { kind: "prepared", token: r.token };
   }
   if (operation === "prepare" && r.kind === "invalidated")
     return { kind: "invalidated" };
-  if (r.kind === "competing-terminal")
-    return { kind: "competing-terminal" };
-  if ((operation === "prepare" || operation === "commit") && r.kind === "retained")
+  if (r.kind === "competing-terminal") return { kind: "competing-terminal" };
+  if (
+    (operation === "prepare" || operation === "commit") &&
+    r.kind === "retained"
+  )
     return { kind: "retained" };
   if (operation === "cancel" && r.kind === "cancelled")
     return { kind: "cancelled" };
@@ -114,19 +137,38 @@ export class RetainedLinkDraft {
   /** Preflight for a NEW conditional facade attempt; not a Status gate. */
   get conditionalAvailable(): boolean {
     this.#syncReleased();
-    return this.#eligible && this.#phase.kind === "idle" &&
-      !this.#ledger.active && this.#port.isCurrent() && this.#port.isLive();
+    return (
+      this.#eligible &&
+      this.#phase.kind === "idle" &&
+      !this.#ledger.active &&
+      this.#port.isCurrent() &&
+      this.#port.isLive()
+    );
   }
-  prepare(): Promise<Outcome> { return this.#effect("prepare"); }
-  cancel(): Promise<Outcome> { return this.#effect("cancel"); }
-  commit(): Promise<Outcome> { return this.#effect("commit"); }
+  prepare(): Promise<Outcome> {
+    return this.#effect("prepare");
+  }
+  cancel(): Promise<Outcome> {
+    return this.#effect("cancel");
+  }
+  commit(): Promise<Outcome> {
+    return this.#effect("commit");
+  }
   /** Keep actual rejection objects distinct from the ambiguous disposition. */
-  get effectError(): unknown { return this.#effectError; }
-  get statusError(): unknown { return this.#statusError; }
-  get fenceError(): unknown { return this.#fenceError; }
+  get effectError(): unknown {
+    return this.#effectError;
+  }
+  get statusError(): unknown {
+    return this.#statusError;
+  }
+  get fenceError(): unknown {
+    return this.#fenceError;
+  }
   get terminalDisposition(): "accepted" | "competing-terminal" | undefined {
-    return this.#phase.kind === "accepted" || this.#phase.kind === "competing-terminal"
-      ? this.#phase.kind : undefined;
+    return this.#phase.kind === "accepted" ||
+      this.#phase.kind === "competing-terminal"
+      ? this.#phase.kind
+      : undefined;
   }
 
   /** Exact object for W3 to acknowledge after consuming the disposition. */
@@ -150,9 +192,9 @@ export class RetainedLinkDraft {
       this.#originalLease = undefined;
       this.#receipt = undefined;
     }
-    if (this.#phase.kind === "idle" && this.#attempt &&
-        this.#ledger.endAttempt(this.#attempt)) {
-      this.#attempt = undefined;
+    if (this.#phase.kind === "idle" && this.#attempt) {
+      this.#ledger.endAttempt(this.#attempt);
+      if (!this.#ledger.ownsAttempt(this.#attempt)) this.#attempt = undefined;
     }
   }
 
@@ -161,7 +203,11 @@ export class RetainedLinkDraft {
     return { kind: "unknown", original };
   }
 
-  #settle(value: Disposition, original: Original, source: ResolvedReceipt["source"]): Disposition {
+  #settle(
+    value: Disposition,
+    original: Original,
+    source: ResolvedReceipt["source"],
+  ): Disposition {
     value = Object.freeze(value);
     this.#receipt = Object.freeze({ original, disposition: value, source });
     switch (value.kind) {
@@ -172,6 +218,9 @@ export class RetainedLinkDraft {
       case "cancelled":
       case "invalidated":
         this.#phase = { kind: "idle" };
+        // Mark the known ended attempt even while receipt/control identities
+        // remain reserved. The shared ledger finishes it on the final proof.
+        this.#syncReleased();
         break;
       case "competing-terminal":
         this.#phase = { kind: "competing-terminal" };
@@ -198,19 +247,25 @@ export class RetainedLinkDraft {
     if (this.#phase.kind === "unknown")
       return { kind: "unknown", original: this.#phase.original };
     if (this.#phase.kind === "busy") return { kind: "refused", reason: "busy" };
-    if (this.#phase.kind === "accepted" || this.#phase.kind === "competing-terminal")
+    if (
+      this.#phase.kind === "accepted" ||
+      this.#phase.kind === "competing-terminal"
+    )
       return { kind: "refused", reason: "wrong-phase" };
     if (this.#receipt || this.#originalLease || this.#ledger.status)
       return { kind: "refused", reason: "receipt-pending" };
     if (!this.#port.isCurrent() || !this.#port.isLive())
       return { kind: "refused", reason: "unavailable" };
     const phase = this.#phase;
-    if (operation === "prepare" ? phase.kind !== "idle" : phase.kind !== "prepared")
+    if (
+      operation === "prepare"
+        ? phase.kind !== "idle"
+        : phase.kind !== "prepared"
+    )
       return { kind: "refused", reason: "wrong-phase" };
     const token = phase.kind === "prepared" ? phase.token : undefined;
-    const request: Request = operation === "prepare"
-      ? { operation }
-      : { operation, token: token! };
+    const request: Request =
+      operation === "prepare" ? { operation } : { operation, token: token! };
     if (operation === "prepare") {
       const attempt = this.#ledger.beginAttempt();
       if (!attempt) return { kind: "refused", reason: "busy" };
@@ -225,7 +280,11 @@ export class RetainedLinkDraft {
       return { kind: "refused", reason: "capacity" };
     }
     this.#originalLease = lease;
-    const original: Original = Object.freeze({ operation, correlation: lease.correlation, token });
+    const original: Original = Object.freeze({
+      operation,
+      correlation: lease.correlation,
+      token,
+    });
     this.#effectError = undefined;
     this.#statusError = undefined;
     // Set before calling the port so reentrant callers cannot send twice.
@@ -236,10 +295,15 @@ export class RetainedLinkDraft {
       // A late nonterminal response cannot authorize a retired role or
       // claim the ended link remains usable. A verified terminal response
       // is historical evidence, even if the original role has retired.
-      if (outcome?.kind !== "accepted" && outcome?.kind !== "competing-terminal" &&
-          (!this.#port.isCurrent() || !this.#port.isLive()))
+      if (
+        outcome?.kind !== "accepted" &&
+        outcome?.kind !== "competing-terminal" &&
+        (!this.#port.isCurrent() || !this.#port.isLive())
+      )
         return this.#unknown(original);
-      return outcome ? this.#settle(outcome, original, "direct") : this.#unknown(original);
+      return outcome
+        ? this.#settle(outcome, original, "direct")
+        : this.#unknown(original);
     } catch (error) {
       // Even a synchronous send failure cannot prove absence of a write.
       // The original identity already exists and remains reserved.
@@ -252,12 +316,17 @@ export class RetainedLinkDraft {
     this.#syncReleased();
     if (!this.#eligible) return { kind: "refused", reason: "unsupported" };
     if (this.#phase.kind === "busy") return { kind: "refused", reason: "busy" };
-    if (this.#phase.kind !== "unknown") return { kind: "refused", reason: "wrong-phase" };
+    if (this.#phase.kind !== "unknown")
+      return { kind: "refused", reason: "wrong-phase" };
     const original = this.#phase.original;
     const attempt = this.#attempt;
     const originalLease = this.#originalLease;
-    if (!attempt || !originalLease ||
-        !this.#port.isCurrent() || !this.#port.isLive())
+    if (
+      !attempt ||
+      !originalLease ||
+      !this.#port.isCurrent() ||
+      !this.#port.isLive()
+    )
       return this.#unknown(original);
     const statusLease = this.#ledger.reserveStatus(attempt, originalLease);
     // Capacity pressure or a still-live earlier Status identity is never
@@ -267,15 +336,27 @@ export class RetainedLinkDraft {
     this.#statusError = undefined;
     try {
       // New transport correlation only for Status, never a replay of effects.
-      const raw = await this.#port.send(statusLease, { operation: "status", original });
+      const raw = await this.#port.send(statusLease, {
+        operation: "status",
+        original,
+      });
       const reply = record(raw);
-      if (!reply || reply.kind !== "recorded" || !sameOriginal(reply.original, original))
+      if (
+        !reply ||
+        reply.kind !== "recorded" ||
+        !sameOriginal(reply.original, original)
+      )
         return this.#unknown(original);
       const outcome = disposition(original.operation, reply.disposition);
-      if (outcome?.kind !== "accepted" && outcome?.kind !== "competing-terminal" &&
-          (!this.#port.isCurrent() || !this.#port.isLive()))
+      if (
+        outcome?.kind !== "accepted" &&
+        outcome?.kind !== "competing-terminal" &&
+        (!this.#port.isCurrent() || !this.#port.isLive())
+      )
         return this.#unknown(original);
-      return outcome ? this.#settle(outcome, original, "status") : this.#unknown(original);
+      return outcome
+        ? this.#settle(outcome, original, "status")
+        : this.#unknown(original);
     } catch (error) {
       this.#statusError = error;
       return this.#unknown(original);

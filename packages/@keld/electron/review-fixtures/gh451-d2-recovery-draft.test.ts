@@ -1,13 +1,24 @@
 // GH451 Q1 D2 and AC11 scripted proof, not authenticated/native evidence.
+// Owned by the Electron package's review-only test suite.
 import { expect, test } from "bun:test";
-import { fixture, g, w1, w2, token, turn } from "./gh451-terminal-quit-draft-fixture";
+import {
+  fixture,
+  g,
+  w1,
+  w2,
+  token,
+  turn,
+} from "./gh451-terminal-quit-draft-fixture";
 import type { Original } from "./gh451-terminal-quit-draft";
 import type { Token } from "./gh451-terminal-quit-draft-fixture";
 
 test("D2: before veto/throw resolves, nested public Promise identity and fresh retry", async () => {
   const x = fixture([w1]);
   let nested: Promise<void> | undefined;
-  x.f.before = () => { nested = x.coordinator.quit(); throw Error("listener"); };
+  x.f.before = () => {
+    nested = x.coordinator.quit();
+    throw Error("listener");
+  };
   const p = x.coordinator.quit();
   expect(nested).toBe(p);
   expect(await p).toBeUndefined();
@@ -26,7 +37,9 @@ test("D2: single-window genuine dispatch fulfills before close callback can awai
   x.f.onRequest = (_w, dispatch) => {
     dispatch(1n);
     nested = x.coordinator.quit();
-    void nested.then(() => { nestedDone = true; });
+    void nested.then(() => {
+      nestedDone = true;
+    });
   };
   const p = x.coordinator.quit();
   expect(nested).toBe(p);
@@ -44,7 +57,9 @@ test("D2: multiwindow first qualified handoff resolves, bare send does not, full
   const x = fixture([w1, w2]);
   const p = x.coordinator.quit();
   let done = false;
-  void p.then(() => { done = true; });
+  void p.then(() => {
+    done = true;
+  });
   await turn();
   expect(done).toBe(false);
   expect(x.trace).toEqual(["before", "close:2", "close:1"]);
@@ -107,7 +122,9 @@ test("D2: exact late close error after veto and fresh attempt stays with origina
   const late = Error("KELD-IPC-007: original close reply failed");
   x.closes[1]!.reply.reject(late);
   await turn();
-  expect(x.late).toEqual([{ error: late, custody: { phase: "close", window: w1, generation: g } }]);
+  expect(x.late).toEqual([
+    { error: late, custody: { phase: "close", window: w1, generation: g } },
+  ]);
   expect(x.coordinator.quit()).toBe(retry);
   expect(await p).toBeUndefined();
   x.closes[2]!.dispatched(5n);
@@ -135,7 +152,9 @@ test("D2: zero-window public settlement follows Accepted, not Prepare or will; t
   const x = fixture();
   const p = x.coordinator.quit();
   let done = false;
-  void p.then(() => { done = true; });
+  void p.then(() => {
+    done = true;
+  });
   await x.prepared(0);
   expect(done).toBe(false);
   expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);
@@ -172,7 +191,14 @@ test("D2: will veto/throw fulfills locally; one explicit queued retry waits for 
     x.f.will = () => false;
     x.cancels[0]!.reply.resolve("canceled");
     await turn();
-    expect(x.trace).toEqual(["before", "prepare", "will", "cancel", "before", "prepare"]);
+    expect(x.trace).toEqual([
+      "before",
+      "prepare",
+      "will",
+      "cancel",
+      "before",
+      "prepare",
+    ]);
     await x.prepared(1);
     x.commits[0]!.reply.resolve("accepted");
     expect(await next).toBeUndefined();
@@ -193,9 +219,18 @@ test("AC11: lost Prepare rejects exact error; Status resumes original once, no r
   expect(x.coordinator.reconcile()).toBe(recovery);
   expect(x.statuses[0]!.original).toEqual(original);
   const t = token();
-  x.statuses[0]!.reply.resolve({ original, disposition: { kind: "prepared", token: t } });
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "prepared", token: t },
+  });
   await turn();
-  expect(x.trace).toEqual(["before", "prepare", "status:prepare", "will", "commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "status:prepare",
+    "will",
+    "commit",
+  ]);
   expect(x.commits[0]!.token).toBe(t);
   expect(x.coordinator.reconcile()).toBe(recovery);
   x.commits[0]!.reply.resolve("accepted");
@@ -213,17 +248,26 @@ test("AC11: mismatched Status cannot resume; exact invalidated Prepare never emi
   await expect(p).rejects.toThrow("unknown");
   const bad = x.coordinator.reconcile();
   x.statuses[0]!.reply.resolve({
-    original: { ...original, correlation: 10 }, disposition: { kind: "prepared", token: token() },
+    original: { ...original, correlation: 10 },
+    disposition: { kind: "prepared", token: token() },
   });
   await turn();
   expect(x.trace).toEqual(["before", "prepare", "status:prepare"]);
   expect(await bad).toBe("unknown");
   const good = x.coordinator.reconcile();
   expect(x.statuses[1]!.original).toEqual(original);
-  x.statuses[1]!.reply.resolve({ original, disposition: { kind: "invalidated" } });
+  x.statuses[1]!.reply.resolve({
+    original,
+    disposition: { kind: "invalidated" },
+  });
   expect(await good).toBe("retained");
   expect(x.coordinator.disposition).toBe("retained");
-  expect(x.trace).toEqual(["before", "prepare", "status:prepare", "status:prepare"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "status:prepare",
+    "status:prepare",
+  ]);
   const next = x.coordinator.quit();
   expect(next).not.toBe(p);
   x.prepares[1]!.resolve({ kind: "retained" });
@@ -237,15 +281,27 @@ test("AC11: lost Cancel reports exact late error, rejects queued retry; Status c
   const t = await x.prepared(0);
   expect(await p).toBeUndefined();
   const queued = x.coordinator.quit();
-  const original: Original<Token> = { operation: "cancel", correlation: 11, token: t };
+  const original: Original<Token> = {
+    operation: "cancel",
+    correlation: 11,
+    token: t,
+  };
   const error = Error("Cancel ACK lost");
   x.cancels[0]!.reply.resolve({ kind: "unknown", original, error });
   await expect(queued).rejects.toBe(error);
-  expect(x.late).toEqual([{ error, custody: { phase: "cancel", original, generation: g } }]);
+  expect(x.late).toEqual([
+    { error, custody: { phase: "cancel", original, generation: g } },
+  ]);
   const recovery = x.coordinator.reconcile();
   x.statuses[0]!.reply.resolve({ original, disposition: { kind: "canceled" } });
   expect(await recovery).toBe("vetoed");
-  expect(x.trace).toEqual(["before", "prepare", "will", "cancel", "status:cancel"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "will",
+    "cancel",
+    "status:cancel",
+  ]);
   x.f.will = () => false;
   const next = x.coordinator.quit();
   await x.prepared(1);
@@ -258,17 +314,33 @@ test("AC11: lost Commit Status acceptance keeps known commitment despite local f
   const x = fixture();
   const p = x.coordinator.quit();
   const t = await x.prepared(0);
-  const original: Original<Token> = { operation: "commit", correlation: 12, token: t };
-  const lost = Error("Commit ACK lost"), fence = Error("local fence failed");
+  const original: Original<Token> = {
+    operation: "commit",
+    correlation: 12,
+    token: t,
+  };
+  const lost = Error("Commit ACK lost"),
+    fence = Error("local fence failed");
   x.commits[0]!.reply.resolve({ kind: "unknown", original, error: lost });
   await expect(p).rejects.toBe(lost);
   const recovery = x.coordinator.reconcile();
-  x.statuses[0]!.reply.resolve({ original, disposition: { kind: "accepted", error: fence } });
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "accepted", error: fence },
+  });
   expect(await recovery).toBe("committed");
   expect(x.coordinator.disposition).toBe("committed");
-  expect(x.late).toEqual([{ error: fence, custody: { phase: "commit", original, generation: g } }]);
+  expect(x.late).toEqual([
+    { error: fence, custody: { phase: "commit", original, generation: g } },
+  ]);
   expect(await x.coordinator.requestQuit()).toBe("committed");
-  expect(x.trace).toEqual(["before", "prepare", "will", "commit", "status:commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "will",
+    "commit",
+    "status:commit",
+  ]);
   await expect(p).rejects.toBe(lost);
 });
 
@@ -288,14 +360,66 @@ test("AC11: another terminal winner cannot be reported as retained or trigger ne
   const x = fixture();
   const p = x.coordinator.quit();
   const t = await x.prepared(0);
-  const original: Original<Token> = { operation: "commit", correlation: 13, token: t };
+  const original: Original<Token> = {
+    operation: "commit",
+    correlation: 13,
+    token: t,
+  };
   x.commits[0]!.reply.resolve({ kind: "unknown", original });
   await expect(p).rejects.toThrow("unknown");
   const recovery = x.coordinator.reconcile();
-  x.statuses[0]!.reply.resolve({ original, disposition: { kind: "competing" } });
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "competing" },
+  });
   expect(await recovery).toBe("competing");
   expect(await x.coordinator.requestQuit()).toBe("competing");
-  expect(x.trace).toEqual(["before", "prepare", "will", "commit", "status:commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "will",
+    "commit",
+    "status:commit",
+  ]);
+});
+
+test("AC11: exact competing Status remains historical evidence after census loss", async () => {
+  const x = fixture();
+  const p = x.coordinator.quit();
+  const t = await x.prepared(0);
+  const original: Original<Token> = {
+    operation: "commit",
+    correlation: 21,
+    token: t,
+  };
+  x.commits[0]!.reply.resolve({ kind: "unknown", original });
+  await expect(p).rejects.toThrow("unknown");
+  const recovery = x.coordinator.reconcile();
+  let consumed = 0;
+  x.f.consume = (receipt) => {
+    expect(receipt.original).toEqual(original);
+    expect(receipt.disposition.kind).toBe("competing");
+    consumed++;
+    return { ready: true };
+  };
+  x.f.ready = false;
+  x.f.selected = false;
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "competing" },
+  });
+  expect(await recovery).toBe("competing");
+  expect(x.coordinator.disposition).toBe("competing");
+  expect(await x.coordinator.requestQuit()).toBe("competing");
+  expect(consumed).toBe(1);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "will",
+    "commit",
+    "status:commit",
+  ]);
+  await expect(p).rejects.toThrow("unknown");
 });
 
 test("AC11: wrong operation/token and retirement cannot manufacture a Status request", async () => {
@@ -303,7 +427,8 @@ test("AC11: wrong operation/token and retirement cannot manufacture a Status req
   const p = x.coordinator.quit();
   const t = await x.prepared(0);
   x.commits[0]!.reply.resolve({
-    kind: "unknown", original: { operation: "commit", correlation: 14, token: token() },
+    kind: "unknown",
+    original: { operation: "commit", correlation: 14, token: token() },
   });
   await expect(p).rejects.toThrow("unknown");
   expect(await x.coordinator.reconcile()).toBe("unknown");
@@ -323,7 +448,10 @@ test("AC8: observed transient Create invalidation suppresses recovered will even
   const recovery = x.coordinator.reconcile();
   const t = token();
   x.f.invalidated = t;
-  x.statuses[0]!.reply.resolve({ original, disposition: { kind: "prepared", token: t } });
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "prepared", token: t },
+  });
   await turn();
   expect(x.trace).toEqual(["before", "prepare", "status:prepare", "cancel"]);
   expect(x.cancels[0]!.token).toBe(t);
@@ -342,7 +470,10 @@ test("AC11: late fence-error reporter can retire the original without overwritin
   x.destroy(w1);
   await x.prepared(0);
   const error = Error("accepted fence failed");
-  x.f.onLateError = () => { x.coordinator.retire(g); throw Error("report failed"); };
+  x.f.onLateError = () => {
+    x.coordinator.retire(g);
+    throw Error("report failed");
+  };
   x.commits[0]!.reply.resolve({ kind: "accepted", error });
   expect(await x.coordinator.outcome).toBe("committed");
   expect(x.coordinator.disposition).toBe("committed");
@@ -355,14 +486,22 @@ test("AC11: Status loss and generic refusal keep original custody, then exact re
   const x = fixture();
   const p = x.coordinator.quit();
   const t = await x.prepared(0);
-  const original: Original<Token> = { operation: "commit", correlation: 16, token: t };
-  const lost = Error("commit reply missing"), statusError = Error("status reply missing");
+  const original: Original<Token> = {
+    operation: "commit",
+    correlation: 16,
+    token: t,
+  };
+  const lost = Error("commit reply missing"),
+    statusError = Error("status reply missing");
   x.commits[0]!.reply.resolve({ kind: "unknown", original, error: lost });
   await expect(p).rejects.toBe(lost);
   const first = x.coordinator.reconcile();
   x.statuses[0]!.reply.reject(statusError);
   expect(await first).toBe("unknown");
-  expect(x.late[0]).toEqual({ error: statusError, custody: { phase: "status", original, generation: g } });
+  expect(x.late[0]).toEqual({
+    error: statusError,
+    custody: { phase: "status", original, generation: g },
+  });
   const second = x.coordinator.reconcile();
   x.statuses[1]!.reply.resolve({ original, disposition: { kind: "refused" } });
   expect(await second).toBe("unknown");
@@ -371,7 +510,15 @@ test("AC11: Status loss and generic refusal keep original custody, then exact re
   expect(x.statuses[2]!.original).toEqual(original);
   x.statuses[2]!.reply.resolve({ original, disposition: { kind: "retained" } });
   expect(await third).toBe("retained");
-  expect(x.trace).toEqual(["before", "prepare", "will", "commit", "status:commit", "status:commit", "status:commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "will",
+    "commit",
+    "status:commit",
+    "status:commit",
+    "status:commit",
+  ]);
   expect(await x.coordinator.reconcile()).toBe("retained");
   const next = x.coordinator.quit();
   expect(next).not.toBe(p);
@@ -383,13 +530,15 @@ test("AC11: consume exact recovered Prepared before any will or new effect; bloc
   const x = fixture();
   const p = x.coordinator.quit();
   const original: Original<Token> = { operation: "prepare", correlation: 17 };
-  const error = Error("lost Prepare"), capacity = Error("late alias not excluded");
+  const error = Error("lost Prepare"),
+    capacity = Error("late alias not excluded");
   x.prepares[0]!.resolve({ kind: "unknown", original, error });
   await expect(p).rejects.toBe(error);
   const t = token();
   const prepared = { kind: "prepared" as const, token: t };
-  let safe = false, consumes = 0;
-  x.f.consume = receipt => {
+  let safe = false,
+    consumes = 0;
+  x.f.consume = (receipt) => {
     if (receipt.operation === "prepare") {
       consumes++;
       expect(receipt.original).toEqual(original);
@@ -411,17 +560,23 @@ test("AC11: consume exact recovered Prepared before any will or new effect; bloc
   const second = x.coordinator.reconcile();
   expect(consumes).toBe(2);
   expect(x.statuses).toHaveLength(1);
-  expect(x.trace).toEqual(["before", "prepare", "status:prepare", "will", "commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "prepare",
+    "status:prepare",
+    "will",
+    "commit",
+  ]);
   x.commits[0]!.reply.resolve("accepted");
   expect(await second).toBe("committed");
   await expect(p).rejects.toBe(error);
 });
 
-test("AC11: Accepted is already committed when consume fails or reenters", async () => {
+test("AC11: Accepted with completed fence does not wait for consume or reentry", async () => {
   const x = fixture();
   const p = x.coordinator.quit();
   const error = Error("accepted receipt still reserved");
-  x.f.consume = receipt => {
+  x.f.consume = (receipt) => {
     if (receipt.operation !== "commit") return { ready: true };
     expect(x.coordinator.disposition).toBe("committed");
     x.coordinator.retire(g);
@@ -430,7 +585,8 @@ test("AC11: Accepted is already committed when consume fails or reenters", async
   };
   await x.prepared(0);
   x.commits[0]!.reply.resolve("accepted");
-  await expect(p).rejects.toBe(error);
+  expect(await p).toBeUndefined();
+  expect(x.late.map((item) => item.error)).toEqual([error]);
   expect(x.coordinator.disposition).toBe("committed");
   expect(await x.coordinator.reconcile()).toBe("committed");
   expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);

@@ -3,18 +3,126 @@
 
 use super::super::{
     AppWindowCommand, Arc, AtomicBool, Duration, FsRequest, GuardedTestRouter, LifecycleRequest,
-    LifecycleResponse, Ordering, PrimaryCallerContext, PrimaryRouter, PrimaryRouterHandle,
-    SessionShutdownState, encode, fs, gh499_graph, guarded_router_with_factory, mpsc, thread,
+    LifecycleResponse, Ordering, PrimaryCallerContext, PrimaryLinkIdentity, PrimaryRouter,
+    PrimaryRouterHandle, SessionShutdownState, encode, fs, gh499_graph,
+    guarded_router_with_factory, mpsc, thread,
 };
 use super::{AcceptedRole, RoleOwner, read_control};
 use crate::app_session::{BoundSetup, GuardianOwnerCommand, RecoveryArm};
 use keld_ipc::CorrelationId;
 use keld_ipc::window::WindowRequest;
 use keld_wv::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect, AppWindowEvent, BuildStage};
-use std::io::{self, BufReader, Write as _};
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::{Pid, getpgid, getpgrp, getpid};
+use std::io::{self, BufReader, Read as _, Seek as _, SeekFrom, Write as _};
 use std::net::TcpStream;
+use std::os::unix::process::CommandExt as _;
+use std::process::{Command, Stdio};
+use std::time::Instant;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+// The direct Runtime fixture spawns Bun in its own inherited process group.
+// Keep the exact test leader unreaped while a watchdog can signal that group.
+// A watchdog is a test failure, never a native terminal success witness.
+struct OwnedTestGroup {
+    child: super::super::ReapedRouterProbe,
+    group: Pid,
+    armed: bool,
+}
+
+impl OwnedTestGroup {
+    fn start(command: &mut Command) -> TestResult<Self> {
+        let process = command.process_group(0).spawn()?;
+        let group = Pid::from_raw(i32::try_from(process.id())?);
+        let mut result = Self {
+            child: super::super::ReapedRouterProbe::new(process),
+            group,
+            armed: false,
+        };
+        if group == getpgrp() || getpgid(Some(group))? != group {
+            return Err(io::Error::other("isolated reader test group mismatch").into());
+        }
+        result.armed = true;
+        Ok(result)
+    }
+
+    fn wait(&mut self) -> TestResult<std::process::ExitStatus> {
+        // Five existing identity-fixture bounds cover bind, Ready, held
+        // replies and supervisor cleanup. No product deadline is changed.
+        let deadline = Instant::now() + super::BOUND * 5;
+        loop {
+            if let Some(status) = self.child.0.try_wait()? {
+                self.armed = false;
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "authenticated reader test watchdog",
+                )
+                .into());
+            }
+            thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for OwnedTestGroup {
+    fn drop(&mut self) {
+        if self.armed {
+            // This group belongs to our still-owned unreaped leader. Never
+            // signal a cached group after a successful wait.
+            let _ = killpg(self.group, Signal::SIGKILL);
+            self.armed = false;
+            let _ = self.child.0.wait();
+        }
+    }
+}
+
+fn run_case(name: &str, exercise: impl FnOnce() -> TestResult) -> TestResult {
+    const CHILD_ENV: &str = "KELD_CORE_TEST_GH451_AUTHENTICATED_READER";
+    const MARKER: &str = "KELD_GH451_AUTHENTICATED_READER_OBSERVED";
+    if std::env::var(CHILD_ENV).ok().as_deref() == Some(name) {
+        assert_eq!(
+            getpgrp(),
+            getpid(),
+            "fixture must own its disposable process group"
+        );
+        exercise()?;
+        println!("{MARKER} {name}");
+        return Ok(());
+    }
+    let root = tempfile::tempdir()?;
+    let mut stdout = tempfile::tempfile_in(root.path())?;
+    let mut stderr = tempfile::tempfile_in(root.path())?;
+    let selector =
+        format!("app_session::tests::accepted_primary_identity::conditional_quit_dispatch::{name}");
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args(["--exact", &selector, "--nocapture", "--test-threads=1"])
+        .env(CHILD_ENV, name)
+        .env("TMPDIR", root.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?));
+    let mut child = OwnedTestGroup::start(&mut command)?;
+    let status = child.wait();
+    drop(child);
+    stdout.seek(SeekFrom::Start(0))?;
+    stderr.seek(SeekFrom::Start(0))?;
+    let mut output = String::new();
+    let mut detail = String::new();
+    stdout.take(64 * 1024).read_to_string(&mut output)?;
+    stderr.take(64 * 1024).read_to_string(&mut detail)?;
+    assert!(
+        status.as_ref().is_ok_and(std::process::ExitStatus::success)
+            && output.contains(&format!("{MARKER} {name}"))
+            && output.contains("test result: ok. 1 passed; 0 failed;"),
+        "isolated reader proof failed: status={status:?}, stdout={output}, stderr={detail}"
+    );
+    Ok(())
+}
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -144,6 +252,13 @@ impl Fixture {
 
 #[test]
 fn authenticated_reader_retains_after_transient_create_and_services_same_link() -> TestResult {
+    run_case(
+        "authenticated_reader_retains_after_transient_create_and_services_same_link",
+        exercise_retained,
+    )
+}
+
+fn exercise_retained() -> TestResult {
     let mut fixture = Fixture::new()?;
     let handle = fixture.guarded.router.handle();
     let caller = Fixture::caller(&handle)?;
@@ -155,6 +270,22 @@ fn authenticated_reader_retains_after_transient_create_and_services_same_link() 
             .is_err()
     );
     let receipt = handle.arm_conditional_quit_fixture(&caller, CorrelationId(3))?;
+    // Exercise the dispatch guard itself after arming. Nonmatching probes
+    // must not consume the slot. The real carrier below proves it survived.
+    let mut stale = caller.clone();
+    stale.attempt = caller.attempt.saturating_add(1);
+    let mut wrong_identity = caller.clone();
+    wrong_identity.identity = PrimaryLinkIdentity::Fixture;
+    for mismatched in [&foreign, &stale, &wrong_identity] {
+        assert_eq!(
+            handle.dispatch_conditional_quit_fixture(mismatched, CorrelationId(3))?,
+            None
+        );
+    }
+    assert_eq!(
+        handle.dispatch_conditional_quit_fixture(&caller, CorrelationId(4))?,
+        None
+    );
 
     // This is a real Window Call on the authenticated reader, with an injected
     // failed native build receipt. The live census is again zero, but the
@@ -206,6 +337,13 @@ fn authenticated_reader_retains_after_transient_create_and_services_same_link() 
 
 #[test]
 fn authenticated_reader_holds_terminal_cut_through_real_fs_reply_and_lease() -> TestResult {
+    run_case(
+        "authenticated_reader_holds_terminal_cut_through_real_fs_reply_and_lease",
+        exercise_drain,
+    )
+}
+
+fn exercise_drain() -> TestResult {
     let mut fixture = Fixture::new()?;
     let handle = fixture.guarded.router.handle();
     let caller = Fixture::caller(&handle)?;

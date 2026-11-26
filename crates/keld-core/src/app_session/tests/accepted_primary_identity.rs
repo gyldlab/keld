@@ -11,6 +11,9 @@ use std::net::{TcpListener, TcpStream};
 
 const BOUND: Duration = Duration::from_secs(20);
 
+// The shared identity proof also compiles on Linux. The conditional Quit
+// fixture uses the macOS-only selected original registry and reader hooks.
+#[cfg(target_os = "macos")]
 #[path = "conditional_quit_dispatch.rs"]
 mod conditional_quit_dispatch;
 

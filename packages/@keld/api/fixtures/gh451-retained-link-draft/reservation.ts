@@ -20,22 +20,37 @@ export class DraftCorrelationLedger {
   #next: number;
   readonly #entries = new Map<number, Entry>();
   #active?: AttemptLease;
+  #ending?: AttemptLease;
   #original?: CorrelationLease;
   #status?: CorrelationLease;
 
   // Small bounds/starting position are fixture-only exhaustion controls.
   constructor(max = 0xffff_ffff, next = 1) {
-    if (!Number.isInteger(max) || max < 1 || max > 0xffff_ffff ||
-        !Number.isInteger(next) || next < 1 || next > max)
+    if (
+      !Number.isInteger(max) ||
+      max < 1 ||
+      max > 0xffff_ffff ||
+      !Number.isInteger(next) ||
+      next < 1 ||
+      next > max
+    )
       throw new RangeError("invalid draft allocator bounds");
     this.#max = max;
     this.#next = next;
   }
 
-  get reservedCount(): number { return this.#entries.size; }
-  get active(): boolean { return this.#active !== undefined; }
-  get original(): CorrelationLease | undefined { return this.#original; }
-  get status(): CorrelationLease | undefined { return this.#status; }
+  get reservedCount(): number {
+    return this.#entries.size;
+  }
+  get active(): boolean {
+    return this.#active !== undefined;
+  }
+  get original(): CorrelationLease | undefined {
+    return this.#original;
+  }
+  get status(): CorrelationLease | undefined {
+    return this.#status;
+  }
 
   beginAttempt(): AttemptLease | undefined {
     if (this.#active) return undefined;
@@ -44,10 +59,27 @@ export class DraftCorrelationLedger {
     return attempt;
   }
 
+  ownsAttempt(attempt: AttemptLease): boolean {
+    return this.#active === attempt;
+  }
+
   endAttempt(attempt: AttemptLease): boolean {
-    if (attempt !== this.#active || this.#original || this.#status) return false;
+    if (attempt !== this.#active) return false;
+    this.#ending = attempt;
+    this.#finishAttemptIfReady();
+    return this.#active !== attempt;
+  }
+
+  #finishAttemptIfReady(): void {
+    if (
+      !this.#ending ||
+      this.#ending !== this.#active ||
+      this.#original ||
+      this.#status
+    )
+      return;
     this.#active = undefined;
-    return true;
+    this.#ending = undefined;
   }
 
   #allocate(kind: CorrelationLease["kind"]): CorrelationLease | undefined {
@@ -70,14 +102,28 @@ export class DraftCorrelationLedger {
   }
 
   reserveEffect(attempt: AttemptLease): CorrelationLease | undefined {
-    if (attempt !== this.#active || this.#original || this.#status) return undefined;
+    if (
+      attempt !== this.#active ||
+      this.#ending ||
+      this.#original ||
+      this.#status
+    )
+      return undefined;
     const lease = this.#allocate("effect");
     if (lease) this.#original = lease;
     return lease;
   }
 
-  reserveStatus(attempt: AttemptLease, original: CorrelationLease): CorrelationLease | undefined {
-    if (attempt !== this.#active || original !== this.#original || this.#status)
+  reserveStatus(
+    attempt: AttemptLease,
+    original: CorrelationLease,
+  ): CorrelationLease | undefined {
+    if (
+      attempt !== this.#active ||
+      this.#ending ||
+      original !== this.#original ||
+      this.#status
+    )
       return undefined;
     const lease = this.#allocate("status");
     if (lease) this.#status = lease;
@@ -99,6 +145,9 @@ export class DraftCorrelationLedger {
     this.#entries.delete(entry.lease.correlation);
     if (this.#original === entry.lease) this.#original = undefined;
     if (this.#status === entry.lease) this.#status = undefined;
+    // The last independent proof may arrive after the API consumed the
+    // disposition. Retire a finished attempt here, not on wrapper polling.
+    this.#finishAttemptIfReady();
     return true;
   }
 

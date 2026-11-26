@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import {
-  DraftCorrelationLedger, RetainedLinkDraft,
-  type CorrelationLease, type Disposition, type Original, type Request, type RetainedPort,
+  DraftCorrelationLedger,
+  RetainedLinkDraft,
+  type CorrelationLease,
+  type Disposition,
+  type Original,
+  type Request,
+  type RetainedPort,
 } from "./candidate.ts";
 
 // A scripted, independent observation of writes, correlations and local
@@ -21,18 +26,26 @@ class Port implements RetainedPort {
   constructor(max = 0xffff_ffff, next = 41) {
     this.ledger = new DraftCorrelationLedger(max, next);
   }
-  isCurrent() { return this.current; }
-  isLive() { return this.live; }
+  isCurrent() {
+    return this.current;
+  }
+  isLive() {
+    return this.live;
+  }
   send(lease: CorrelationLease, request: Request): Promise<unknown> {
     expect(this.ledger.isReserved(lease)).toBe(true);
-    expect(request.operation === "status" ? this.ledger.status : this.ledger.original).toBe(lease);
+    expect(
+      request.operation === "status"
+        ? this.ledger.status
+        : this.ledger.original,
+    ).toBe(lease);
     const correlation = lease.correlation;
     this.leases.push(lease);
     this.sent.push({ request, correlation });
     const next = this.script.shift();
     if (!next) throw new Error("unexpected effect or Status");
     const holdLate = this.holdLate;
-    return next().then(value => {
+    return next().then((value) => {
       // A delivered terminal reply in this scripted port excludes late
       // aliases unless the scenario explicitly holds that proof.
       if (!holdLate) this.ledger.proveNoLate(lease);
@@ -44,8 +57,12 @@ class Port implements RetainedPort {
     if (this.fenceFailure) throw this.fenceFailure;
     this.live = false;
   }
-  reply(value: unknown) { this.script.push(() => Promise.resolve(value)); }
-  lose() { this.script.push(() => Promise.reject(new Error("lost ACK"))); }
+  reply(value: unknown) {
+    this.script.push(() => Promise.resolve(value));
+  }
+  lose() {
+    this.script.push(() => Promise.reject(new Error("lost ACK")));
+  }
   recorded(disposition: unknown, original: unknown) {
     this.reply({ kind: "recorded", original, disposition });
   }
@@ -53,7 +70,9 @@ class Port implements RetainedPort {
     if (!this.live || !this.current) throw new Error("same link closed");
     return "same port";
   }
-  ops() { return this.sent.map(x => x.request.operation); }
+  ops() {
+    return this.sent.map((x) => x.request.operation);
+  }
 }
 
 function ack(api: RetainedLinkDraft) {
@@ -70,7 +89,10 @@ test("old and unselected peers send zero conditional or fallback operations", as
     const api = new RetainedLinkDraft(port);
     port[gate] = true; // captured eligibility cannot become true after construction
     expect(api.conditionalAvailable).toBe(false);
-    expect(await api.prepare()).toEqual({ kind: "refused", reason: "unsupported" });
+    expect(await api.prepare()).toEqual({
+      kind: "refused",
+      reason: "unsupported",
+    });
     expect(await api.cancel()).toMatchObject({ kind: "refused" });
     expect(await api.commit()).toMatchObject({ kind: "refused" });
     expect(await api.reconcile()).toMatchObject({ kind: "refused" });
@@ -112,9 +134,11 @@ test("confirmed Cancel and Commit Retained release attempt without closing link"
   expect(port.ordinaryProbe()).toBe("same port");
   port.reply({ kind: "prepared", token: "host-3" });
   expect(await api.prepare()).toEqual({ kind: "prepared", token: "host-3" });
-  expect(port.sent.map(x => x.request)).toEqual([
-    { operation: "prepare" }, { operation: "cancel", token: "host-1" },
-    { operation: "prepare" }, { operation: "commit", token: "host-2" },
+  expect(port.sent.map((x) => x.request)).toEqual([
+    { operation: "prepare" },
+    { operation: "cancel", token: "host-1" },
+    { operation: "prepare" },
+    { operation: "commit", token: "host-2" },
     { operation: "prepare" },
   ]);
   expect(port.fenceCount).toBe(0);
@@ -127,7 +151,12 @@ test("only known Commit Accepted fences once, after the correlated reply", async
   await api.prepare();
   ack(api);
   let resolve!: (value: unknown) => void;
-  port.script.push(() => new Promise(r => { resolve = r; }));
+  port.script.push(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
   const commit = api.commit();
   expect(port.fenceCount).toBe(0);
   expect(await api.commit()).toEqual({ kind: "refused", reason: "busy" });
@@ -141,54 +170,74 @@ test("only known Commit Accepted fences once, after the correlated reply", async
 });
 
 for (const effect of ["prepare", "cancel", "commit"] as const) {
-  for (const failure of ["lost", "malformed", "wrong-operation", "generic-error"] as const) {
-    test(effect + " " + failure + " preserves original identity and blocks replay", async () => {
-      const port = new Port();
-      const api = new RetainedLinkDraft(port);
-      if (effect !== "prepare") {
-        port.reply({ kind: "prepared", token: "host-1" });
-        await api.prepare();
+  for (const failure of [
+    "lost",
+    "malformed",
+    "wrong-operation",
+    "generic-error",
+  ] as const) {
+    test(
+      effect + " " + failure + " preserves original identity and blocks replay",
+      async () => {
+        const port = new Port();
+        const api = new RetainedLinkDraft(port);
+        if (effect !== "prepare") {
+          port.reply({ kind: "prepared", token: "host-1" });
+          await api.prepare();
+          ack(api);
+        }
+        if (failure === "lost") port.lose();
+        else if (failure === "malformed") port.reply(null);
+        else if (failure === "wrong-operation")
+          port.reply({ kind: effect === "commit" ? "cancelled" : "accepted" });
+        else port.reply({ kind: "error", code: "generic" });
+        const original: Original = {
+          operation: effect,
+          correlation: effect === "prepare" ? 41 : 42,
+          token: effect === "prepare" ? undefined : "host-1",
+        };
+        expect(await api[effect]()).toEqual({ kind: "unknown", original });
+        const prior = port.ops();
+        expect(await api.prepare()).toEqual({ kind: "unknown", original });
+        expect(await api.cancel()).toEqual({ kind: "unknown", original });
+        expect(await api.commit()).toEqual({ kind: "unknown", original });
+        expect(port.ops()).toEqual(prior);
+        expect(port.fenceCount).toBe(0);
+        const resolved: Disposition =
+          effect === "prepare"
+            ? { kind: "prepared", token: "host-recovered" }
+            : effect === "cancel"
+              ? { kind: "cancelled" }
+              : { kind: "accepted" };
+        port.recorded(resolved, original);
+        expect(await api.reconcile()).toEqual(resolved);
+        expect(port.sent.at(-1)).toEqual({
+          request: { operation: "status", original },
+          correlation: original.correlation + 1,
+        });
+        expect(port.ops()).toEqual([...prior, "status"]);
+        expect(port.fenceCount).toBe(effect === "commit" ? 1 : 0);
+        const recovered = api.pendingReceipt!;
+        expect(recovered.source).toBe("status");
+        expect(recovered.original).toEqual(original);
+        expect(recovered.disposition).toEqual(resolved);
+        if (failure === "lost") port.ledger.proveNoLate(port.leases.at(-2)!);
         ack(api);
-      }
-      if (failure === "lost") port.lose();
-      else if (failure === "malformed") port.reply(null);
-      else if (failure === "wrong-operation") port.reply({ kind: effect === "commit" ? "cancelled" : "accepted" });
-      else port.reply({ kind: "error", code: "generic" });
-      const original: Original = { operation: effect, correlation: effect === "prepare" ? 41 : 42,
-        token: effect === "prepare" ? undefined : "host-1" };
-      expect(await api[effect]()).toEqual({ kind: "unknown", original });
-      const prior = port.ops();
-      expect(await api.prepare()).toEqual({ kind: "unknown", original });
-      expect(await api.cancel()).toEqual({ kind: "unknown", original });
-      expect(await api.commit()).toEqual({ kind: "unknown", original });
-      expect(port.ops()).toEqual(prior);
-      expect(port.fenceCount).toBe(0);
-      const resolved: Disposition = effect === "prepare"
-        ? { kind: "prepared", token: "host-recovered" }
-        : effect === "cancel" ? { kind: "cancelled" } : { kind: "accepted" };
-      port.recorded(resolved, original);
-      expect(await api.reconcile()).toEqual(resolved);
-      expect(port.sent.at(-1)).toEqual({ request: { operation: "status", original },
-        correlation: original.correlation + 1 });
-      expect(port.ops()).toEqual([...prior, "status"]);
-      expect(port.fenceCount).toBe(effect === "commit" ? 1 : 0);
-      const recovered = api.pendingReceipt!;
-      expect(recovered.source).toBe("status");
-      expect(recovered.original).toEqual(original);
-      expect(recovered.disposition).toEqual(resolved);
-      if (failure === "lost") port.ledger.proveNoLate(port.leases.at(-2)!);
-      ack(api);
-      if (effect === "prepare") {
-        port.reply({ kind: "cancelled" });
-        await api.cancel();
-        expect(port.sent.at(-1)?.request).toEqual({ operation: "cancel", token: "host-recovered" });
-      }
-      if (effect === "cancel") {
-        expect(port.ordinaryProbe()).toBe("same port");
-        port.reply({ kind: "retained" });
-        expect(await api.prepare()).toEqual({ kind: "retained" });
-      }
-    });
+        if (effect === "prepare") {
+          port.reply({ kind: "cancelled" });
+          await api.cancel();
+          expect(port.sent.at(-1)?.request).toEqual({
+            operation: "cancel",
+            token: "host-recovered",
+          });
+        }
+        if (effect === "cancel") {
+          expect(port.ordinaryProbe()).toBe("same port");
+          port.reply({ kind: "retained" });
+          expect(await api.prepare()).toEqual({ kind: "retained" });
+        }
+      },
+    );
   }
 }
 
@@ -199,7 +248,11 @@ test("Status mismatch, indeterminate, lost and wrong-operation results remain un
   await api.prepare();
   ack(api);
   port.lose();
-  const original: Original = { operation: "commit", correlation: 42, token: "host-1" };
+  const original: Original = {
+    operation: "commit",
+    correlation: 42,
+    token: "host-1",
+  };
   expect(await api.commit()).toEqual({ kind: "unknown", original });
   for (const wrong of [
     { ...original, correlation: 99 },
@@ -225,7 +278,12 @@ test("Status mismatch, indeterminate, lost and wrong-operation results remain un
   expect(port.ordinaryProbe()).toBe("same port");
   port.reply({ kind: "prepared", token: "host-2" });
   expect(await api.prepare()).toEqual({ kind: "prepared", token: "host-2" });
-  expect(port.ops()).toEqual(["prepare", "commit", ...Array(7).fill("status"), "prepare"]);
+  expect(port.ops()).toEqual([
+    "prepare",
+    "commit",
+    ...Array(7).fill("status"),
+    "prepare",
+  ]);
 });
 
 test("retired or ended original link cannot reconcile through successor", async () => {
@@ -250,9 +308,18 @@ test("concurrent Status cannot start a second Status or effect", async () => {
   const api = new RetainedLinkDraft(port);
   port.lose();
   await api.prepare();
-  const original: Original = { operation: "prepare", correlation: 41, token: undefined };
+  const original: Original = {
+    operation: "prepare",
+    correlation: 41,
+    token: undefined,
+  };
   let resolve!: (value: unknown) => void;
-  port.script.push(() => new Promise(r => { resolve = r; }));
+  port.script.push(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
   const pending = api.reconcile();
   expect(await api.reconcile()).toEqual({ kind: "refused", reason: "busy" });
   expect(await api.prepare()).toEqual({ kind: "refused", reason: "busy" });
@@ -264,7 +331,11 @@ test("concurrent Status cannot start a second Status or effect", async () => {
 test("synchronous send failure retains reserved original identity for Status", async () => {
   const port = new Port(); // no scripted receipt
   const api = new RetainedLinkDraft(port);
-  const original: Original = { operation: "prepare", correlation: 41, token: undefined };
+  const original: Original = {
+    operation: "prepare",
+    correlation: 41,
+    token: undefined,
+  };
   expect(await api.prepare()).toEqual({ kind: "unknown", original });
   expect(await api.prepare()).toEqual({ kind: "unknown", original });
   port.recorded({ kind: "retained" }, original);
@@ -292,17 +363,28 @@ test("late Prepared after role retirement cannot authorize will-quit", async () 
   for (const status of [false, true]) {
     const port = new Port();
     const api = new RetainedLinkDraft(port);
-    const original: Original = { operation: "prepare", correlation: 41, token: undefined };
+    const original: Original = {
+      operation: "prepare",
+      correlation: 41,
+      token: undefined,
+    };
     if (status) {
       port.lose();
       await api.prepare();
     }
     let resolve!: (value: unknown) => void;
-    port.script.push(() => new Promise(r => { resolve = r; }));
+    port.script.push(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
     const pending = status ? api.reconcile() : api.prepare();
     port.current = false;
     const prepared = { kind: "prepared", token: "retired-host" };
-    resolve(status ? { kind: "recorded", original, disposition: prepared } : prepared);
+    resolve(
+      status ? { kind: "recorded", original, disposition: prepared } : prepared,
+    );
     expect(await pending).toEqual({ kind: "unknown", original });
     expect(await api.commit()).toEqual({ kind: "unknown", original });
     expect(port.fenceCount).toBe(0);
@@ -332,7 +414,10 @@ test("one active attempt survives Prepared receipt release and requires exact co
   const receipt = api.pendingReceipt!;
   expect(receipt.source).toBe("direct");
   expect(api.consumeReceipt({ ...receipt })).toBe(false);
-  expect(await api.commit()).toEqual({ kind: "refused", reason: "receipt-pending" });
+  expect(await api.commit()).toEqual({
+    kind: "refused",
+    reason: "receipt-pending",
+  });
   expect(await other.prepare()).toEqual({ kind: "refused", reason: "busy" });
   expect(port.ops()).toEqual(["prepare"]);
   expect(api.consumeReceipt(receipt)).toBe(true);
@@ -350,11 +435,44 @@ test("one active attempt survives Prepared receipt release and requires exact co
   expect(port.ops()).toEqual(["prepare", "cancel", "prepare"]);
 });
 
+test("last no-late witness retires nonterminal attempt without polling the old wrapper", async () => {
+  const port = new Port(2, 1);
+  const first = new RetainedLinkDraft(port);
+  const next = new RetainedLinkDraft(port);
+  port.holdLate = true;
+  port.reply({ kind: "retained" });
+  expect(await first.prepare()).toEqual({ kind: "retained" });
+  const lease = port.leases[0]!;
+  expect(first.consumeReceipt(first.pendingReceipt!)).toBe(false);
+  expect(next.conditionalAvailable).toBe(false);
+  expect(port.ledger.active).toBe(true);
+  expect(port.ledger.proveNoLate(lease)).toBe(true);
+  expect(port.ledger.reservedCount).toBe(0);
+  // No call to first may be needed to retire the shared attempt.
+  expect(port.ledger.active).toBe(false);
+  expect(next.conditionalAvailable).toBe(true);
+  port.holdLate = false;
+  port.reply({ kind: "prepared", token: "successor" });
+  expect(await next.prepare()).toEqual({
+    kind: "prepared",
+    token: "successor",
+  });
+  expect(first.pendingReceipt).toBeUndefined();
+  expect(port.ledger.active).toBe(true);
+  expect(await first.prepare()).toEqual({ kind: "refused", reason: "busy" });
+  ack(next);
+  expect(port.ledger.active).toBe(true);
+});
+
 test("wrap and capacity preserve unresolved original until both consumption and no-late proof", async () => {
   const port = new Port(2, 2);
   const api = new RetainedLinkDraft(port);
   port.lose();
-  const original: Original = { operation: "prepare", correlation: 2, token: undefined };
+  const original: Original = {
+    operation: "prepare",
+    correlation: 2,
+    token: undefined,
+  };
   expect(await api.prepare()).toEqual({ kind: "unknown", original });
   const lease = port.leases[0]!;
   const ordinary = port.ledger.reserveOrdinary()!;
@@ -376,7 +494,10 @@ test("wrap and capacity preserve unresolved original until both consumption and 
   const receipt = api.pendingReceipt!;
   expect(api.consumeReceipt(receipt)).toBe(false);
   expect(api.conditionalAvailable).toBe(false);
-  expect(await api.prepare()).toEqual({ kind: "refused", reason: "receipt-pending" });
+  expect(await api.prepare()).toEqual({
+    kind: "refused",
+    reason: "receipt-pending",
+  });
   const pressure = port.ledger.reserveOrdinary()!;
   expect(pressure.correlation).toBe(1);
   expect(port.ledger.reserveOrdinary()).toBeUndefined();
@@ -408,7 +529,10 @@ test("no-late proof alone cannot retire an unconsumed effect", async () => {
   const receipt = api.pendingReceipt!;
   expect(port.ledger.reserveOrdinary()).toBeUndefined();
   expect(port.ledger.isReserved(port.leases[0]!)).toBe(true);
-  expect(await api.prepare()).toEqual({ kind: "refused", reason: "receipt-pending" });
+  expect(await api.prepare()).toEqual({
+    kind: "refused",
+    reason: "receipt-pending",
+  });
   expect(api.consumeReceipt(receipt)).toBe(true);
   expect(port.ledger.active).toBe(false);
   expect(port.ledger.reserveOrdinary()?.correlation).toBe(1);
@@ -454,39 +578,56 @@ test("lost Status occupies its separate bounded slot until independent no-late p
 });
 
 for (const recovery of [false, true]) {
-  test("known Accepted survives local fence failure, recovery=" + recovery, async () => {
-    const port = new Port();
-    const api = new RetainedLinkDraft(port);
-    port.reply({ kind: "prepared", token: "token" });
-    await api.prepare();
-    ack(api);
-    const failure = new Error("local fence failure");
-    port.fenceFailure = failure;
-    if (recovery) {
-      port.lose();
-      expect(await api.commit()).toMatchObject({ kind: "unknown" });
-      port.recorded({ kind: "accepted" }, { operation: "commit", correlation: 42, token: "token" });
-      expect(await api.reconcile()).toEqual({ kind: "accepted" });
-    } else {
-      port.reply({ kind: "accepted" });
-      expect(await api.commit()).toEqual({ kind: "accepted" });
-    }
-    const receipt = api.pendingReceipt!;
-    expect(receipt.disposition).toEqual({ kind: "accepted" });
-    expect(receipt.source).toBe(recovery ? "status" : "direct");
-    expect(api.fenceError).toBe(failure);
-    expect(api.terminalDisposition).toBe("accepted");
-    expect(api.conditionalAvailable).toBe(false);
-    expect(port.fenceCount).toBe(1);
-    expect(await api.commit()).toEqual({ kind: "refused", reason: "wrong-phase" });
-    expect(await api.prepare()).toEqual({ kind: "refused", reason: "wrong-phase" });
-    expect(await api.reconcile()).toEqual({ kind: "refused", reason: "wrong-phase" });
-    if (recovery) port.ledger.proveNoLate(port.leases[1]!);
-    ack(api);
-    expect(api.terminalDisposition).toBe("accepted");
-    expect(port.fenceCount).toBe(1);
-    expect(port.ops()).toEqual(recovery ? ["prepare", "commit", "status"] : ["prepare", "commit"]);
-  });
+  test(
+    "known Accepted survives local fence failure, recovery=" + recovery,
+    async () => {
+      const port = new Port();
+      const api = new RetainedLinkDraft(port);
+      port.reply({ kind: "prepared", token: "token" });
+      await api.prepare();
+      ack(api);
+      const failure = new Error("local fence failure");
+      port.fenceFailure = failure;
+      if (recovery) {
+        port.lose();
+        expect(await api.commit()).toMatchObject({ kind: "unknown" });
+        port.recorded(
+          { kind: "accepted" },
+          { operation: "commit", correlation: 42, token: "token" },
+        );
+        expect(await api.reconcile()).toEqual({ kind: "accepted" });
+      } else {
+        port.reply({ kind: "accepted" });
+        expect(await api.commit()).toEqual({ kind: "accepted" });
+      }
+      const receipt = api.pendingReceipt!;
+      expect(receipt.disposition).toEqual({ kind: "accepted" });
+      expect(receipt.source).toBe(recovery ? "status" : "direct");
+      expect(api.fenceError).toBe(failure);
+      expect(api.terminalDisposition).toBe("accepted");
+      expect(api.conditionalAvailable).toBe(false);
+      expect(port.fenceCount).toBe(1);
+      expect(await api.commit()).toEqual({
+        kind: "refused",
+        reason: "wrong-phase",
+      });
+      expect(await api.prepare()).toEqual({
+        kind: "refused",
+        reason: "wrong-phase",
+      });
+      expect(await api.reconcile()).toEqual({
+        kind: "refused",
+        reason: "wrong-phase",
+      });
+      if (recovery) port.ledger.proveNoLate(port.leases[1]!);
+      ack(api);
+      expect(api.terminalDisposition).toBe("accepted");
+      expect(port.fenceCount).toBe(1);
+      expect(port.ops()).toEqual(
+        recovery ? ["prepare", "commit", "status"] : ["prepare", "commit"],
+      );
+    },
+  );
 }
 
 test("recovered invalidated Prepare and competing terminal are distinct dispositions", async () => {
@@ -494,11 +635,17 @@ test("recovered invalidated Prepare and competing terminal are distinct disposit
   const api = new RetainedLinkDraft(port);
   port.lose();
   expect(await api.prepare()).toMatchObject({ kind: "unknown" });
-  port.recorded({ kind: "invalidated" }, { operation: "prepare", correlation: 41 });
+  port.recorded(
+    { kind: "invalidated" },
+    { operation: "prepare", correlation: 41 },
+  );
   expect(await api.reconcile()).toEqual({ kind: "invalidated" });
   port.ledger.proveNoLate(port.leases[0]!);
   ack(api);
-  expect(await api.commit()).toEqual({ kind: "refused", reason: "wrong-phase" });
+  expect(await api.commit()).toEqual({
+    kind: "refused",
+    reason: "wrong-phase",
+  });
   port.reply({ kind: "prepared", token: "second" });
   await api.prepare();
   ack(api);
@@ -508,7 +655,10 @@ test("recovered invalidated Prepare and competing terminal are distinct disposit
   expect(api.terminalDisposition).toBe("competing-terminal");
   expect(api.conditionalAvailable).toBe(false);
   expect(port.fenceCount).toBe(0);
-  expect(await api.prepare()).toEqual({ kind: "refused", reason: "wrong-phase" });
+  expect(await api.prepare()).toEqual({
+    kind: "refused",
+    reason: "wrong-phase",
+  });
   expect(port.ops()).toEqual(["prepare", "status", "prepare", "commit"]);
 });
 
@@ -519,7 +669,12 @@ test("historical Accepted after retirement is known but never fences a successor
   await api.prepare();
   ack(api);
   let resolve!: (value: unknown) => void;
-  port.script.push(() => new Promise(r => { resolve = r; }));
+  port.script.push(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
   const pending = api.commit();
   port.current = false;
   port.live = false;

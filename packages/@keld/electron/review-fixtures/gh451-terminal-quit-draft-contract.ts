@@ -1,4 +1,5 @@
 // Nonshipping W3 contract between the scripted facade and existing owner adapters.
+// Owned by the Electron package's review-only test suite.
 export type WindowIdentity = Readonly<{
   id: number;
   incarnation: bigint;
@@ -18,7 +19,10 @@ export type Original<T> = Readonly<{
 }>;
 type Failure<T> =
   | { kind: "unknown"; original?: Original<T>; error?: unknown }
-  | { kind: "refused" | "retained" | "invalidated" | "competing"; error?: unknown };
+  | {
+      kind: "refused" | "retained" | "invalidated" | "competing";
+      error?: unknown;
+    };
 export type CloseResult =
   | { kind: "requested"; sequence: bigint }
   | { kind: "merged"; sequence: bigint }
@@ -31,9 +35,14 @@ export type Disposition<T> =
   | { kind: "canceled" }
   | { kind: "accepted"; error?: unknown }; // acceptance may precede local fence failure
 export type CancelResult<T> = "canceled" | "unknown" | Disposition<T>;
-export type CommitResult<T> = "accepted" | "retained" | "unknown" | Disposition<T>;
-export type StatusResult<T> = Readonly<{ original: Original<T>; disposition: Disposition<T> }>;
-export type Outcome = "vetoed" | "retained" | "committed" | "unknown" | "retired" | "competing";
+export type CommitResult<T> =
+  "accepted" | "retained" | "unknown" | Disposition<T>;
+export type StatusResult<T> = Readonly<{
+  original: Original<T>;
+  disposition: Disposition<T>;
+}>;
+export type Outcome =
+  "vetoed" | "retained" | "committed" | "unknown" | "retired" | "competing";
 export type ErrorCustody<T> = Readonly<{
   phase: "close" | Effect | "status";
   window?: WindowIdentity;
@@ -41,14 +50,20 @@ export type ErrorCustody<T> = Readonly<{
   generation: bigint;
 }>;
 export type ConsumedDisposition<T> = Readonly<{
-  operation: Effect; token?: T; original?: Original<T>; disposition: Disposition<T>;
+  operation: Effect;
+  token?: T;
+  original?: Original<T>;
+  disposition: Disposition<T>;
 }>;
 export type Consumption = { ready: true } | { ready: false; error: unknown };
 export interface DraftHost<T> {
   // Captured negotiated/selected qualification, never inferred from Ready.
   readonly conditionalEligible: boolean;
   census(): Census;
-  requestClose(window: WindowIdentity, dispatched: (sequence: bigint) => void): Promise<CloseResult>;
+  requestClose(
+    window: WindowIdentity,
+    dispatched: (sequence: bigint) => void,
+  ): Promise<CloseResult>;
   prepare(): Promise<PrepareResult<T>>;
   cancel(token: T): Promise<CancelResult<T>>;
   commit(token: T): Promise<CommitResult<T>>;

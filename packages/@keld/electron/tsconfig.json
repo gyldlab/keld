@@ -12,5 +12,5 @@
     "target": "ES2024",
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "review-fixtures/gh451-*.ts"]
 }

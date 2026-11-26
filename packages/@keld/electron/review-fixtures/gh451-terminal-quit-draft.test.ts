@@ -1,4 +1,5 @@
 // GH451 W3 model-only: scripted facts, not authenticated Host evidence.
+// Owned by the Electron package's review-only test suite.
 import { expect, test } from "bun:test";
 import type { Outcome } from "./gh451-terminal-quit-draft";
 import { fixture, g, w1, w2, turn } from "./gh451-terminal-quit-draft-fixture";
@@ -19,19 +20,36 @@ test("AC2: newest-first requests, physical receipts, then qualified Prepare and 
   x.last();
   expect(x.trace).toEqual(["before", "close:2", "close:1", "prepare"]);
   const t = await x.prepared(0);
-  expect(x.trace).toEqual(["before", "close:2", "close:1", "prepare", "will", "commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "close:2",
+    "close:1",
+    "prepare",
+    "will",
+    "commit",
+  ]);
   expect(x.commits[0]!.token).toBe(t);
   expect(x.coordinator.requestQuit()).toBe(a);
   x.commits[0]!.reply.resolve("accepted");
   expect(await a).toBe("committed");
   expect(await x.coordinator.requestQuit()).toBe("committed");
-  expect(x.trace).toEqual(["before", "close:2", "close:1", "prepare", "will", "commit"]);
+  expect(x.trace).toEqual([
+    "before",
+    "close:2",
+    "close:1",
+    "prepare",
+    "will",
+    "commit",
+  ]);
 });
 
 test("AC1/7: before veto and nested synchronous call coalesce without Host actions", async () => {
   const x = fixture([w1]);
   let nested: Promise<Outcome> | undefined;
-  x.f.before = () => { nested = x.coordinator.requestQuit(); return true; };
+  x.f.before = () => {
+    nested = x.coordinator.requestQuit();
+    return true;
+  };
   const a = x.coordinator.requestQuit();
   expect(nested).toBe(a);
   expect(x.trace).toEqual(["before"]);
@@ -57,10 +75,19 @@ test("AC3/4: synchronous veto does not stop the sweep; asynchronous final releas
   await turn();
   x.destroy(w1);
   let retry: Promise<Outcome> | undefined;
-  x.f.last = () => { retry = x.coordinator.requestQuit(); };
+  x.f.last = () => {
+    retry = x.coordinator.requestQuit();
+  };
   x.destroy(w2);
   x.last();
-  expect(x.trace).toEqual(["before", "close:2", "close:1", "last", "before", "prepare"]);
+  expect(x.trace).toEqual([
+    "before",
+    "close:2",
+    "close:1",
+    "last",
+    "before",
+    "prepare",
+  ]);
   expect(retry).not.toBe(a);
   await x.prepared(0);
   x.commits[0]!.reply.resolve("accepted");
@@ -103,7 +130,13 @@ test("W7 C8 candidate: held merged reply observes matching earlier Veto, never a
   x.closes[1]!.reply.resolve({ kind: "requested", sequence: 7n });
   x.closes[2]!.reply.resolve({ kind: "merged", sequence: 7n });
   expect(await b).toBe("vetoed");
-  expect(x.trace).toEqual(["before", "close:2", "close:1", "before", "close:1"]);
+  expect(x.trace).toEqual([
+    "before",
+    "close:2",
+    "close:1",
+    "before",
+    "close:1",
+  ]);
   expect(x.prepares).toHaveLength(0);
 });
 
@@ -172,37 +205,55 @@ test("AC8: replacement visible while Prepare response is held causes Cancel, not
 });
 
 for (const mode of ["veto", "throw"] as const) {
-  test("AC5: will-quit " + mode + " cancels exact token and permits a fresh retry after receipt", async () => {
-    const x = fixture();
-    let nested: Promise<Outcome> | undefined;
-    x.f.will = () => {
-      nested = x.coordinator.requestQuit();
-      if (mode === "throw") throw Error("listener error");
-      return true;
-    };
-    const a = x.coordinator.requestQuit();
-    const t = await x.prepared(0);
-    expect(nested).toBe(a);
-    expect(x.trace).toEqual(["before", "prepare", "will", "cancel"]);
-    expect(x.cancels[0]!.token).toBe(t);
-    expect(x.coordinator.requestQuit()).toBe(a);
-    x.cancels[0]!.reply.resolve("canceled");
-    expect(await a).toBe("vetoed");
-    x.f.will = () => false;
-    const b = x.coordinator.requestQuit();
-    const t2 = await x.prepared(1);
-    expect(t2).not.toBe(t);
-    expect(x.commits[0]!.token).toBe(t2);
-    x.commits[0]!.reply.resolve("accepted");
-    expect(await b).toBe("committed");
-    expect(x.trace).toEqual(["before", "prepare", "will", "cancel", "before", "prepare", "will", "commit"]);
-  });
+  test(
+    "AC5: will-quit " +
+      mode +
+      " cancels exact token and permits a fresh retry after receipt",
+    async () => {
+      const x = fixture();
+      let nested: Promise<Outcome> | undefined;
+      x.f.will = () => {
+        nested = x.coordinator.requestQuit();
+        if (mode === "throw") throw Error("listener error");
+        return true;
+      };
+      const a = x.coordinator.requestQuit();
+      const t = await x.prepared(0);
+      expect(nested).toBe(a);
+      expect(x.trace).toEqual(["before", "prepare", "will", "cancel"]);
+      expect(x.cancels[0]!.token).toBe(t);
+      expect(x.coordinator.requestQuit()).toBe(a);
+      x.cancels[0]!.reply.resolve("canceled");
+      expect(await a).toBe("vetoed");
+      x.f.will = () => false;
+      const b = x.coordinator.requestQuit();
+      const t2 = await x.prepared(1);
+      expect(t2).not.toBe(t);
+      expect(x.commits[0]!.token).toBe(t2);
+      x.commits[0]!.reply.resolve("accepted");
+      expect(await b).toBe("committed");
+      expect(x.trace).toEqual([
+        "before",
+        "prepare",
+        "will",
+        "cancel",
+        "before",
+        "prepare",
+        "will",
+        "commit",
+      ]);
+    },
+  );
 }
 
 test("W7 C4c: transient Create during will-quit is Host-retained even if Source is zero again", async () => {
   const x = fixture();
   const a = x.coordinator.requestQuit();
-  x.f.will = () => { x.f.windows.push(w2); x.f.windows.pop(); return false; };
+  x.f.will = () => {
+    x.f.windows.push(w2);
+    x.f.windows.pop();
+    return false;
+  };
   const oldToken = await x.prepared(0);
   expect(x.f.windows).toHaveLength(0);
   expect(x.commits[0]!.token).toBe(oldToken);
@@ -217,23 +268,29 @@ test("W7 C4c: transient Create during will-quit is Host-retained even if Source 
 });
 
 for (const phase of ["prepare", "cancel", "commit"] as const) {
-  test("W7 C19: lost " + phase + " acknowledgement blocks fresh attempts and never retries", async () => {
-    const x = fixture();
-    x.f.will = () => phase === "cancel";
-    const a = x.coordinator.requestQuit();
-    if (phase === "prepare") x.prepares[0]!.reject(Error("lost Prepare ACK"));
-    else {
-      await x.prepared(0);
-      if (phase === "cancel") x.cancels[0]!.reply.reject(Error("lost Cancel ACK"));
-      else x.commits[0]!.reply.reject(Error("lost Commit ACK"));
-    }
-    expect(await a).toBe("unknown");
-    const trace = [...x.trace];
-    const retry = x.coordinator.requestQuit();
-    expect(x.trace).toEqual(trace);
-    expect(await retry).toBe("unknown");
-    expect(x.trace).toEqual(trace);
-  });
+  test(
+    "W7 C19: lost " +
+      phase +
+      " acknowledgement blocks fresh attempts and never retries",
+    async () => {
+      const x = fixture();
+      x.f.will = () => phase === "cancel";
+      const a = x.coordinator.requestQuit();
+      if (phase === "prepare") x.prepares[0]!.reject(Error("lost Prepare ACK"));
+      else {
+        await x.prepared(0);
+        if (phase === "cancel")
+          x.cancels[0]!.reply.reject(Error("lost Cancel ACK"));
+        else x.commits[0]!.reply.reject(Error("lost Commit ACK"));
+      }
+      expect(await a).toBe("unknown");
+      const trace = [...x.trace];
+      const retry = x.coordinator.requestQuit();
+      expect(x.trace).toEqual(trace);
+      expect(await retry).toBe("unknown");
+      expect(x.trace).toEqual(trace);
+    },
+  );
 }
 
 test("C9: stale role or same WindowRef with different document cannot satisfy physical receipt", async () => {
@@ -254,7 +311,7 @@ test("C9: stale role or same WindowRef with different document cannot satisfy ph
   expect(x.trace).toEqual(["before", "close:1", "prepare"]);
 });
 
-test("C19: role retirement after sent Commit leaves effect unknown even if a late reply arrives", async () => {
+test("C19: role retirement preserves initial unknown and records a verified late terminal receipt", async () => {
   const x = fixture();
   const a = x.coordinator.requestQuit();
   await x.prepared(0);
@@ -262,7 +319,9 @@ test("C19: role retirement after sent Commit leaves effect unknown even if a lat
   expect(await a).toBe("unknown");
   x.commits[0]!.reply.resolve("accepted");
   await turn();
-  expect(await x.coordinator.requestQuit()).toBe("unknown");
+  expect(await a).toBe("unknown");
+  expect(await x.coordinator.requestQuit()).toBe("committed");
+  expect(x.coordinator.disposition).toBe("committed");
   expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);
 });
 

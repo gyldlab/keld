@@ -53,19 +53,24 @@ for await (const command of lines) {
     // A carrier Quit has no new response semantics; the Host test observes
     // its draft cut out of band. Never call quitAndCloseLink on this fixture.
     const [, operation, hex] = command.split(" ");
-    const channel = operation === "FS"
-      ? FS_CHANNEL
-      : operation === "CREATE"
-        ? WINDOW_CHANNEL
-        : operation === "SUBSCRIBE" || operation === "CARRIER"
-          ? LIFECYCLE_CHANNEL
-          : undefined;
+    const channel =
+      operation === "FS"
+        ? FS_CHANNEL
+        : operation === "CREATE"
+          ? WINDOW_CHANNEL
+          : operation === "SUBSCRIBE" || operation === "CARRIER"
+            ? LIFECYCLE_CHANNEL
+            : undefined;
     if (channel === undefined || !hex || !/^(?:[0-9a-f]{2})+$/.test(hex))
       throw new Error("invalid GH451 fixture control");
     const payload = Uint8Array.from(Buffer.from(hex, "hex"));
     const answer = link.call(channel, payload, 20000).then(
-      reply => control.write(`${operation}-REPLY:${Buffer.from(reply).toString("hex")}\n`),
-      error => control.write(`${operation}-ERR:${error?.code ?? "unknown"}\n`),
+      (reply) =>
+        control.write(
+          `${operation}-REPLY:${Buffer.from(reply).toString("hex")}\n`,
+        ),
+      (error) =>
+        control.write(`${operation}-ERR:${error?.code ?? "unknown"}\n`),
     );
     control.write(`${operation}-QUEUED\n`);
     // The test controls pending FS/creation/terminal work independently.
