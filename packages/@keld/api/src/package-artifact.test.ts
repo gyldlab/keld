@@ -120,9 +120,8 @@ test("real packed SDK installs offline with one API app identity", async () => {
       ),
     );
     expect(manifest.dependencies["@keld/kipc"]).toBe(source.kipc.version);
-    // Exact GH-1404 integration inventory is a candidate pending GH-1287
-    // owner approval. The approved four-entry SDK baseline is not expanded by
-    // this test. Reject a new source or packed export without silent admission.
+    // Closed GH-1287 integrated source contract: exactly seven exports.
+    // An additional path or a missing installed JS/declaration mapping fails.
     const candidateApiExports = {
       ".": "./src/index.ts",
       "./internal/app": "./src/app.ts",
@@ -247,27 +246,31 @@ console.log(JSON.stringify({
       runtimes[runtime] = result.version;
       runtimeIdentityFiles[runtime] = result.identityFiles;
     }
-    // Keep each emitted codec file while removing only its own declared export.
-    // A source reach-through must not make either exact installed import succeed.
+    // Keep each emitted module while removing only its package export.
+    // A source reach-through must never make an unexported path importable.
     const apiManifestPath = join(
       consumer,
       "node_modules/@keld/api/package.json",
     );
     const originalApiManifest = readFileSync(apiManifestPath, "utf8");
-    for (const codec of ["dialog-codec", "menu-codec"]) {
+    for (const [exportKey, label] of [
+      ["./internal/dialog-codec", "dialog-codec"],
+      ["./internal/menu-codec", "menu-codec"],
+      ["./runtime-preload", "runtime-preload"],
+    ] as const) {
       try {
-        const withoutCodec = JSON.parse(originalApiManifest);
-        delete withoutCodec.exports["./internal/" + codec];
-        writeFileSync(apiManifestPath, JSON.stringify(withoutCodec));
+        const withoutExport = JSON.parse(originalApiManifest);
+        delete withoutExport.exports[exportKey];
+        writeFileSync(apiManifestPath, JSON.stringify(withoutExport));
         for (const runtime of ["bun", "node"]) {
-          const missingCodec = Bun.spawnSync([runtime, probe], {
+          const missingExport = Bun.spawnSync([runtime, probe], {
             cwd: consumer,
             stdout: "pipe",
             stderr: "pipe",
           });
-          expect(missingCodec.exitCode).not.toBe(0);
-          expect(new TextDecoder().decode(missingCodec.stderr)).toContain(
-            codec,
+          expect(missingExport.exitCode).not.toBe(0);
+          expect(new TextDecoder().decode(missingExport.stderr)).toContain(
+            label,
           );
         }
       } finally {
@@ -393,6 +396,7 @@ console.log(JSON.stringify({
 import { app as internalApp } from "@keld/api/internal/app";
 import { encodeDialogRequest, type DialogReplyV1 } from "@keld/api/internal/dialog-codec";
 import { encodeMenuRequest, type MenuRequestV1 } from "@keld/api/internal/menu-codec";
+import "@keld/api/runtime-preload";
 import type { LifecycleLink } from "@keld/api/internal/link";
 import type { WindowRef } from "@keld/api/internal/window-codec";
 void [app, internalApp, isCallError, encodeDialogRequest, encodeMenuRequest]; const menu: MenuRequestV1 = {nodes:[]}; void menu; let link: LifecycleLink; let ref: WindowRef; let reply: DialogReplyV1; void [link!, ref!, reply!];`,

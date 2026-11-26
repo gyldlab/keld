@@ -4,7 +4,7 @@
 - Tracker: GH-1287
 - Owner: @0monish
 - Updated: 2026-11-26
-- Pin: ab9f49efb0b6a8623e8fa8bdb3c198c3aad37849
+- Pin: b5884a140f5e28075a960d8cdb9f6762165e27a8
 
 ## 1. Goal & non-goals
 
@@ -22,7 +22,7 @@ Architecture 02 §1 owns the one transport Worker and its self-entry; architectu
 ## 3. Acceptance criteria
 
 1. Actual source manifests and pinned tools produce API and KIPC tarballs; an offline installed consumer resolves the declared exact KIPC edge without source adjacency. Removing the edge or an emitted module fails the consumer.
-2. Strict TypeScript emission provides JavaScript and declarations for the API root and only internal/app, internal/link and internal/window-codec; a packed consumer typechecks and public/internal and ESM/CJS app identity agree. Public root runtime keys remain unchanged.
+2. Strict TypeScript emission provides JS and declarations for exactly seven API exports: root, internal/app, internal/dialog-codec, internal/link, internal/menu-codec, internal/window-codec and runtime-preload. The packed consumer typechecks and ESM/CJS app identity agrees. Public root keys stay unchanged.
 3. KIPC's existing release build and stamp owner produce one standalone self-Worker file. An intact installed artifact reaches a real private socket; a corrupt stamp prevents any accepted connection.
 4. Source and test imports resolve one package transport identity; generated adapters come from their owner, and the existing staged sidecar preserves its qualified canonical external mapping for the bare import.
 5. Repeated builds from identical inputs yield matching artifact file maps and hashes. Manifest derivation ships only allowlisted source fields, never `scripts` or `packageManager`; it preserves source development dependencies and normalizes only the API internal runtime edge to the actual KIPC version.
@@ -30,7 +30,7 @@ Architecture 02 §1 owns the one transport Worker and its self-entry; architectu
 7. Actual Node cold import of the installed artifacts succeeds: under Node 26.10 the offline consumer imports the API root, its internal entries and KIPC, `require` of the API root yields the same app, and API and KIPC share one transport identity (main fcf013a8, PR #1289, merged into this branch). Opening an app link under Node remains
    unqualified: `WorkerLink.open` refuses with typed `KELD-IPC-005` before reading options or constructing a MessageChannel, Worker or SharedArrayBuffer. No fake pass, shim, or alternate transport is permitted.
 
-**Integration extension (pending GH-1287 owner decision):** Criterion 2 still approves only four source exports. PR #1507 requires three additional entries for the Electron codecs and original runtime. Those entries are candidate implementation facts, not approved SDK authority. See proposed D-1 in §4. Until the owner approves or replaces this inventory, installed distribution remains blocked.
+**Integrated source contract (D-1):** GH-1287 originally approved four entries. This revision admits three additional framework-internal entries for dialog, menu and runtime preload. The exact mappings and boundaries appear in §4. Independent security review, installed Source and signed native qualification remain open. No release approval is given.
 
 Hosted Node selection is now pinned: `.github/workflows/ci.yml` uses
 `actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1` with
@@ -58,9 +58,7 @@ does not close installed-graph Source, security, native or final-head CI gates.
 
 ## 4. Design
 
-API source uses `@keld/kipc`, with `link:../kipc` as its real local development dependency. The approved base SDK exports four entries.
-
-The current integrated candidate exports seven. Proposed D-1 below does not grant approval.
+API source uses `@keld/kipc`, with `link:../kipc` as its real local development dependency. The original approved SDK baseline had four entries. This integrated source contract selects exactly seven under D-1.
 
 A KIPC-owned cold producer invokes the existing pinned compiler with strict options, unbundled JS, declarations and relative extension rewrite. It derives distribution manifests from an allowlist of source
 fields (name, version, description, license, type, engines, exports, dependencies, peerDependencies, devDependencies), changes the one API dependency to the actual KIPC version, and packs real output. Source `scripts` and `packageManager` are never shipped: the scripts name files the tarball omits, and an install script would run on consumers'
@@ -77,9 +75,9 @@ alternative: `Bun.build`'s `root:` option does not fix the comment. A Bun 1.4.4 
 Types/channels: no wire types or channels change. Capabilities and permission manifest: none. Runtime seam: package loading changes from repository-relative to declared package resolution; the process, grants, callback lifetimes and failure semantics remain owned by existing implementations. Migration includes source callers, generated
 adapters, mocks and staged-sidecar mapping; no permanent adapter is added. Platform behavior is unqualified beyond recorded Bun probes and the Node 26.10 cold-import result in criterion 7; Node link opening is refused, not qualified.
 
-### D-1: Proposed exact integrated export inventory (owner approval pending)
+### D-1: Exact integrated SDK export inventory
 
-FACT: The current candidate source manifest and packer at `ab9f49efb0b6a8623e8fa8bdb3c198c3aad37849` contain these entries.
+FACT: The GH-1404 source manifest and producer at `b5884a140f5e28075a960d8cdb9f6762165e27a8` contain exactly these entries.
 
 | Export                    | Source module             | Current consumer           |
 | ------------------------- | ------------------------- | -------------------------- |
@@ -91,11 +89,15 @@ FACT: The current candidate source manifest and packer at `ab9f49efb0b6a8623e8fa
 | `./internal/window-codec` | `src/window-codec.ts`     | Electron window identity   |
 | `./runtime-preload`       | `src/runtime-preload.ts`  | Installed original runtime |
 
-FACT: `packages/@keld/api/src/package-artifact.test.ts` imports the three additions from offline-installed API artifacts. Their consumers do not approve a change to GH-1287 criterion 2. The GH-1404 installed graph amendment remains draft and has an open independent design gate.
+FACT: `packages/@keld/api/src/package-artifact.test.ts` imports the additional entries from offline-installed artifacts. Electron imports both generated codecs. The installed Host currently loads the physical runtime-preload file, not its package specifier.
 
-The SDK owner MUST decide whether the seven-entry inventory is an approved extension. The owner MUST record any approved revision on GH-1287 before release. Until then, the packed SDK integration remains unqualified.
+FACT: The seventh export deliberately supports framework-internal package imports. It grants no Host identity or permission. The wrapper requires trusted runtime-facts selection before opening the shared link. An untrusted bare import cannot mint that selection.
 
-An added or changed export MUST fail the exact inventory test. The fault control adds one unapproved export key and requires a failed comparison. No signed native qualification is claimed.
+The integration decision accepts exactly this seven-entry inventory. Record the decision on GH-1287. The source and packed manifests MUST match these paths and their JS/declaration targets.
+
+Runtime-preload MUST NOT create a second KIPC transport or admit an unauthenticated Host role. The tests must prove bare cold import, installed declaration resolution, and refusal if the export is removed.
+
+An added or changed export MUST fail the exact inventory test. The fault control adds one unapproved source export and requires the packer to refuse it. Independent API/security review, canonical Source and memory qualification, exact-head protected CI, and signed native installed acceptance remain mandatory. This package-boundary decision does not qualify the real installed application.
 
 ## 5. Boundaries
 
