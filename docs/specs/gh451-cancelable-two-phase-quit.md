@@ -32,8 +32,8 @@ separate. GH563 owns the menu adapter.
 - [W7 terminal review candidate](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/engineering/gh451-terminal-commit-review-w7.md).
 - [GH-523 draft AC-7 and shared terminal owner](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/specs/gh523-host-authorized-app-exit.md#L98-L126).
 - [User-delegated GH-451 design selection](https://github.com/gyldlab/keld/issues/451#issuecomment-7182471840).
-- [KEL-96 conditional lifecycle amendment draft #1603](https://github.com/gyldlab/keld/blob/960cc7e778e9c493976100b1797d68f2032d89e5/docs/specs/kel96-gh451-quit-order-amendment.md).
-- [Exact IPC negotiation and receipt-consumption proposal](https://github.com/gyldlab/keld/blob/1472d83b882b22e7cce95f5242123f8e1b34b2dc/docs/engineering/gh451-conditional-quit-ipc-amendment.md).
+- [KEL-96 conditional lifecycle amendment draft #1603](https://github.com/gyldlab/keld/blob/86df4dac4de98b71d8dd4367f66957b8f83d0931/docs/specs/kel96-gh451-quit-order-amendment.md).
+- [Exact IPC negotiation and receipt-consumption proposal](https://github.com/gyldlab/keld/blob/6c60172885113af9a34a8da2837b1ac26d3131dc/docs/engineering/gh451-conditional-quit-ipc-amendment.md).
 
 Verified baseline: Current main app.quit returns a Promise and refuses live windows with KELD-COMPAT-012. It does not implement
 this full transaction. The public D2 comment approves a narrower local preflight; it is not proof of full native, multiwindow or
