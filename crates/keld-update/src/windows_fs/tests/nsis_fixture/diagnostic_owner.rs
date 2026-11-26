@@ -252,7 +252,7 @@ impl DiagnosticOwner {
         Ok(())
     }
 
-    fn retire(mut self) -> io::Result<()> {
+    fn retire_members(&mut self) -> io::Result<()> {
         self.require_fixed_inventory()?;
 
         for directory in &mut self.directories {
@@ -312,6 +312,11 @@ impl DiagnosticOwner {
             super::assert_absent(parent, name);
         }
 
+        Ok(())
+    }
+
+    fn retire(mut self) -> io::Result<()> {
+        self.retire_members()?;
         // Unknown child entries are never adopted; the nonrecursive root
         // removal refuses a nonempty directory and leaves the fixture intact.
         self.fixture.finish();
@@ -333,7 +338,7 @@ fn owned_diagnostic_inventory_retires_original_fixed_objects() {
 
 #[test]
 fn owned_diagnostic_inventory_refuses_unclaimed_entry_before_retirement() {
-    let tree = DiagnosticOwner::new();
+    let mut tree = DiagnosticOwner::new();
     let root = tree.path().to_owned();
     let independent = super::create_file(
         &tree.fixture.root,
@@ -341,10 +346,18 @@ fn owned_diagnostic_inventory_refuses_unclaimed_entry_before_retirement() {
         "independent-sentinel",
         b"independently owned bytes",
     );
-    let error = tree
-        .require_fixed_inventory()
-        .expect_err("extra entry must refuse");
+    let error = tree.retire_members().expect_err("extra entry must refuse");
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(tree.directories.len(), DIRECTORIES.len());
+    assert_eq!(tree.files.len(), FILES.len());
+    for directory in &tree.directories {
+        if let Some(junction) = &directory.junction {
+            assert_eq!(
+                entry_kind(junction).expect("retained junction"),
+                EntryKind::Link
+            );
+        }
+    }
     assert_eq!(
         std::fs::read(root.join("independent-sentinel")).expect("preserved independent sentinel"),
         b"independently owned bytes"
@@ -356,6 +369,8 @@ fn owned_diagnostic_inventory_refuses_unclaimed_entry_before_retirement() {
         .expect("retire independently owned sentinel");
     drop(independent);
     super::assert_absent(&tree.fixture.root, "independent-sentinel");
+    tree.require_fixed_inventory()
+        .expect("all originally owned members remain after refusal");
     tree.retire().expect("retire restored fixed inventory");
     assert!(!root.exists(), "owned diagnostic root remains");
 }
