@@ -180,21 +180,24 @@ impl PrimaryRouterHandle {
                 } else {
                     initial
                 };
+                if finish_legacy_tail && outcome == Outcome::Committed {
+                    // This channel is an observer, not the reservation's
+                    // owner. Losing it cannot strand a committed tail.
+                    let _ = report.send((correlation, format!("{outcome:?}")));
+                    // The same reader enters the already-reserved production
+                    // tail; it must not try to reserve a second time.
+                    return Ok(ConditionalQuitFixtureDisposition::FinishReservedLegacyTail);
+                }
                 report
                     .send((correlation, format!("{outcome:?}")))
                     .map_err(|error| {
                         app_detail("conditional Quit fixture receipt", error.to_string())
                     })?;
                 if finish_legacy_tail {
-                    if outcome != Outcome::Committed {
-                        return Err(app_detail(
-                            "conditional Quit tail fixture",
-                            "clean legacy-tail witness did not commit",
-                        ));
-                    }
-                    // The same reader enters the already-reserved production
-                    // tail; it must not try to reserve a second time.
-                    return Ok(ConditionalQuitFixtureDisposition::FinishReservedLegacyTail);
+                    return Err(app_detail(
+                        "conditional Quit tail fixture",
+                        "clean legacy-tail witness did not commit",
+                    ));
                 }
                 // The original cut-only fixture never sends a wire reply.
                 Ok(if outcome == Outcome::Retained {

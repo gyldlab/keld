@@ -415,11 +415,21 @@ fn exercise_drain() -> TestResult {
 fn authenticated_reader_reserved_cut_enters_existing_legacy_tail() -> TestResult {
     run_case(
         "authenticated_reader_reserved_cut_enters_existing_legacy_tail",
-        exercise_reserved_tail,
+        || exercise_reserved_tail(true),
     )
 }
 
-fn exercise_reserved_tail() -> TestResult {
+/// Losing the diagnostic observer after arming must not prevent the already
+/// reserved owner from running its existing terminal tail.
+#[test]
+fn authenticated_reader_reserved_tail_survives_dropped_observer() -> TestResult {
+    run_case(
+        "authenticated_reader_reserved_tail_survives_dropped_observer",
+        || exercise_reserved_tail(false),
+    )
+}
+
+fn exercise_reserved_tail(observe_cut: bool) -> TestResult {
     use crate::app_session::{QuitDrainEnd, SESSION_LIFECYCLE_QUIT, SESSION_RUNNING};
 
     let mut fixture = Fixture::new()?;
@@ -427,6 +437,12 @@ fn exercise_reserved_tail() -> TestResult {
     let caller = Fixture::caller(&handle)?;
     // Subscribe was the only prior Call on this fixture link.
     let receipt = handle.arm_conditional_quit_tail_fixture(&caller, CorrelationId(2))?;
+    let receipt = if observe_cut {
+        Some(receipt)
+    } else {
+        drop(receipt);
+        None
+    };
     let (end_tx, end_rx) = mpsc::sync_channel(1);
     handle.observe_next_quit_drain_end(end_tx);
     send_call(
@@ -434,12 +450,14 @@ fn exercise_reserved_tail() -> TestResult {
         "CARRIER",
         &encode(&LifecycleRequest::Quit)?,
     )?;
-    assert_eq!(
-        receipt
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|e| io::Error::other(format!("conditional cut receipt: {e}")))?,
-        (CorrelationId(2), "Committed".to_owned())
-    );
+    if let Some(receipt) = receipt {
+        assert_eq!(
+            receipt
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|e| io::Error::other(format!("conditional cut receipt: {e}")))?,
+            (CorrelationId(2), "Committed".to_owned())
+        );
+    }
     let GuardianOwnerCommand::PrepareAcceptedShutdown(prepare) = fixture
         .guarded
         .guardian
@@ -479,7 +497,18 @@ fn exercise_reserved_tail() -> TestResult {
             .map_err(|e| io::Error::other(format!("UI quit command: {e}")))?,
         AppWindowCommand::Quit
     ));
-    fixture.guarded.router.shutdown()?;
+    // Await the existing claimant completion notification, not cleanup.
+    // Router::shutdown also removes the current owner and could mask a leak.
+    let (transition, _) = handle
+        .shutdown
+        .changed
+        .wait_timeout_while(
+            handle.shutdown.transition_guard(),
+            Duration::from_secs(5),
+            |()| !handle.shutdown.tail_ended.load(Ordering::Acquire),
+        )
+        .map_err(|_| io::Error::other("tail completion wait poisoned"))?;
+    drop(transition);
     assert_eq!(cause_before_receipt, SESSION_RUNNING);
     assert!(!started_before_receipt);
     assert_eq!(handle.shutdown.cause(), SESSION_LIFECYCLE_QUIT);
@@ -490,10 +519,12 @@ fn exercise_reserved_tail() -> TestResult {
             .current
             .lock()
             .map_err(|_| io::Error::other("current poisoned"))?
-            .is_none()
+            .is_none(),
+        "reserved tail must retire the current owner before router cleanup"
     );
     assert!(fixture.guarded.guardian.try_recv().is_err());
     assert!(fixture.guarded.window.try_recv().is_err());
+    fixture.guarded.router.shutdown()?;
     assert!(matches!(
         fixture.role.finish(),
         Some(keld_runtime::SupervisorOutcome::Stopped)
