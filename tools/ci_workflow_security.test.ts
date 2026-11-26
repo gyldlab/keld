@@ -805,6 +805,7 @@ test("CI rejects unreviewed external actions, including mutable Docker image tag
     `docker://ghcr.io/example/unknown@sha256:${"0".repeat(64)}`,
     `unreviewed/third-party-action@${"0".repeat(40)}`,
     `oven-sh/setup-bun@${"0".repeat(40)}`,
+    "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
   ];
   for (const uses of unreviewed) {
     const f = fixture();
@@ -1610,20 +1611,24 @@ test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded rele
     );
     expect(installer).toBeDefined();
     expect(installer!.uses).toBe(
-      "taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519",
+      "taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c",
     );
     expect((installer!.with as Step).tool).toBe(reviewed);
     expect((installer!.with as Step).fallback).toBe("none");
     expect(() => check(clean)).not.toThrow();
 
-    // v2.87.29 cannot resolve 0.9.149 from its embedded manifest.
-    const oldAction = fixture();
-    const staleInstaller = oldAction.jobs[jobName]!.steps.find((candidate) =>
-      String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
-    )!;
-    staleInstaller.uses =
-      "taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283";
-    expect(() => check(oldAction)).toThrow("reviewed immutable action refs");
+    // v2.87.29 lacks 0.9.149; previously approved v2.90.5 is now stale too.
+    for (const staleSha of [
+      "8cca0918f8471c33515202b73f56ab27f2bed283",
+      "ab49d3c64680143e184118bed66a46419fc15519",
+    ]) {
+      const oldAction = fixture();
+      const staleInstaller = oldAction.jobs[jobName]!.steps.find((candidate) =>
+        String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+      )!;
+      staleInstaller.uses = `taiki-e/install-action@${staleSha}`;
+      expect(() => check(oldAction)).toThrow("reviewed immutable action refs");
+    }
 
     for (const rejected of [
       unpinned,
@@ -1936,15 +1941,19 @@ for (const language of codeqlLanguages) {
   });
 
   test(`CodeQL ${language} rejects uniformly changed unreviewed pinned actions`, () => {
-    const f = fixture();
-    const init = step(f, job, "Initialize CodeQL");
-    const analyze = step(f, job, "Analyze and upload CodeQL results");
-    const unreviewedSha = "0".repeat(40);
-    init.uses = `github/codeql-action/init@${unreviewedSha}`;
-    analyze.uses = `github/codeql-action/analyze@${unreviewedSha}`;
-    expect(() => check(f)).toThrow(
-      "CodeQL init and analyze must use the reviewed pinned commit",
-    );
+    for (const unreviewedSha of [
+      "0".repeat(40),
+      "33d7b85da1a04171e211befe2c739303b9a4c066",
+    ]) {
+      const f = fixture();
+      const init = step(f, job, "Initialize CodeQL");
+      const analyze = step(f, job, "Analyze and upload CodeQL results");
+      init.uses = `github/codeql-action/init@${unreviewedSha}`;
+      analyze.uses = `github/codeql-action/analyze@${unreviewedSha}`;
+      expect(() => check(f)).toThrow(
+        "CodeQL init and analyze must use the reviewed pinned commit",
+      );
+    }
   });
 
   test(`CodeQL cannot omit the ${language} job`, () => {
