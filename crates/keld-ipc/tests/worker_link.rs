@@ -594,6 +594,33 @@ fn mirror_values(scenario: &str, reentrant: bool, duplicate: bool) {
     }
 }
 
+/// Main consumer completion cannot impersonate physical read-counter release.
+#[test]
+fn event_receipt_follows_physical_ring_release_after_reentrant_call() {
+    let (mut stream, role) = start("after-ring-release");
+    long_reads(&stream);
+    let first = read_call_named(&mut stream, "after-ring");
+    host_event(&mut stream, 0, 8);
+    host_reply(&mut stream, first, b"first-reply");
+    let nested = read_call_named(&mut stream, "ring-nested");
+    host_reply(&mut stream, nested, b"nested-reply");
+    let healthy = read_call_named(&mut stream, "ring-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    expect_report(
+        &role.finish(),
+        &[
+            ("ring-before-receipt", "0"),
+            ("ring-after-receipt", "true"),
+            ("ring-bytes-released", "true"),
+            ("ring-dispatch-count", "1"),
+            ("ring-first", "first-reply"),
+            ("ring-nested", "nested-reply"),
+            ("ring-healthy", "healthy-reply"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// One decode per record; exact object identity and captured source receiver.
 #[test]
 fn mirror_decodes_once_and_dispatches_the_exact_applied_object() {
@@ -1998,6 +2025,20 @@ fn source_replay(scenario: &str) -> (BootstrapStream, Role, keld_ipc::window::Wi
         &mut stream,
         subscribe,
         &encode(&LifecycleResponse::Subscribed).expect("Subscribed codec"),
+    );
+    // LifecycleLink completes both native subscriptions before publishing Ready.
+    let (compat_subscribe, bytes) = read_call(&mut stream);
+    assert_eq!(compat_subscribe.channel, LIFECYCLE_CHANNEL);
+    assert_eq!(
+        decode::<LifecycleRequest>(&bytes).expect("compat Subscribe codec"),
+        LifecycleRequest::Subscribe {
+            channel: keld_ipc::channel_table::COMPAT_CONTROL.wire_id()
+        }
+    );
+    host_reply(
+        &mut stream,
+        compat_subscribe,
+        &encode(&LifecycleResponse::Subscribed).expect("compat Subscribed codec"),
     );
     (stream, role, window)
 }

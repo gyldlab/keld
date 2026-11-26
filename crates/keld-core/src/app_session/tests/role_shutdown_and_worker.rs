@@ -53,12 +53,12 @@ fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
-    assert_eq!(
+    assert!(matches!(
         t.window
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     t.router.shutdown().expect("router shutdown after Quit");
 }
 
@@ -119,12 +119,12 @@ fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
-    assert_eq!(
+    assert!(matches!(
         t.window
             .recv_timeout(Duration::from_secs(5))
             .expect("UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     assert!(!target.exists(), "a post-Quit FS CALL must not execute");
     t.router
         .shutdown()
@@ -494,11 +494,13 @@ fn fs_worker_keeps_ping_responsive_and_quit_waits_for_fs_terminal_outcome() {
         shutdown_reply
             .send(Ok(()))
             .expect("complete FS worker guardian shutdown");
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit after FS terminal outcome"),
-            AppWindowCommand::Quit,
+        assert!(
+            matches!(
+                window_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("UI Quit after FS terminal outcome"),
+                AppWindowCommand::Quit
+            ),
             "{case}"
         );
         router

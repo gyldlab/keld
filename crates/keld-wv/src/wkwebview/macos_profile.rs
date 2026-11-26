@@ -11,6 +11,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::panic::AssertUnwindSafe;
 use std::path::{Component, Path, PathBuf};
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use std::sync::Arc;
@@ -30,10 +31,10 @@ use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
 use objc2_app_kit::NSWindowWillBeginSheetNotification;
 use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSString};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
 use objc2_foundation::{
     NSProcessInfo, NSSearchPathDirectory, NSSearchPathDomainMask,
-    NSSearchPathForDirectoriesInDomains, NSUUID,
+    NSSearchPathForDirectoriesInDomains, NSString, NSUUID,
 };
 use objc2_web_kit::{WKWebViewConfiguration, WKWebsiteDataStore};
 use tao::event_loop::EventLoop;
@@ -52,7 +53,7 @@ use crate::profile::{
 };
 
 use super::WkUserEvent;
-use crate::WvError;
+use crate::{ApplicationNameForUserAgent, WvError};
 
 const METADATA_MAX_BYTES: usize = 16 * 1024;
 const METADATA_DIRECTORY_MODE: u32 = 0o700;
@@ -201,6 +202,7 @@ impl Drop for MacMediaPromptProbe {
 pub(super) struct MacProfileOwner {
     store: Option<Retained<WKWebsiteDataStore>>,
     persistent: Option<PersistentProfile>,
+    application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
 }
 
 struct PersistentProfile {
@@ -231,6 +233,7 @@ impl MacProfileOwner {
     pub(super) fn new(
         selection: WebProfileSelection,
         event_loop: &mut EventLoop<WkUserEvent>,
+        application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
     ) -> Result<Self, WvError> {
         let main_thread = MainThreadMarker::new().ok_or_else(|| {
             WvError::EventLoop(String::from(
@@ -254,6 +257,7 @@ impl MacProfileOwner {
                 let owner = Self {
                     store: Some(store),
                     persistent: Some(persistent),
+                    application_name_for_user_agent,
                 };
                 report_store_selection("persistent", Some(identity), owner.store.as_ref());
                 Ok(owner)
@@ -266,6 +270,7 @@ impl MacProfileOwner {
                 let owner = Self {
                     store: Some(store),
                     persistent: None,
+                    application_name_for_user_agent,
                 };
                 report_store_selection("ephemeral-dev", None, owner.store.as_ref());
                 Ok(owner)
@@ -274,7 +279,7 @@ impl MacProfileOwner {
     }
 
     /// Creates a per-view configuration bound to the engine's selected store.
-    #[allow(unsafe_code)] // exact main-thread WKWebsiteDataStore configuration calls
+    #[allow(unsafe_code)] // exact main-thread store/configuration and GH476 application-name property calls
     pub(super) fn configuration_for_view(
         &self,
     ) -> Result<Retained<WKWebViewConfiguration>, WvError> {
@@ -302,6 +307,30 @@ impl MacProfileOwner {
             verify_store(&observed, Some(persistent.binding.store_uuid()), true)?;
         } else {
             verify_store(&observed, None, false)?;
+        }
+        if let Some(application_name) = &self.application_name_for_user_agent {
+            // SAFETY: This new, retained configuration is on the proved AppKit
+            // thread, before WKWebView construction. The public property copies
+            // NSString; retain the existing user-agent prefix and verify readback.
+            // An Objective-C exception is a typed build failure, never success.
+            let assigned = objc2::exception::catch(AssertUnwindSafe(|| unsafe {
+                let prefix = configuration.applicationNameForUserAgent();
+                let mut combined = prefix.map(|value| value.to_string()).unwrap_or_default();
+                if !combined.is_empty() {
+                    combined.push(' ');
+                }
+                combined.push_str(application_name.as_str());
+                let requested = NSString::from_str(&combined);
+                configuration.setApplicationNameForUserAgent(Some(&requested));
+                configuration
+                    .applicationNameForUserAgent()
+                    .is_some_and(|observed| observed.to_string() == combined)
+            }));
+            if !matches!(assigned, Ok(true)) {
+                return Err(WvError::Webview(String::from(
+                    "applicationNameForUserAgent native assignment failed; use a supported macOS WebKit configuration and preserve the requested metadata",
+                )));
+            }
         }
         Ok(configuration)
     }

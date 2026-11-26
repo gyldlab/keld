@@ -87,12 +87,12 @@ default-deny.
    against that layer's independent oracle — not a JavaScript shim, and not
    another layer's success. Layers and oracles:
 
-   | Layer | Independent oracle |
-   |---|---|
-   | OS containment | OS deny of the direct syscall/API (errno, NTSTATUS, sandbox violation). Job/PID kill is **not** this oracle — it is supervisor cleanup. |
-   | Host protocol denial | typed `KELD-IPC-007` (or documented successor) from the host on the app-link |
-   | Supervisor cleanup | descendants reaped, generation revoked, next legitimate spawn works |
-   | Resource limits | worker hang/OOM hits the worker limits; host and webviews remain up |
+|Layer|Independent oracle|
+|---|---|
+|OS containment|OS deny of the direct syscall/API (errno, NTSTATUS, sandbox violation). Job/PID kill is **not** this oracle — it is supervisor cleanup.|
+|Host protocol denial|typed `KELD-IPC-007` (or documented successor) from the host on the app-link|
+|Supervisor cleanup|descendants reaped, generation revoked, next legitimate spawn works|
+|Resource limits|worker hang/OOM hits the worker limits; host and webviews remain up|
 
    A JavaScript-shim deny is a failed OS-containment verdict for OS-layer
    probes. Host-protocol, supervisor-cleanup, and resource-limit passes do
@@ -170,11 +170,11 @@ default-deny.
 
 Three states. They are not a confidence slider.
 
-| State | Who chooses it | Zero-authority claim | Child starts? |
+|State|Who chooses it|Zero-authority claim|Child starts?|
 |---|---|---|---|
-| `unverified` | Default until a complete per-OS OS-containment archive exists | Forbidden | Only if the caller did not request `strict`. Reporting must say `unverified`. |
-| `legacy` | Explicit Keld profile key | Forfeited, and the forfeit is printed | Yes: authenticated + guarded, unsandboxed |
-| `strict` | Admission + complete OS-containment archive for that OS/artifact/profile | Allowed | Yes, only after admission |
+|`unverified`|Default until a complete per-OS OS-containment archive exists|Forbidden|Only if the caller did not request `strict`. Reporting must say `unverified`.|
+|`legacy`|Explicit Keld profile key|Forfeited, and the forfeit is printed|Yes: authenticated + guarded, unsandboxed|
+|`strict`|Admission + complete OS-containment archive for that OS/artifact/profile|Allowed|Yes, only after admission|
 
 ```mermaid
 stateDiagram-v2
@@ -221,18 +221,18 @@ direct attempt. The host broker may still perform the operation after
 (no extra entitlement, capability SID, or seccomp allow as a consequence of
 the grant).
 
-| Resource | Strict child / addon worker |
+|Resource|Strict child / addon worker|
 |---|---|
-| Files outside a reviewed role-private container | deny |
-| Secrets / keychain / credential tokens | deny (cannot impersonate the user) |
-| Network | deny (always: direct `connect`/`bind`/`socket`). Brokered net is host-side after `keld-guard`. Extra entitlements/SIDs are a permission-model gate, not child-ambient `connect()` |
-| Devices (camera, mic, USB, GPS, …) | deny |
-| Process / IPC control of host or siblings | deny |
-| Inherited objects | none beyond app-link + log sinks |
-| Code loading (`dlopen`, unsigned libraries, JIT) | deny except the recorded Bun JIT minimum on that OS |
-| Brokers | only authenticated kipc to the host; no raw host object |
-| Persistence / update staging / signing keys | deny |
-| Descendants | same profile; no breakaway. Immediate kill is the supervisor-cleanup row, not an OS-containment pass |
+|Files outside a reviewed role-private container|deny|
+|Secrets / keychain / credential tokens|deny (cannot impersonate the user)|
+|Network|deny (always: direct `connect`/`bind`/`socket`). Brokered net is host-side after `keld-guard`. Extra entitlements/SIDs are a permission-model gate, not child-ambient `connect()`|
+|Devices (camera, mic, USB, GPS, …)|deny|
+|Process / IPC control of host or siblings|deny|
+|Inherited objects|none beyond app-link + log sinks|
+|Code loading (`dlopen`, unsigned libraries, JIT)|deny except the recorded Bun JIT minimum on that OS|
+|Brokers|only authenticated kipc to the host; no raw host object|
+|Persistence / update staging / signing keys|deny|
+|Descendants|same profile; no breakaway. Immediate kill is the supervisor-cleanup row, not an OS-containment pass|
 
 ### Addon-worker principal
 
@@ -312,13 +312,13 @@ The selected raw-stage mechanism is `keld.macos-host-death-guardian/v1`, built
 from the Apple pipe, process-group, signal, and wait contracts in ledger
 M9–M11. It is supervisor cleanup, not App Sandbox containment:
 
-| Resource | Owner | Invariant |
+|Resource|Owner|Invariant|
 |---|---|---|
-| Guardian process handle | host | The host supervises one private re-exec guardian and treats guardian death as fatal. |
-| Host-liveness pipe writer | host only | It is non-inheritable and carries no authority bytes; no guardian/Bun/descendant owns a writer copy. |
-| Host-liveness pipe reader | guardian only | EOF means the host's descriptors closed; no timeout or heartbeat substitutes for EOF. |
-| Bun direct-child handle | guardian | The guardian, not a host-side PID lookup, spawns and waits the Bun group leader. |
-| Bun process group | guardian | The leader starts in a new group; enrolled descendants remain in it and may not break away. |
+|Guardian process handle|host|The host supervises one private re-exec guardian and treats guardian death as fatal.|
+|Host-liveness pipe writer|host only|It is non-inheritable and carries no authority bytes; no guardian/Bun/descendant owns a writer copy.|
+|Host-liveness pipe reader|guardian only|EOF means the host's descriptors closed; no timeout or heartbeat substitutes for EOF.|
+|Bun direct-child handle|guardian|The guardian, not a host-side PID lookup, spawns and waits the Bun group leader.|
+|Bun process group|guardian|The leader starts in a new group; enrolled descendants remain in it and may not break away.|
 
 The guardian is the same prebuilt executable in a private internal role, not a
 new framework or public CLI mode. Its private inherited control record is
@@ -540,15 +540,15 @@ fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
 
 Otherwise the result is not `Strict`:
 
-| Defect | Error |
+|Defect|Error|
 |---|---|
-| `proof` is `None` or the archive is empty | `ProofMissing` |
-| artifact digest, profile digest, OS, or `archive_id` does not match | `ProofMismatch` |
-| archive is not fresh for this digest/profile | `ProofStale` |
-| one or more §7 OS-containment rows missing | `ProofIncomplete` |
-| an OS-containment slot used another layer's oracle | `ProofLayerMismatch` |
-| required primitive or host-path deny missing | `PrimitiveUnavailable` |
-| leftover Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict`; inherit-from-host; unexpected entitlement/SID | `UnexpectedGrant` |
+|`proof` is `None` or the archive is empty|`ProofMissing`|
+|artifact digest, profile digest, OS, or `archive_id` does not match|`ProofMismatch`|
+|archive is not fresh for this digest/profile|`ProofStale`|
+|one or more §7 OS-containment rows missing|`ProofIncomplete`|
+|an OS-containment slot used another layer's oracle|`ProofLayerMismatch`|
+|required primitive or host-path deny missing|`PrimitiveUnavailable`|
+|leftover Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict`; inherit-from-host; unexpected entitlement/SID|`UnexpectedGrant`|
 
 An archive that contains only protocol, cleanup, or limit rows is
 `ProofIncomplete` (OS-containment rows absent). If those other-layer
@@ -563,23 +563,22 @@ Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
 returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
-Capabilities / manifest: a future `keld.permissions.jsonc` / `keld.config.ts`
-key may declare `profile: "strict" | "legacy"`. The key does not exist today.
-Adding it is a permission-model + public-API review gate. Electron
-`sandbox` / `appSandbox` is not this key and MUST NOT be read as `legacy`
-or `strict`. No VS Code or package-name branch.
+Capabilities: [Profile](kel78-explicit-legacy-profile/index.md) sets root `keld.permissions.jsonc.profile` (`strict`/`legacy`) only; omission selects neither.
+It owns parsing, forfeiture, evidence, reporting and migration. Config aliases, sandbox flags, package names and failed Strict proof cannot select one.
+GH #588 owns admission.
 
-Wire/protocol: none. `KELD_APP_LINK` stays `<endpoint>#<64 hex chars>`.
+kipc and `KELD_APP_LINK` unchanged. Schemas 1/2: no-profile renderer/facade (#446); 3/4: explicit-profile renderer/facade.
+[R1](kel78-explicit-legacy-profile/design.md) (#1120/KEL-78) preserves Ready; KEL-96/KEL-102 gate compiled producer/consumer and unsupported-version refusal.
 
 ### Packaging and reporting
 
-| Surface | `strict` | `legacy` | `unverified` |
+|Surface|`strict`|`legacy`|`unverified`|
 |---|---|---|---|
-| `keld build` output | printed only after a complete OS-containment archive exists | printed "zero-authority claim forfeited" | printed "unverified — no OS proof" |
-| `keld doctor` | same | same | same |
-| Scoreboard / release metadata | same | same | same |
+|`keld build` output|printed only after a complete OS-containment archive exists|printed "zero-authority claim forfeited"|printed "unverified — no OS proof"|
+|`keld doctor`|same|same|same|
+|Scoreboard / release metadata|same|same|same|
 
-Renderer sandbox is a different column.
+Renderer sandbox is separate. [Reporting](kel78-explicit-legacy-profile/design.md#47-reporting-contract) preserves request/admission distinction and KEL-74 unverified evidence; native release proof pending.
 
 ## 5. Boundaries
 
@@ -666,38 +665,38 @@ Renderer sandbox is a different column.
 No test in this docs pass is an OS proof. Future fixtures must hit the real
 OS. Mocks may test the admission state machine only.
 
-| AC | Future fixture | Independent oracle |
+|AC|Future fixture|Independent oracle|
 |---|---|---|
-| 1 | doctor/build metadata unit | printed state string is `unverified`/`legacy`/`strict` |
-| 2 | admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong artifact digest / profile digest / OS / archive id); incomplete OS-containment catalog; layer-mismatched archive (protocol/cleanup/limit rows only, or those oracles in OS slots); Strict restart after stale/missing proof; leftover Electron `appSandbox: "off"` while requested Strict; Legacy→Strict without `admit()` | typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch` / `ProofIncomplete` / `ProofLayerMismatch` / `UnexpectedGrant`; no child PID (including no unsandboxed replacement); result is not `Strict` |
-| 3 | explicit Keld `legacy` spawn (Electron `sandbox` / `appSandbox` alone is not this declaration) | child runs; metadata forfeits the claim |
-| 4 | `/proc/pid/fd`, `lsof`, or `GetProcessHandleCount` + handle dump | only app-link + log sinks |
-| 5 | hostile catalog below | **per-layer** oracle in that row; JS shim deny fails OS-containment probes; host-protocol / cleanup / limit passes do not mark the OS contained and do not admit `Strict`; missing/incomplete/layer-mismatched archive stays `unverified` (`ProofIncomplete` / `ProofLayerMismatch`) |
-| 6 | synthetic addon matrix | one of the four outcomes; in-process load fails closed under `strict` |
-| 7 | plugin vs worker | plugin has no OS sandbox; worker does (once T7 exists) |
-| 8 | doctor JSON | two distinct fields |
-| 9 host death | macOS T2a validates the resource-free controller/host/guardian/group oracle and T2b reruns it through the production guardian API with registered grant/link state | T2a asserts that it creates no generation, grant store, or app-link. For T2b and every later consumer, the controller sends `SIGKILL` only to the host; guardian observes EOF; enrolled group is gone; direct leader is waited; actual grants/links are recorded `Revoked`; only then may cleanup complete and a second launch begin. Every consumer separately proves its own enrollment |
-| 9 child failure | T5 independently aborts and hangs a child while the host remains alive | shared Supervisor contract terminates/reaps the failed child, revokes its generation, preserves the host, and permits the next legitimate spawn; no liveness-pipe EOF is claimed |
-| 10 | open update staging / key path from child | OS deny |
+|1|doctor/build metadata unit|printed state string is `unverified`/`legacy`/`strict`|
+|2|admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong artifact digest / profile digest / OS / archive id); incomplete OS-containment catalog; layer-mismatched archive (protocol/cleanup/limit rows only, or those oracles in OS slots); Strict restart after stale/missing proof; leftover Electron `appSandbox: "off"` while requested Strict; Legacy→Strict without `admit()`|typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch` / `ProofIncomplete` / `ProofLayerMismatch` / `UnexpectedGrant`; no child PID (including no unsandboxed replacement); result is not `Strict`|
+|3|explicit Keld `legacy` spawn (Electron `sandbox` / `appSandbox` alone is not this declaration)|child runs; metadata forfeits the claim|
+|4|`/proc/pid/fd`, `lsof`, or `GetProcessHandleCount` + handle dump|only app-link + log sinks|
+|5|hostile catalog below|**per-layer** oracle in that row; JS shim deny fails OS-containment probes; host-protocol / cleanup / limit passes do not mark the OS contained and do not admit `Strict`; missing/incomplete/layer-mismatched archive stays `unverified` (`ProofIncomplete` / `ProofLayerMismatch`)|
+|6|synthetic addon matrix|one of the four outcomes; in-process load fails closed under `strict`|
+|7|plugin vs worker|plugin has no OS sandbox; worker does (once T7 exists)|
+|8|doctor JSON|two distinct fields|
+|9 host death|macOS T2a validates the resource-free controller/host/guardian/group oracle and T2b reruns it through the production guardian API with registered grant/link state|T2a asserts that it creates no generation, grant store, or app-link. For T2b and every later consumer, the controller sends `SIGKILL` only to the host; guardian observes EOF; enrolled group is gone; direct leader is waited; actual grants/links are recorded `Revoked`; only then may cleanup complete and a second launch begin. Every consumer separately proves its own enrollment|
+|9 child failure|T5 independently aborts and hangs a child while the host remains alive|shared Supervisor contract terminates/reaps the failed child, revokes its generation, preserves the host, and permits the next legitimate spawn; no liveness-pipe EOF is claimed|
+|10|open update staging / key path from child|OS deny|
 
 Hostile catalog (each is a real syscall/API from the child or addon worker).
 Each row is one layer. Do not attribute every outcome to the OS.
 
-| Probe | Layer | Must observe |
+|Probe|Layer|Must observe|
 |---|---|---|
-| Direct filesystem | OS containment | create/read of a **host** path outside the role container fails with an OS error; create/read of a **role-private** path succeeds |
-| Direct network | OS containment | `connect`/`bind`/`socket` fails with an OS error even when a `keld-guard` net grant exists. Brokered net is host-side; a reviewed grant MUST NOT change this observation |
-| Direct shell / spawn | OS containment | `exec`/`CreateProcess`/`posix_spawn` of a helper fails with an OS deny, **or** the descendant is equally sandboxed (same App Sandbox / LPAC / namespace+seccomp+host-path profile). Job/PID kill of an unsandboxed helper is supervisor cleanup, not this pass |
-| Inherited handles | OS containment | leftover host FD/HANDLE cannot open host files, the update dir, or sibling links |
-| SCM_RIGHTS | OS containment | `recvmsg` of a usable host FD, or use of that FD on a host path, fails the archive. The host MUST NOT send ancillary FDs; the child MUST reject/close them. Runtime probe, not an `admit()` primitive (ledger L5) |
-| Descendants | OS containment | grandchild has the same profile; no job breakaway; no new user namespace (`clone`/`clone3`/`unshare`/`setns` with `CLONE_NEWUSER`). Job/PID reap is the supervisor-cleanup row, not this pass |
-| Broker bypass | OS containment | raw use of a host object the broker would have checked is denied by the OS |
-| Token theft | OS containment | cannot impersonate the interactive user (macOS keychain / Windows user token / Linux host UID 0) |
-| Addon escape | OS containment | synthetic native code cannot `dlopen` unsigned host code or join the host address space |
-| Crash cleanup | Supervisor cleanup | abort/OOM/hang leaves no descendant and revokes the generation (supervisor/job/PID-namespace reap — not an OS-containment pass by itself) |
-| Updater boundary | OS containment | cannot read/write staging, signatures, or the relaunch helper |
-| Protocol confusion | Host protocol denial | foreign `HELLO`, stale token, or confused deputy on the app-link is `KELD-IPC-007` / typed host deny — not an OS-containment pass |
-| Resource | Resource limits | intentional hang and allocator blow-up hit the worker limits, not the host — not an OS-containment pass |
+|Direct filesystem|OS containment|create/read of a **host** path outside the role container fails with an OS error; create/read of a **role-private** path succeeds|
+|Direct network|OS containment|`connect`/`bind`/`socket` fails with an OS error even when a `keld-guard` net grant exists. Brokered net is host-side; a reviewed grant MUST NOT change this observation|
+|Direct shell / spawn|OS containment|`exec`/`CreateProcess`/`posix_spawn` of a helper fails with an OS deny, **or** the descendant is equally sandboxed (same App Sandbox / LPAC / namespace+seccomp+host-path profile). Job/PID kill of an unsandboxed helper is supervisor cleanup, not this pass|
+|Inherited handles|OS containment|leftover host FD/HANDLE cannot open host files, the update dir, or sibling links|
+|SCM_RIGHTS|OS containment|`recvmsg` of a usable host FD, or use of that FD on a host path, fails the archive. The host MUST NOT send ancillary FDs; the child MUST reject/close them. Runtime probe, not an `admit()` primitive (ledger L5)|
+|Descendants|OS containment|grandchild has the same profile; no job breakaway; no new user namespace (`clone`/`clone3`/`unshare`/`setns` with `CLONE_NEWUSER`). Job/PID reap is the supervisor-cleanup row, not this pass|
+|Broker bypass|OS containment|raw use of a host object the broker would have checked is denied by the OS|
+|Token theft|OS containment|cannot impersonate the interactive user (macOS keychain / Windows user token / Linux host UID 0)|
+|Addon escape|OS containment|synthetic native code cannot `dlopen` unsigned host code or join the host address space|
+|Crash cleanup|Supervisor cleanup|abort/OOM/hang leaves no descendant and revokes the generation (supervisor/job/PID-namespace reap — not an OS-containment pass by itself)|
+|Updater boundary|OS containment|cannot read/write staging, signatures, or the relaunch helper|
+|Protocol confusion|Host protocol denial|foreign `HELLO`, stale token, or confused deputy on the app-link is `KELD-IPC-007` / typed host deny — not an OS-containment pass|
+|Resource|Resource limits|intentional hang and allocator blow-up hit the worker limits, not the host — not an OS-containment pass|
 
 Anti-flake: bind port 0; use temp dirs; await supervisor events (no sleep-sync);
 run crash cases out of process. Platform-only tests report other OSes as

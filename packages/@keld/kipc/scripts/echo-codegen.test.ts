@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,6 +18,7 @@ import {
   renderAuthBinding,
   renderEchoDeclarations,
   renderFsBinding,
+  renderRuntimeProcessBinding,
 } from "./echo-codegen.ts";
 import {
   decodeFsResponse,
@@ -34,24 +36,40 @@ const generationOutputs = [
   "packages/@keld/api/src/fs.generated.ts",
   "packages/@keld/api/src/auth.generated.ts",
   "packages/@keld/kipc/src/transport.ts",
+  "packages/@keld/api/src/dialog.generated.ts",
+  "packages/@keld/kipc/src/compat-control.generated.ts",
+  "packages/@keld/api/src/window-codec.ts",
+  "packages/@keld/api/src/menu.generated.ts",
+  "packages/@keld/kipc/src/runtime-process.generated.ts",
 ];
 
-function withGeneratorCheckout(run: (root: string) => void): void {
+function withGeneratorCheckout(
+  run: (root: string) => void,
+  inheritedEnvironment: NodeJS.ProcessEnv = process.env,
+): void {
   const parent = mkdtempSync(resolve(tmpdir(), "keld-generation-contract-"));
   const root = resolve(parent, "fixture");
   const initializeRepository = (cwd: string) => {
-    const env = { ...process.env };
-    for (const key of [
-      "GIT_DIR",
-      "GIT_COMMON_DIR",
-      "GIT_WORK_TREE",
-      "GIT_INDEX_FILE",
-      "GIT_OBJECT_DIRECTORY",
-    ])
-      delete env[key];
+    // Match the CLI fixture policy: caller Git/config/template controls do not
+    // belong to either disposable repository, including case-insensitive Windows keys.
+    const env = { ...inheritedEnvironment };
+    for (const key of Object.keys(env)) {
+      const upper = key.toUpperCase();
+      if (
+        upper.startsWith("GIT_") ||
+        ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"].includes(upper)
+      )
+        delete env[key];
+    }
+    const home = resolve(parent, "git-home");
+    mkdirSync(home, { recursive: true });
+    env.HOME = home;
+    env.USERPROFILE = home;
+    env.XDG_CONFIG_HOME = home;
+    env.GIT_CONFIG_NOSYSTEM = "1";
     for (const args of [
-      ["init", "--quiet"],
-      ["config", "maintenance.auto", "false"],
+      ["init", "--quiet", "--template="],
+      ["config", "--local", "maintenance.auto", "false"],
     ]) {
       const result = Bun.spawnSync(["git", ...args], { cwd, env });
       expect(result.exitCode, result.stderr.toString()).toBe(0);
@@ -67,10 +85,17 @@ function withGeneratorCheckout(run: (root: string) => void): void {
     for (const path of [
       ...generationOutputs,
       "packages/@keld/kipc/scripts/echo-codegen.ts",
+      "packages/@keld/kipc/src/launch-facts.ts",
+      "packages/@keld/kipc/scripts/menu-codegen.ts",
+      "crates/keld-native/src/menu.rs",
       "crates/keld-ipc/src/echo.rs",
+      "crates/keld-ipc/src/lifecycle.rs",
       "crates/keld-ipc/src/channel_table.rs",
+      "crates/keld-ipc/src/compat_control.rs",
+      "crates/keld-ipc/src/window.rs",
       "crates/keld-native/src/fs.rs",
       "crates/keld-native/src/auth/mod.rs",
+      "crates/keld-native/src/dialog.rs",
     ]) {
       mkdirSync(dirname(resolve(root, path)), { recursive: true });
       cpSync(
@@ -84,6 +109,49 @@ function withGeneratorCheckout(run: (root: string) => void): void {
     rmSync(parent, { recursive: true, force: true });
   }
 }
+
+test("generator checkout preserves caller Git configuration and excludes templates", () => {
+  const caller = mkdtempSync(resolve(tmpdir(), "keld-generator-caller-"));
+  try {
+    const template = resolve(caller, "template");
+    mkdirSync(template);
+    writeFileSync(resolve(template, "caller-template-marker"), "caller-owned");
+    const config = "[init]\n\ttemplateDir = " + JSON.stringify(template) + "\n";
+    const sentinel = resolve(caller, "caller.config");
+    const homeConfig = resolve(caller, ".gitconfig");
+    const xdgConfig = resolve(caller, "git/config");
+    mkdirSync(dirname(xdgConfig));
+    for (const path of [sentinel, homeConfig, xdgConfig])
+      writeFileSync(path, config);
+    // Separate cases prove environment template redirection and HOME/XDG lookup
+    // cannot populate either .git directory; caller configuration is never a target.
+    for (const templateControl of [false, true]) {
+      const env = {
+        ...process.env,
+        HOME: caller,
+        USERPROFILE: caller,
+        XDG_CONFIG_HOME: caller,
+        GIT_CONFIG: sentinel,
+        ...(templateControl ? { GIT_TEMPLATE_DIR: template } : {}),
+      };
+      withGeneratorCheckout((root) => {
+        for (const repository of [dirname(root), root]) {
+          expect(existsSync(resolve(repository, ".git/HEAD"))).toBe(true);
+          expect(
+            existsSync(resolve(repository, ".git/caller-template-marker")),
+          ).toBe(false);
+          expect(
+            readFileSync(resolve(repository, ".git/config"), "utf8"),
+          ).toContain("auto = false");
+        }
+      }, env);
+      for (const path of [sentinel, homeConfig, xdgConfig])
+        expect(readFileSync(path, "utf8"), path).toBe(config);
+    }
+  } finally {
+    rmSync(caller, { recursive: true, force: true });
+  }
+});
 
 function runGenerator(root: string, command: "generate" | "check") {
   return Bun.spawnSync(
@@ -122,6 +190,7 @@ test("late transport computation failure leaves every destination unchanged", ()
     expect(result.stderr.toString()).toContain(
       "exactly one channel-table region",
     );
+    expect(result.stderr.toString()).not.toContain("ENOENT");
     generationOutputs.forEach((path, index) => {
       expect(readFileSync(resolve(root, path)), path).toEqual(before[index]);
     });
@@ -617,7 +686,7 @@ async function withFsBinding(
     writeFileSync(
       path,
       renderFsBinding(source).replace(
-        'from "../../kipc/src/transport.ts"',
+        'from "@keld/kipc"',
         `from "${pathToFileURL(transportPath).href}"`,
       ),
     );
@@ -935,4 +1004,31 @@ describe("native auth derive grammar", () => {
     for (const source of mutations)
       expect(() => renderAuthBinding(source)).toThrow(/echo codegen:/);
   });
+});
+
+test("GH563 lifecycle generation retains old unit tags and appends only QuitRequested", () => {
+  const source = readFileSync(
+    resolve(import.meta.dir, "../../../../crates/keld-ipc/src/lifecycle.rs"),
+    "utf8",
+  );
+  const rendered = renderRuntimeProcessBinding(source);
+  expect(rendered).toContain("case 0:");
+  expect(rendered).toContain('return "ready";');
+  expect(rendered).toContain("case 1:");
+  expect(rendered).toContain('return "last-window-closed";');
+  expect(rendered).toContain("case 2:");
+  expect(rendered).toContain('return "quit-requested";');
+  const reordered = source
+    .replace("    Ready,", "    TemporaryReady,")
+    .replace("    LastWindowClosed,", "    Ready,")
+    .replace("    TemporaryReady,", "    LastWindowClosed,");
+  expect(() => renderRuntimeProcessBinding(reordered)).toThrow("append-only");
+  expect(() =>
+    renderRuntimeProcessBinding(
+      source.replace(
+        "    QuitRequested,",
+        "    QuitRequested {\n        invented: u32,\n    },",
+      ),
+    ),
+  ).toThrow();
 });

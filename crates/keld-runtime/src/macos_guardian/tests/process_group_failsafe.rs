@@ -12,8 +12,9 @@ use nix::unistd::Pid;
 use super::super::GUARDIAN_SHUTDOWN_DEADLINE;
 use super::super::process_group::{
     GroupIdentity, finish_group_termination, install_test_ambiguous_probe_receipt,
-    observe_group_identity, reconcile_denied_signal_after_reap, terminate_attested_group,
-    terminate_registered_group, validate_guardian_child_group,
+    install_test_post_signal_live_group_probe_receipt, observe_group_identity,
+    reconcile_denied_signal_after_reap, require_attested_group_absence_after_signal,
+    terminate_attested_group, terminate_registered_group, validate_guardian_child_group,
 };
 
 mod cleanup_authority;
@@ -121,6 +122,68 @@ fn denied_group_signal_is_only_ignorable_after_group_absence_proof() {
     assert!(finish_group_termination(Err(Errno::EPERM), || Err(Errno::EPERM)).is_err());
     assert!(finish_group_termination(Err(Errno::EPERM), || Ok(())).is_err());
     assert!(finish_group_termination(Err(Errno::EIO), || Err(Errno::ESRCH)).is_err());
+}
+
+#[test]
+fn post_signal_absence_waits_for_an_exiting_same_group_descendant() {
+    let mut leader = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own post-signal group leader"),
+    );
+    let group = leader.0.id();
+    let original = observe_group_identity(group).expect("attest post-signal group birth");
+    let raw = i32::try_from(group).expect("positive native group");
+    let mut member = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(raw)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own same-group descendant"),
+    );
+    leader.0.kill().expect("retire exact group leader only");
+    assert_eq!(
+        leader.0.wait().expect("reap exact group leader").signal(),
+        Some(9)
+    );
+    assert_eq!(
+        nix::unistd::getpgid(Some(Pid::from_raw(raw))),
+        Err(Errno::ESRCH),
+        "the direct leader is reaped before the post-signal proof"
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-raw), None),
+        Ok(()),
+        "the same-group descendant is still live"
+    );
+
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let _receipt = install_test_post_signal_live_group_probe_receipt(group, observed_tx);
+    let reaper = thread::spawn(move || {
+        observed_rx
+            .recv_timeout(GUARDIAN_SHUTDOWN_DEADLINE)
+            .expect("product observed leader-gone/live-group post-signal state");
+        member
+            .0
+            .kill()
+            .expect("finish exact owned descendant retirement");
+        member.0.wait().expect("reap exact owned descendant")
+    });
+    require_attested_group_absence_after_signal(
+        original,
+        std::time::Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+    )
+    .expect("bounded read-only proof waits for the already-signaled descendant");
+    assert_eq!(reaper.join().expect("descendant reaper").signal(), Some(9));
+    assert_eq!(kill(Pid::from_raw(-raw), None), Err(Errno::ESRCH));
 }
 
 // Regression for the Guardian's distinct signal-before-Child-reap cut.

@@ -59,10 +59,12 @@ setInterval(()=>{}, 1000);
 ";
     let result = run_guarded_primary(
         io::stdin().lock(),
-        move |_app_link| {
-            let mut command = Command::new(&bun);
-            command.args(["-e", script]).env(MARKER_ENV, &marker);
-            Ok(command)
+        move || {
+            Ok(move |_app_link: &str| {
+                let mut command = Command::new(&bun);
+                command.args(["-e", script]).env(MARKER_ENV, &marker);
+                Ok(command)
+            })
         },
         ack,
     );

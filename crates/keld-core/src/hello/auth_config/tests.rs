@@ -310,3 +310,267 @@ fn trailing_statements_do_not_restrict_static_auth_extraction() {
         Some("kept")
     );
 }
+
+// GH #588: the manifest is the sole security-profile authority; finding the
+// exact decoded root member must precede any auth-value parsing.
+#[test]
+fn root_profile_is_refused_at_literal_and_method_heads() {
+    for source in [
+        "export default { profile: 'legacy' };",
+        "export default { 'profile': 'strict' };",
+        "export default { profile };",
+        "export default { profile() {} };",
+        "export default { profile<T>() {} };",
+        "export default { get profile() { return 'legacy' } };",
+        "export default { set profile(value) {} };",
+        "export default { async profile() {} };",
+        "export default { *profile() {} };",
+        "export default { async *profile() {} };",
+        "export default { get ['profile']() { return 'legacy' } };",
+        "export default { async ['profile']() {} };",
+        r"export default { pro\u0066ile: 'legacy' };",
+        r"export default { \u{70}rofile: 'legacy' };",
+        r"export default { 'pro\u0066ile': 'legacy' };",
+        r"export default { 'pro\u{66}ile': 'legacy' };",
+        r"export default { 'pro\x66ile': 'legacy' };",
+        r"export default { 'pr\ofile': 'legacy' };",
+        r#"export default { ["pro\u0066ile"]: 'legacy' };"#,
+        "export default { auth: {}, profile: 'legacy' };",
+        "export default { profile: 'legacy', auth: {} };",
+    ] {
+        let error = auth_configuration_from_config_ts(source)
+            .expect_err("root security profile must not be silently ignored");
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with("KELD-CORE-035:"),
+            "{source}: {rendered}"
+        );
+        assert!(
+            rendered.contains("keld.permissions.jsonc"),
+            "{source}: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn root_initial_window_uses_the_existing_facade_owner_after_profile_composition() {
+    for source in [
+        "export default { initialWindow: 'none' };",
+        r#"export default { "initialWindow": "none" };"#,
+    ] {
+        assert!(
+            super::initial_window_from_config_ts(source).expect("approved literal facade mode")
+        );
+        assert!(
+            auth_configuration_from_config_ts(source)
+                .expect("no auth field")
+                .is_empty()
+        );
+    }
+    for source in [
+        "export default { initialWindow: makeWindow() };",
+        r"export default { ['initial\u0057indow']: 'none' };",
+        "export default { get initialWindow() { return 'none' } };",
+        "export default { async *initialWindow() {} };",
+        "export default { auth: {}, initialWindow: 'none' };",
+    ] {
+        assert!(
+            super::initial_window_from_config_ts(source).is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn unrelated_unicode_dynamic_and_nested_keys_stay_opaque() {
+    for source in [
+        "export default { profileπ: 'legacy', initialWindowTitle: 'none' };",
+        "export default { πprofile: 'legacy', profile_: 'legacy' };",
+        r"export default { profile\u{0301}: 'legacy' };",
+        r"export default { pro\u{66}ileSuffix: 'legacy' };",
+        r"export default { 'pro\x66ileSuffix': 'legacy' };",
+        r"export default { 'pro\ofile': 'legacy' };",
+        r"export default { ['pro' + 'file']: 'computed' };",
+        "export default { other: { profile: 'legacy', initialWindow: 'none' } };",
+        "export default { get: { profile: 'legacy' }, async: { initialWindow: 'none' } };",
+        "export default { get authorship() { return { profile: 'legacy' }; } };",
+        "export default { async profiled() { return 'legacy'; } };",
+        "export default { *profiled() { return 'legacy'; } };",
+        "export default { other: /profile: 'legacy'/.test('x') };",
+        r#"export default { name: "profile: 'legacy'; initialWindow: 'none'" };"#,
+    ] {
+        assert!(
+            auth_configuration_from_config_ts(source)
+                .expect("unrelated legacy configuration remains unrestricted")
+                .is_empty(),
+            "{source}"
+        );
+    }
+    // ECMAScript U+FEFF is white space, even inside a property declaration.
+    let bom = "export default { profile\u{feff}: 'legacy' };";
+    let error = auth_configuration_from_config_ts(bom)
+        .expect_err("BOM must separate tokens, not change the key name");
+    assert!(error.to_string().contains("keld.permissions.jsonc"));
+    // Escaped line continuation and identity-escape string keys decode to
+    // the same exact spelling of profile.
+    let continued = "export default { 'pro\\\nfile': 'legacy' };";
+    assert!(
+        auth_configuration_from_config_ts(continued)
+            .expect_err("string key line continuation")
+            .to_string()
+            .contains("keld.permissions.jsonc")
+    );
+}
+
+#[test]
+fn generic_type_commas_are_not_root_keys_but_relational_commas_are() {
+    for source in [
+        "export default { other: id<A, auth, profile>(7) };",
+        "export default { other: id<A, profile<B>, C>(7) };",
+        "export default { other: id<{ auth: string, profile: string }, Other>(7) };",
+        "export default { other: <T, profile>(x: T) => x };",
+        "export default { other<T, profile>(value: T) { return value; } };",
+        "export default { other: id<(x: number) => string, profile>(7) };",
+    ] {
+        assert!(
+            auth_configuration_from_config_ts(source)
+                .expect("comma inside bounded TS generic remains unrelated")
+                .is_empty(),
+            "{source}"
+        );
+    }
+    let auth_source = "export default { other: id<A, auth, profile>(7), auth: { 'entra-common': { clientId: 'kept' } } };";
+    let parsed = auth_configuration_from_config_ts(auth_source)
+        .expect("real root auth is extracted after generic arguments");
+    assert_eq!(
+        parsed
+            .get("entra-common")
+            .expect("actual root auth")
+            .client_id
+            .as_deref(),
+        Some("kept")
+    );
+    for source in [
+        "export default { other: a < b, profile: 'legacy' };",
+        "export default { other: id<A, profile>(7), profile: 'legacy' };",
+    ] {
+        let error = auth_configuration_from_config_ts(source)
+            .expect_err("genuine root key after expression must be rejected");
+        assert!(error.to_string().starts_with("KELD-CORE-035:"), "{source}");
+    }
+    let relational_auth =
+        "export default { other: a < b, auth: { 'entra-common': { clientId: 'root' } } };";
+    let parsed = auth_configuration_from_config_ts(relational_auth)
+        .expect("relational less-than leaves real root auth visible");
+    assert_eq!(
+        parsed
+            .get("entra-common")
+            .expect("real auth")
+            .client_id
+            .as_deref(),
+        Some("root")
+    );
+}
+
+#[test]
+fn escaped_root_auth_still_uses_the_original_literal_value_parser() {
+    let source =
+        r"export default { a\u0075th: { 'entra-common': { clientId: 'still-literal' } } };";
+    let configuration = auth_configuration_from_config_ts(source)
+        .expect("escaped auth identifier denotes the original auth key");
+    assert_eq!(
+        configuration
+            .get("entra-common")
+            .expect("root auth")
+            .client_id
+            .as_deref(),
+        Some("still-literal")
+    );
+    let invalid = r"export default { a\u0075th: { 'entra-common': { clientId: compute() } } };";
+    assert!(
+        auth_configuration_from_config_ts(invalid)
+            .expect_err("escaped auth name does not relax literal-value grammar")
+            .to_string()
+            .starts_with("KELD-CORE-035:")
+    );
+}
+
+#[test]
+fn installed_single_instance_reader_retains_one_bounded_literal_id() {
+    use super::single_instance_from_config_ts as read;
+
+    assert!(read("export default {name:'singleInstance: decoy',nested:{singleInstance:{id:'dev.decoy'}}};").expect("absent root field").is_none());
+    for id in ["dev.example.editor".to_owned(), "a".repeat(128)] {
+        let source = format!("export default {{singleInstance:{{id:'{id}',}}}} as const;");
+        assert_eq!(
+            read(&source)
+                .expect("closed literal")
+                .expect("declaration")
+                .id(),
+            id
+        );
+    }
+    for declaration in [
+        "null".to_owned(),
+        "[]".to_owned(),
+        "{}".to_owned(),
+        "{id:'dev.example.editor',extra:'x'}".to_owned(),
+        "{id:'dev.example.editor',id:'dev.example.editor'}".to_owned(),
+        "{id:'../escape'}".to_owned(),
+        "{id:'Upper.case'}".to_owned(),
+        "{id:'dev..app'}".to_owned(),
+        "{id:process.env.APP_ID}".to_owned(),
+        format!("{{id:'{}'}}", "a".repeat(129)),
+    ] {
+        let source = format!("export default {{singleInstance:{declaration}}};");
+        assert!(read(&source).is_err(), "accepted {source}");
+    }
+    for source in [
+        "export default {singleInstance:{id:'dev.app'},singleInstance:{id:'dev.app'}};",
+        "export default {['singleInstance']:{id:'dev.app'}};",
+        "export default {get singleInstance(){return {id:'dev.app'}}};",
+        "export default {...other,singleInstance:{id:'dev.app'}};",
+        "export default {singleInstance:{id:'dev.app'}}; sideEffect();",
+    ] {
+        assert!(read(source).is_err(), "accepted {source}");
+    }
+}
+
+#[test]
+fn installed_user_agent_reader_uses_the_native_value_bound_without_fallback() {
+    use super::application_name_for_user_agent_from_config_ts as read;
+
+    assert!(
+        read("export default {nested:{applicationNameForUserAgent:'decoy'}};")
+            .expect("absent root field")
+            .is_none()
+    );
+    for value in ["Example/1 Native".to_owned(), "a".repeat(256)] {
+        let source = format!("export default {{applicationNameForUserAgent:'{value}'}};");
+        assert_eq!(
+            read(&source)
+                .expect("bounded metadata")
+                .expect("present")
+                .as_str(),
+            value
+        );
+    }
+    for value in ["", " Leading", "Trailing ", "A\\nB", "é"] {
+        let source = format!("export default {{applicationNameForUserAgent:'{value}'}};");
+        assert!(read(&source).is_err(), "accepted {source}");
+    }
+    let too_long = format!(
+        "export default {{applicationNameForUserAgent:'{}'}};",
+        "a".repeat(257)
+    );
+    assert!(read(&too_long).is_err());
+    for source in [
+        "export default {applicationNameForUserAgent:null};",
+        "export default {applicationNameForUserAgent:[]};",
+        "export default {applicationNameForUserAgent:'A',applicationNameForUserAgent:'A'};",
+        "export default {get applicationNameForUserAgent(){return 'A'}};",
+        "export default {applicationNameForUserAgent:process.env.USER_AGENT};",
+    ] {
+        assert!(read(source).is_err(), "accepted {source}");
+    }
+}

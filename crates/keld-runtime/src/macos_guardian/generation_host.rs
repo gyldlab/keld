@@ -1,15 +1,19 @@
 //! One owner for host-side primary generation control and recovery transitions.
 use super::generation_wire::initial_generation_record_timeout;
-use super::process_group::{terminate_attested_group, validate_guardian_child_group};
+use super::process_group::{
+    require_attested_group_absence_after_signal, terminate_attested_group,
+    validate_guardian_child_group,
+};
 use super::{
     BoundRoleGeneration, CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED,
     CONTROL_REGISTERED, CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED,
     DEFAULT_ADMISSION_TIMEOUT, GENERATION_CONTROL_POLL, GUARDIAN_SHUTDOWN_DEADLINE,
     GenerationControlReader, GenerationControlRecord, GenerationLease, GuardedPrimaryUpdate,
     Instant, Mutex, Receiver, RecoveryState, RegisteredPrimaryGeneration, RevocationCause,
-    RoleEvent, RoleGenerationLease, RoleGenerationOwner, RoleOwner, RuntimeError,
-    SUPERVISED_QUIT_ACK_DEADLINE, Sender, collapse_failures, decode_revocation_cause, io,
-    lifecycle_error, lock_generation, lock_recovery, mpsc, thread, write_generation_control,
+    RoleEvent, RoleGenerationLease, RoleGenerationOwner, RoleOwner, RolePrincipal,
+    RoleProcessDrained, RuntimeError, SUPERVISED_QUIT_ACK_DEADLINE, Sender, collapse_failures,
+    decode_revocation_cause, io, lifecycle_error, lock_generation, lock_recovery, mpsc, thread,
+    write_generation_control,
 };
 
 #[cfg(test)]
@@ -39,6 +43,7 @@ pub(super) struct GenerationRegistrationFence {
 pub(super) struct GenerationHostAdmission {
     guardian_pid: u32,
     first_record_deadline: Instant,
+    pub(super) require_runtime_process_facts: bool,
 }
 
 impl GenerationHostAdmission {
@@ -46,15 +51,21 @@ impl GenerationHostAdmission {
         Self {
             guardian_pid,
             first_record_deadline,
+            require_runtime_process_facts: false,
         }
     }
+}
+
+pub(super) struct RevokedRoleGeneration {
+    attempt: u32,
+    principal: RolePrincipal,
 }
 
 #[derive(Default)]
 pub(super) struct HostGenerationState {
     pub(super) lease: Option<RoleGenerationLease>,
     pub(super) current_attempt: Option<u32>,
-    pub(super) revoked_attempt: Option<u32>,
+    pub(super) revoked_generation: Option<RevokedRoleGeneration>,
     pub(super) pending_prepare: Option<GenerationControlRecord>,
     pub(super) initial_decision_deadline: Option<Instant>,
 }
@@ -86,6 +97,9 @@ pub(super) fn run_generation_host(
         #[cfg(unix)]
         None,
     );
+    if admission.require_runtime_process_facts {
+        owner.require_runtime_process_facts();
+    }
     let mut state = HostGenerationState::default();
     let mut control_reader = GenerationControlReader::new();
     let mut first_record_pending = true;
@@ -162,7 +176,7 @@ pub(super) fn run_generation_host(
                     if record.attempt != expected_attempt
                         || state.current_attempt.is_some()
                         || state.lease.is_some()
-                        || state.revoked_attempt.is_some()
+                        || state.revoked_generation.is_some()
                         || lock_generation(current_generation).is_some()
                         || record.pid != 0
                         || record.cause != 0
@@ -297,7 +311,7 @@ pub(super) fn run_generation_host(
                 }
                 CONTROL_REVOKE => {
                     if state.current_attempt != Some(record.attempt)
-                        || state.revoked_attempt.is_some()
+                        || state.revoked_generation.is_some()
                         || record.pid != 0
                         || !record.payload.is_empty()
                     {
@@ -313,8 +327,12 @@ pub(super) fn run_generation_host(
                     })?;
                     // Close native release before the lease emits Revoked.
                     lock_recovery(recovery_decision).retire(record.attempt);
+                    let principal = current.principal();
                     current.revoke(cause)?;
-                    state.revoked_attempt = Some(record.attempt);
+                    state.revoked_generation = Some(RevokedRoleGeneration {
+                        attempt: record.attempt,
+                        principal,
+                    });
                     forward_generation_updates(updates_tx, &bound_rx, &events_rx)?;
                     write_generation_control(
                         &mut control,
@@ -322,6 +340,7 @@ pub(super) fn run_generation_host(
                     )?;
                 }
                 CONTROL_CLEAR => {
+                    let clear_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
                     // Serialize the native CLEAR fail-safe with host-triggered
                     // fail_current_generation. Without this one lock owner,
                     // an old failure callback could retain a copy of the
@@ -331,7 +350,11 @@ pub(super) fn run_generation_host(
                     let registered =
                         registered_generation.map_or(0, |generation| generation.group_pid);
                     if state.current_attempt != Some(record.attempt)
-                        || state.revoked_attempt != Some(record.attempt)
+                        || state
+                            .revoked_generation
+                            .as_ref()
+                            .map(|retired| retired.attempt)
+                            != Some(record.attempt)
                         || record.cause != 0
                         || !record.payload.is_empty()
                         || record.pid != registered
@@ -351,7 +374,14 @@ pub(super) fn run_generation_host(
                     // make a still-running descendant invisible to the host.
                     if let Some(generation) = registered_generation {
                         match generation.group_identity {
-                            Some(group) => terminate_attested_group(group)?,
+                            Some(group) => {
+                                terminate_attested_group(group)?;
+                                // A successful SIGKILL is delivery, not disappearance.
+                                // The real Guardian reaped its exact Bun Child before
+                                // CLEAR. Independently require both leader and whole
+                                // group absence before releasing old ring ownership.
+                                require_attested_group_absence_after_signal(group, clear_deadline)?;
+                            }
                             #[cfg(test)]
                             None => {} // Synthetic EOF/transition-only fixtures.
                             #[cfg(not(test))]
@@ -368,13 +398,30 @@ pub(super) fn run_generation_host(
                     }
                     current_generation_owner.take();
                     drop(current_generation_owner);
+                    let retired = state.revoked_generation.take().ok_or_else(|| {
+                        invalid_control_transition(
+                            "clear provenance",
+                            record.attempt,
+                            expected_attempt,
+                        )
+                    })?;
+                    if registered_generation
+                        .is_some_and(|generation| generation.group_identity.is_some())
+                    {
+                        let retirement = RoleProcessDrained::after_attested_group_absence(
+                            retired.principal,
+                            retired.attempt,
+                        );
+                        let _ = updates_tx.send(GuardedPrimaryUpdate::Role(
+                            RoleEvent::ProcessDrained { retirement },
+                        ));
+                    }
                     write_generation_control(
                         &mut control,
                         &GenerationControlRecord::new(CONTROL_CLEARED, record.attempt)
                             .with_pid(record.pid),
                     )?;
                     state.current_attempt = None;
-                    state.revoked_attempt = None;
                     // None alone is not Clear: only the completed acknowledgment
                     // advances the attempt and permits a pending release request.
                     lock_recovery(recovery_decision).cleared(record.attempt)?;
@@ -552,7 +599,7 @@ pub(super) fn finish_generation_control_eof(
         let Some(attempt) = state.current_attempt.take() else {
             return Err(primary);
         };
-        if state.revoked_attempt.is_some() {
+        if state.revoked_generation.is_some() {
             return Err(primary);
         }
         lock_recovery(recovery).retire(attempt);
@@ -560,7 +607,7 @@ pub(super) fn finish_generation_control_eof(
             return Err(collapse_failures(vec![primary, cleanup]));
         }
     }
-    if state.current_attempt.is_some() || state.revoked_attempt.is_some() {
+    if state.current_attempt.is_some() || state.revoked_generation.is_some() {
         return Err(primary);
     }
     // EOF can precede the host's Q/S ACK read by one scheduling turn. Retain
