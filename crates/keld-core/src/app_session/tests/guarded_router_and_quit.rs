@@ -38,6 +38,28 @@ fn guarded_router_with_test_setup(
     server: BootstrapStream,
     setup: Option<GuardedFsTestSetup>,
 ) -> GuardedTestRouter {
+    guarded_router_with_factory(setup, |window, guardian, snapshot, gate| {
+        PrimaryRouter::start_with_fs_test_gate(
+            server,
+            window,
+            guardian,
+            SessionShutdownState::new(),
+            Some(snapshot),
+            Some(gate),
+        )
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn guarded_router_with_factory(
+    setup: Option<GuardedFsTestSetup>,
+    start: impl FnOnce(
+        Sender<AppWindowCommand>,
+        PlatformPrimaryOwnerHandle,
+        &GuardSnapshot,
+        Arc<FsWorkerTestGate>,
+    ) -> Result<PrimaryRouter, HostAppError>,
+) -> GuardedTestRouter {
     use sha2::{Digest as _, Sha256};
 
     let temp = tempfile::tempdir().expect("guarded router root");
@@ -70,15 +92,13 @@ fn guarded_router_with_test_setup(
     let gate = Arc::new(gate);
     let (window_tx, window) = mpsc::channel();
     let (guardian_tx, guardian) = mpsc::channel();
-    let router = PrimaryRouter::start_with_fs_test_gate(
-        server,
+    let router = start(
         window_tx,
         PlatformPrimaryOwnerHandle {
             command_tx: guardian_tx,
         },
-        SessionShutdownState::new(),
-        Some(&snapshot),
-        Some(gate),
+        &snapshot,
+        gate,
     )
     .expect("guarded test router");
     GuardedTestRouter {

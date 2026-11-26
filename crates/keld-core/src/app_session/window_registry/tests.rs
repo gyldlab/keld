@@ -16,6 +16,17 @@ mod close_state_table;
 #[path = "../terminal_quit_candidate.rs"]
 mod terminal_quit_candidate;
 
+#[cfg(target_os = "macos")]
+impl WindowRegistry {
+    pub(in crate::app_session) fn fixture_terminal_observation(&self) -> (bool, bool, u64) {
+        (
+            self.ready && !self.ending,
+            !self.has_live_windows(),
+            self.last_incarnation,
+        )
+    }
+}
+
 fn phase_name(phase: Phase) -> char {
     match phase {
         Phase::Opening(_) => 'O',

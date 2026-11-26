@@ -13,6 +13,10 @@ mod core_owner_integration;
 #[path = "terminal_quit_core_real_fs_candidate.rs"]
 mod real_fs;
 
+#[cfg(all(test, not(keld_core_native_renderer_main)))]
+#[path = "terminal_quit_core_dispatch_candidate.rs"]
+mod real_dispatch;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Token {
     generation: NonZeroU32,

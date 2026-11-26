@@ -20,12 +20,13 @@ PROTOTYPE = (ROOT / "terminal_quit_candidate.rs").read_text()
 CANDIDATE = (ROOT / "terminal_quit_core_owner_integration_candidate.rs").read_text()
 REGISTER = '#[cfg(target_os = "macos")]\n#[path = "../terminal_quit_candidate.rs"]\nmod terminal_quit_candidate;'
 REAL_FS = '#[cfg(all(test, not(keld_core_native_renderer_main)))]\n#[path = "terminal_quit_core_real_fs_candidate.rs"]\nmod real_fs;'
+REAL_DISPATCH = '#[cfg(all(test, not(keld_core_native_renderer_main)))]\n#[path = "terminal_quit_core_dispatch_candidate.rs"]\nmod real_dispatch;'
 
 def between(text, start, end):
     return text.split(start, 1)[1].split(end, 1)[0]
 
 def method(text, name, indent="    "):
-    pattern = (r"^" + indent + r"(?:pub\(super\) )?fn " + name
+    pattern = (r"^" + indent + r"(?:pub\(super\) |pub\(in crate::app_session\) )?fn " + name
                + r"\(.*?^" + indent + r"}\n")
     match = re.search(pattern, text, re.M | re.S)
     if not match:
@@ -110,7 +111,9 @@ def build_and_run(tmp, label, candidate, registry_body, only=None, expected=0):
     assert FIXTURES.count(REGISTER) == 1
     assert PROTOTYPE.count(REAL_FS) == 1
     tests.write_text("use super::*;\n" + helpers + "\n" + REGISTER + "\n")
-    (session / "terminal_quit_candidate.rs").write_text(PROTOTYPE.replace(REAL_FS, ""))
+    # Neither actual-router component module can run in a projection.
+    assert PROTOTYPE.count(REAL_DISPATCH) == 1
+    (session / "terminal_quit_candidate.rs").write_text(PROTOTYPE.replace(REAL_FS, "").replace(REAL_DISPATCH, ""))
     (session / "terminal_quit_core_owner_integration_candidate.rs").write_text(candidate)
     source = root / "projection.rs"
     source.write_text(generate(tests, registry_body))
@@ -124,6 +127,89 @@ def build_and_run(tmp, label, candidate, registry_body, only=None, expected=0):
     print(result.stdout, flush=True)
     if result.returncode != expected or (expected != 0 and "1 failed" not in result.stdout):
         raise RuntimeError(f"{label}: unexpected result")
+
+def compile_dispatch_projection(tmp):
+    """Compile the actual draft adapter and guard, not a simulated reader test.
+
+    Only unexercised router/FS/native owner type shapes are substituted. The
+    real authenticated component tests still require the full Core crate.
+    """
+    root = tmp / "dispatch_typecheck"
+    session = root / "app_session"
+    tests = session / "window_registry/tests.rs"
+    tests.parent.mkdir(parents=True)
+    registry_observation = method(FIXTURES, "fixture_terminal_observation")
+    window_observation = method((ROOT / "window_router/tests.rs").read_text(), "fixture_terminal_observation")
+    selection = method((ROOT / "window_router.rs").read_text(), "original_menu_quit_selected")
+    caller_guard = method(CORE, "with_primary_caller_locked", "")
+    hook = "type ConditionalQuitFixtureHandler" + between(
+        CORE, "type ConditionalQuitFixtureHandler", "/// How a post-Quit drain ended"
+    )
+    tests.write_text("use super::*;\n" + helpers + "\n" + REGISTER +
+                     "\nimpl WindowRegistry {\n" + registry_observation + "}\n")
+    (session / "terminal_quit_candidate.rs").write_text(PROTOTYPE.replace(REAL_FS, ""))
+    (session / "terminal_quit_core_owner_integration_candidate.rs").write_text(CANDIDATE)
+    (session / "terminal_quit_core_dispatch_candidate.rs").write_text(
+        (ROOT / "terminal_quit_core_dispatch_candidate.rs").read_text()
+    )
+    owner_shapes = r"""
+use crate::CorrelationId;
+use std::{io, sync::{Weak, atomic::AtomicU32}};
+use window_registry::{WindowOwner, WindowRegistry};
+type HostAppError = io::Error;
+fn app_detail(_: &str, detail: impl Into<String>) -> HostAppError {
+    io::Error::other(detail.into())
+}
+#[derive(Clone)]
+struct PrimaryCallerContext {
+    attempt: u32, identity: PrimaryLinkIdentity, reader_stop: Arc<AtomicBool>,
+}
+struct ActivePrimaryGeneration {
+    attempt: u32, identity: PrimaryLinkIdentity, reader_stop: Arc<AtomicBool>,
+}
+struct FsDispatchState {
+    in_flight: usize, call_outstanding: bool,
+    pending_call: Option<()>, failed_write_attempt: Option<u32>,
+}
+struct FsDispatchSession { state: Mutex<FsDispatchState> }
+impl FsDispatchSession {
+    fn drain(&self) -> Result<(), HostAppError> {
+        unreachable!("compile-only projection; no router or FS execution")
+    }
+}
+struct WindowSession {
+    registry: WindowRegistry, native_supported: bool, original_selection: Option<()>,
+    subscribed: Option<WindowOwner>, native_quit_ready_attempt: u32,
+    native_quit_source_attempt: Arc<AtomicU32>,
+}
+#[derive(Default)]
+struct QuitDrainTestHooks {
+    conditional_dispatch: Option<ConditionalQuitFixtureDispatch>,
+    conditional_dispatch_used: bool,
+}
+struct PrimaryRouterHandle {
+    current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
+    shutdown: SessionShutdownState,
+    windows: Option<Arc<Mutex<WindowSession>>>,
+    fs: Option<Weak<FsDispatchSession>>,
+    window_ready: Arc<AtomicBool>,
+    quit_drain_hooks: Arc<Mutex<QuitDrainTestHooks>>,
+}
+"""
+    generated = generate(tests, registry_methods)
+    assert generated.count("enum PrimaryLinkIdentity { Fixture }") == 1
+    generated = generated.replace("enum PrimaryLinkIdentity { Fixture }",
+                                  "enum PrimaryLinkIdentity { Fixture, Role(u32) }")
+    assert generated.count("mod window_registry {") == 1
+    generated = generated.replace("mod window_registry {", "\n".join((
+        owner_shapes, hook, caller_guard, "impl WindowSession {", selection,
+        window_observation, "}", "mod window_registry {",
+    )))
+    source = root / "dispatch_projection.rs"
+    source.write_text(generated)
+    subprocess.run(["rustc", "--edition=2024", "--test", "--emit=metadata",
+                    "-D", "warnings", str(source), "-o", str(root / "dispatch.rmeta")], check=True)
+    print("=== actual dispatch adapter typecheck (source projection; no Core execution) PASS ===", flush=True)
 
 def main():
     if sys.platform != "darwin":
@@ -146,6 +232,7 @@ def main():
         mutation = before + census + after.replace(original, "!matches!(entry.phase, Phase::Destroyed(_) | Phase::Closing(_))")
         build_and_run(tmp, "mutation_ignore_closing", CANDIDATE, mutation,
                       "real_registry_close_pending_and_closing_cannot_authorize_terminal", 101)
+        compile_dispatch_projection(tmp)
 
 if __name__ == "__main__":
     main()
