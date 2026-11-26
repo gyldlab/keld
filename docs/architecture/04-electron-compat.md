@@ -85,9 +85,13 @@ export default defineConfig({
 **v0 (KEL-72):** `packages/@keld/electron` is a real TypeScript package.
 `app.whenReady()`, `app.quit()`, and `window-all-closed` are backed by
 `keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
-`Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
-crate version, not an Electron release) and `process.type` is `"browser"`
-in this main-process package. The Electron `app` facade delegates to
+`Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (the
+`@keld/electron` package version, not an Electron release). `process.type` is
+`"browser"` in this main-process package. `process.defaultApp` is `true`: the Host runs
+the role as `bun … run <entry> …`, the `electron .` argument shape, so
+`argv.slice(defaultApp ? 2 : 1)` is the user argument list (GH-570);
+`process.resourcesPath` stays absent until the Host payload delivers it
+(#452). The Electron `app` facade delegates to
 `@keld/api`'s singleton lifecycle link, which uses `@keld/kipc`'s
 Worker-owned transport; the shim does not open a second link. Bundler-side
 alias (`keld build`) is deferred because `keld build` is not live.

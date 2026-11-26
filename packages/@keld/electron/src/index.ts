@@ -6,27 +6,23 @@
  * (`electron` → this file). `bunfig.toml` `[alias]` is the spec-named file
  * but does not remap runtime `import "electron"` on this Bun version.
  *
- * `process.versions.electron` / `process.type` are installed at import so
- * `import "electron"` is enough to observe them — they do not wait on kipc.
+ * Main-role `process.*` facts (`type`, `defaultApp`, `versions.electron`) are
+ * installed by `./process-facts` at import so `import "electron"` is enough to
+ * observe them — they do not wait on kipc. A Host-selected preload may install
+ * them earlier through that same module (GH-570 spec T2).
  */
 
 import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
+import {
+  ELECTRON_VERSION_SHIM,
+  installMainProcessFacts,
+} from "./process-facts";
 
-/** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
-export const ELECTRON_VERSION_SHIM = "0.0.1";
-
-const proc = process as typeof process & { type?: string };
-
-(process.versions as { electron?: string }).electron = ELECTRON_VERSION_SHIM;
-Object.defineProperty(proc, "type", {
-  value: "browser",
-  configurable: true,
-  enumerable: true,
-  writable: false,
-});
+installMainProcessFacts();
 
 export { app, BrowserWindow };
+export { ELECTRON_VERSION_SHIM };
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,
