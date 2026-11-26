@@ -1,0 +1,2 @@
+kipc transport Worker: KELD-IPC-026: a 2097173-byte frame did not fit the 1048576 free ring bytes
+{"source":"269d51528137faf574cfd3548586ee3ada1acfda","runtime":"1.4.4","platform":"darwin","arch":"arm64","defaultRingBytes":1048576,"fileBytes":2097152,"nativeFsContentCapBytes":8388608,"validFsPayloadBytes":2097157,"result":"KELD-IPC-026","limitation":"Real WorkerLink/UDS with independently generated valid FS response; not a real filesystem Host run."}

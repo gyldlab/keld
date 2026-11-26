@@ -1,0 +1,187 @@
+{
+  "schema": "keld.gh623-proposal-evidence/v1",
+  "captured_date": "2026-11-23",
+  "source_pin": "269d51528137faf574cfd3548586ee3ada1acfda",
+  "proposal_capture_pin": "870d1c693214e5b20bc8cdc900afa3ded67e2823",
+  "status": "Historical baseline defect witnesses and proposed unrun acceptance designs; no bounded implementation acceptance.",
+  "public_audit_registry_status": "Not registered. Existing full-spectrum verifier does not validate this scope.",
+  "inventory": {
+    "defects": 14,
+    "pipeline_stages": 12,
+    "regression_designs": 24,
+    "source_references": 39,
+    "report_blocks": 235
+  },
+  "original_private_deliverables": [
+    {
+      "name": "KELD_KIPC_Resource_Audit.pdf",
+      "sha256": "ab1081f0d1820a8500169f4ae0396a232aa3ce9a7ca9bef329a10d4e44448c5d"
+    },
+    {
+      "name": "KELD_KIPC_Audit_Pack.zip",
+      "sha256": "7c63529a1b366452cb335268e1a14cd193c18f5a0845273ef2f84a94b6f93631"
+    }
+  ],
+  "redaction_policy": [
+    "Temporary absolute checkout prefixes become AUDIT_SNAPSHOT. Repository-relative suffixes remain.",
+    "Rust connector routing/wait/token metadata is removed. Command output and exit code remain.",
+    "All numeric observations, source pins, runtime versions and test outcomes remain unchanged.",
+    "Original private files are retained unchanged; their digests are recorded for every derivative.",
+    "Public TypeScript probe derivatives are formatted with Bun 1.4.4 and separately replayed at the original source pin.",
+    "Redundant terminal blank lines are normalized; the historical architecture patch is re-emitted with zero context and an identical application result."
+  ],
+  "files": [
+    {
+      "path": "audit.json",
+      "source_artifact": "kipc_audit.json",
+      "original_private_sha256": "5bd93719934f8828723fe2f4711d710ca3097a00396d243f52c1be5e52df6efc",
+      "published_sha256": "5bd93719934f8828723fe2f4711d710ca3097a00396d243f52c1be5e52df6efc",
+      "bytes": 166075,
+      "transforms": [
+        "Byte-identical copy."
+      ]
+    },
+    {
+      "path": "proposed-architecture-02.patch",
+      "source_artifact": "architecture-02-amendments.patch",
+      "original_private_sha256": "e94f118dc6462c05dc2d87992b663f2eae79cb44731eff6d41eef4983a15787f",
+      "published_sha256": "9bfeff871dd6c0ad7f5d0d91bd80a2d83cd119db3a20507f2f227a3d6e830b91",
+      "bytes": 4020,
+      "transforms": [
+        "Re-emit the historical patch with zero context to avoid whitespace-only context lines; applying with git apply --unidiff-zero produces byte-identical proposed architecture text."
+      ]
+    },
+    {
+      "path": "probes/ts-resource-probe.ts",
+      "source_artifact": "ts-resource-probe.ts",
+      "original_private_sha256": "2a4d9dd75c974db4c21cae15ad19c230b4e9b77bdbf80fecee5b8dbd9b260941",
+      "published_sha256": "b5503c52492dbb9fdcda84ecd2c4b9b2af9bf0e11c912c3158db7630e5f6eca5",
+      "bytes": 4735,
+      "transforms": [
+        "Format the public derivative with Bun 1.4.4 bun fmt --no-script. Original executed source is retained unchanged. Separately replay the formatted source at the original source pin; see receipts/formatted-probes-replay.json."
+      ]
+    },
+    {
+      "path": "probes/ts-native-pipeline-probe.ts",
+      "source_artifact": "ts-native-pipeline-probe.ts",
+      "original_private_sha256": "4f124d2fb6970deaaefa9004ad87bf4e1c818d8d4ca495f206a1b16cebd16104",
+      "published_sha256": "0b6ab0289e9268fc349342a808d27098c84d7f0c6a541925bdbfc9e78d796ed8",
+      "bytes": 4368,
+      "transforms": [
+        "Format the public derivative with Bun 1.4.4 bun fmt --no-script. Original executed source is retained unchanged. Separately replay the formatted source at the original source pin; see receipts/formatted-probes-replay.json."
+      ]
+    },
+    {
+      "path": "probes/ts-fs-capacity-probe.ts",
+      "source_artifact": "ts-fs-capacity-probe.ts",
+      "original_private_sha256": "b809401aedb59b5ec6c8d825e9e17deb5a954e2ee9295846bd8b309feb6a1cac",
+      "published_sha256": "b6f3f1d40f745dc6a22eaa6ee9304f05d0b7fdea1217c80937fb34c8fff10b22",
+      "bytes": 3043,
+      "transforms": [
+        "Format the public derivative with Bun 1.4.4 bun fmt --no-script. Original executed source is retained unchanged. Separately replay the formatted source at the original source pin; see receipts/formatted-probes-replay.json."
+      ]
+    },
+    {
+      "path": "probes/rust_resource_probes.patch",
+      "source_artifact": "rust_resource_probes.patch",
+      "original_private_sha256": "c4a2927454c1ae33dcaa074b88f156c7d722457ef7146d884508495197443ec6",
+      "published_sha256": "c4a2927454c1ae33dcaa074b88f156c7d722457ef7146d884508495197443ec6",
+      "bytes": 2243,
+      "transforms": [
+        "Byte-identical copy."
+      ]
+    },
+    {
+      "path": "receipts/ts-resource-probe-results.json",
+      "source_artifact": "ts-resource-probe-results.json",
+      "original_private_sha256": "fc6801b1b22d961cb862c661c719ed62e92a56469003b7a4385e3838fbbd259e",
+      "published_sha256": "d6e86c62365dec18cc0826987ea3b6d56fbaaf77253c9dbe729ea330da00afe4",
+      "bytes": 1047,
+      "transforms": [
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    },
+    {
+      "path": "receipts/ts-resource-probe-large-results.json",
+      "source_artifact": "ts-resource-probe-large-results.json",
+      "original_private_sha256": "17c680f263c402fa399cfeea3df24db442995b823626b29dd9c0fb34cc6cd4ae",
+      "published_sha256": "c1d8b647fde45265954d94c4cf41f94e271efaf7741ca0f98f1528db0b9ff47f",
+      "bytes": 1053,
+      "transforms": [
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    },
+    {
+      "path": "receipts/ts-native-probe-results.txt",
+      "source_artifact": "ts-native-probe-results.txt",
+      "original_private_sha256": "39a2c0943553c849ada85291372c6efc6e4f5c150c307074baee9d32e7ee7c39",
+      "published_sha256": "5f8dcc2e82644e871ec8d063d64ad5c92cf003c301189e4650295bac0b887618",
+      "bytes": 1091,
+      "transforms": [
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    },
+    {
+      "path": "receipts/ts-fs-capacity-result.txt",
+      "source_artifact": "ts-fs-capacity-result.txt",
+      "original_private_sha256": "3949e18f923e8ad157585f5f79fc088c34e3541421d4e076df5b1961a2042c35",
+      "published_sha256": "4012ee945c9e9cb06b538e12a74e9a0a4b80dd9bb7035f25fb0b089311ee41c3",
+      "bytes": 455,
+      "transforms": [
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    },
+    {
+      "path": "receipts/ts-sab-probe-result.json",
+      "source_artifact": "ts-sab-probe-result.json",
+      "original_private_sha256": "1e211baa798fe0714ecda67d1bb948e22ccd369c0f36141bf55962826a3cee62",
+      "published_sha256": "d0d9163169b875a440bfcd81b1d08433eb946cdbe4b293a95f59f8cee0ea7db4",
+      "bytes": 30,
+      "transforms": [
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    },
+    {
+      "path": "receipts/rust_probe_output.json",
+      "source_artifact": "rust_probe_output.json",
+      "original_private_sha256": "5d41d19e527c99b1b097dd3b79737a0e9cf5f6f294fb352277821ed3bb442d80",
+      "published_sha256": "90cc5fe5cdbebef065090a21d9ffd2e68a8582df371c6952fd06bb4855336eef",
+      "bytes": 1820,
+      "transforms": [
+        "Retain command output and exit code; remove connector chunk/session/wait/token metadata; serialize JSON with two-space indentation."
+      ]
+    },
+    {
+      "path": "receipts/ts-existing-tests-initial.txt",
+      "source_artifact": "ts-existing-tests-initial.txt",
+      "original_private_sha256": "40940b64ea5713061490f1d378793b33aa2d4d7000ba10d5ecde326ea48e97f4",
+      "published_sha256": "644b37f3085f8c9ac649afae85e8510dd323aa3f22e249e4cab8917e9fc1c0f8",
+      "bytes": 9037,
+      "transforms": [
+        "Replace absolute temporary checkout prefix with the literal AUDIT_SNAPSHOT; preserve repository-relative suffixes and observations.",
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    },
+    {
+      "path": "receipts/ts-worker-tests-rerun.txt",
+      "source_artifact": "ts-worker-tests-rerun.txt",
+      "original_private_sha256": "226922b6376f1ef6250f9cb22167e2dc56238e57ee2b76c88710cc304608b702",
+      "published_sha256": "376a45f654b43e583463fc791b20a2a4f04d61a8580a22fc3da58bf7bc302917",
+      "bytes": 1545,
+      "transforms": [
+        "Remove redundant terminal blank lines; retain one final newline and all observation text."
+      ]
+    }
+  ],
+  "publication_readme": {
+    "path": "README.md",
+    "sha256": "43d2b40b0a4e0f42225ade99c23a0ca6fcbbe40adf20913bbf046ee9813a8e2a",
+    "bytes": 10228
+  },
+  "publication_replay": {
+    "path": "receipts/formatted-probes-replay.json",
+    "sha256": "d010852419b0b8a9faca453a564ae87c2f56f7a71e1011760f91fec5e8ff3749",
+    "bytes": 5793,
+    "status": "Five baseline defect witness reruns passed; no bounded implementation or mutant acceptance."
+  }
+}

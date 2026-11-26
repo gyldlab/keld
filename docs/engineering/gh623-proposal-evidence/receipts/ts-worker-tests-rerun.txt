@@ -1,0 +1,18 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/@keld/kipc/src/worker-link.test.ts:
+(pass) WorkerLink bounds (spec §4.3, §4.5) > constants are the spec's values [0.02ms]
+(pass) WorkerLink bounds (spec §4.3, §4.5) > control block words are the §4.3 layout; words 2 and 15 stay reserved [0.61ms]
+(pass) WorkerLink.open refuses invalid bounds before the Worker spawns > each invalid option is KELD-IPC-005 and nothing connects [2.03ms]
+(pass) WorkerLink.open refuses invalid bounds before the Worker spawns > test hooks are refused unless KELD_KIPC_TEST_HOOKS=1 [0.10ms]
+(pass) WorkerLink.open refuses a transport bundled into an app entry (GH-527 §4.2) > the bundled open is KELD-IPC-005 and nothing connects [30.13ms]
+(pass) WorkerLink.open refuses a bundle whatever its name (#643 review) > a bundle run as the process entry is refused, even when named kipc-transport.js [11.62ms]
+(pass) no transport Worker evaluates a module that is not the stamped transport (#653) > an app bundle named transport.js is refused before any transport Worker evaluates it [12.28ms]
+(pass) no transport Worker evaluates a module that is not the stamped transport (#653) > a split build that puts the transport in a shared chunk is refused [12.57ms]
+(pass) §4.7 per-frame policy selection > trusted state selects the policy; the unchanged validator decides [0.19ms]
+(pass) §4.7 per-frame policy selection > the reply waiter comes from the pending entry's channel, never the frame's [0.02ms]
+
+ 10 pass
+ 0 fail
+ 60 expect() calls
+Ran 10 tests across 1 file. [93.00ms]

@@ -1,0 +1,37 @@
+{
+  "source": "269d51528137faf574cfd3548586ee3ada1acfda",
+  "runtime": "1.4.4",
+  "platform": "darwin",
+  "arch": "arm64",
+  "subviewClone": {
+    "logicalBytes": 1,
+    "backingBytes": 8388608,
+    "byteOffset": 123,
+    "receivedByte": 65,
+    "producerByteAfterPost": 66
+  },
+  "mutableQueuedPayload": {
+    "suppliedByte": 65,
+    "laterByte": 66,
+    "wireByte": 66
+  },
+  "stalledWriter": {
+    "attemptedFrames": 2048,
+    "acceptedFrames": 2048,
+    "completedBeforeRelease": 0,
+    "retainedPayloadObjects": 2048,
+    "retainedLogicalPayloadBytes": 134217728,
+    "candidateTestBudgetBytes": 67108928,
+    "exceedsCandidateBudget": true,
+    "socketWriteAttemptsBeforeRelease": 1,
+    "limitation": "Injected zero-progress socket proves WriteQueue retention, not native socket buffering or RSS."
+  },
+  "stalledWriterCleanup": {
+    "completedAfterRelease": 2048
+  },
+  "encoderAdmission": {
+    "maxFrameBytes": 16777216,
+    "largestTextEncoderAllocation": 16777217,
+    "error": "Error: KELD-IPC-003: FS payload exceeds MAX_FRAME_LEN"
+  }
+}
