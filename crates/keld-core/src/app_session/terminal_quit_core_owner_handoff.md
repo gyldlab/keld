@@ -6,11 +6,12 @@ Design input: W7 appendix in #1432 eb7a18b42ef7e8213a280ec9c76015bf78a0964f
 (unapproved); W5 facade candidate b2426a9d7 and W7 RED 144cf1bb4 /
 4635f001b are independent evidence. No new acceptance or protocol allocation.
 
-This lane adds an unregistered, test-only fixture. It composes the original
-prototype with real WindowRegistry and SessionShutdownState APIs under a
-test owner cut. The adjacent optional registration patch is for the owner
-to apply to an isolated test checkout. It is not applied here. It registers
-tests only, with no shipping behavior. No other owner files changed.
+This lane initially added an unregistered, test-only fixture. It composes the
+prototype with real WindowRegistry and SessionShutdownState APIs under a test
+owner cut. The second step fast-forwards the owned tree to combined prototype
+24187ab15e6294493bf8790e35092d214b109ee8 and registers these tests under the
+existing macOS registry test module. The optional registration patch is
+superseded by actual test-only registration. No shipping behavior changes.
 
 ## Exact owner integration after design approval
 
@@ -39,17 +40,49 @@ macOS rustc 1.99.1. The standalone probe projects the exact production
 registry and shutdown method bodies, original prototype and this fixture;
 unrelated IPC/native values and receipt delivery are minimal stubs.
 It compiles and executes only small temporary Rust test binaries.
-Observed: **17 passed** (12 existing prototype + 5 new), 0 failed.
+Original observation at df82b9131: **17 passed** (12 existing prototype + 5 new),
+0 failed. On the combined prototype with test-only registration the updated
+projection uses the real relative module layout and **22 tests passed**.
 Negative controls executed separately and expected to fail:
 - Omit successful Create invalidation: commit returned Committed instead of
   Retained after real registry Opening -> native_failed; exit 101.
 - Treat Closing as empty: prepare returned Prepared instead of Retained
   before native release; exit 101.
 
-The optional registration patch is checked with git apply --check. No full
-cargo build, workspace clippy, full test, native app, actual FS or IPC run.
-For the next isolated owner-run, apply that patch then run the macOS Core
-test filter terminal_quit_candidate (after resources and owner eligibility
-permit); extend the existing authenticated fixtures to verify R1/R9/R10,
-and Wv actual release/build-failure proof to verify R4. Do not publish,
-merge, enable production or mark GH451 complete from this evidence.
+## Registered component cases (not executed)
+
+- `terminal_quit_candidate::real_fs::conditional_cut_waits_for_actual_fs_reply_and_lease`:
+  uses the existing guarded router and real FS worker/socket; exercises actual
+  allowed Reply and denied Err separately, with the lease held after terminal
+  write. The test reads the exact frame and effect, requires a running session
+  before lease release, waits for the real drain, and calls the existing
+  terminal reserve once through the draft model. The peer sends no later Calls;
+  a conditional dispatch pause and tail are not wired or proven. The registry
+  and qualification are local test fixtures, not Runtime/installed admission.
+- `gh451_release_and_opening_failure_gate_last_window_fact`: uses the existing
+  Core window caller and real socket/writer, injects native release/build
+  receipts, checks exact close/merged sequence, wrong-release and duplicate
+  negative markers, Destroyed before LastWindowClosed, and Opening failure
+  before the deferred last-window event. These injected receipts are not proof
+  of actual native destruction.
+
+Run the registered tests from the isolated worktree only when resources and
+owner eligibility permit:
+
+`cargo test --locked -p keld-core --lib terminal_quit_candidate`
+
+`cargo test --locked -p keld-core --lib gh451_release_and_opening_failure_gate_last_window_fact`
+
+The lightweight projection omits the real router/FS case and compiles the
+other registered draft tests with `rustc --test -D warnings`. The focused
+projection check using `clippy-driver --test -W clippy::pedantic` completed
+with zero diagnostics after correcting the candidate lint concerns. The
+independent boolean facts have a local lint expectation because they are
+inputs to the state machine rather than a second phase representation.
+The existing large candidate file is retained as a review artifact for
+GH451; split its model/scenarios only after the registered full Core
+discovery can be checked, before considering a shipping integration.
+Full Core
+compilation, workspace clippy, the two new component cases, real conditional
+IPC, signed native execution, and complete acceptance remain unrun. No
+publication, merge or production enablement is authorized by these tests.

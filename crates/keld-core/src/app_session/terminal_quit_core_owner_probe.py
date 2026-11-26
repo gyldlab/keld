@@ -18,6 +18,8 @@ CORE = (ROOT.parent / "app_session.rs").read_text()
 FIXTURES = (ROOT / "window_registry/tests.rs").read_text()
 PROTOTYPE = (ROOT / "terminal_quit_candidate.rs").read_text()
 CANDIDATE = (ROOT / "terminal_quit_core_owner_integration_candidate.rs").read_text()
+REGISTER = '#[cfg(target_os = "macos")]\n#[path = "../terminal_quit_candidate.rs"]\nmod terminal_quit_candidate;'
+REAL_FS = '#[cfg(all(test, not(keld_core_native_renderer_main)))]\n#[path = "terminal_quit_core_real_fs_candidate.rs"]\nmod real_fs;'
 
 def between(text, start, end):
     return text.split(start, 1)[1].split(end, 1)[0]
@@ -83,7 +85,7 @@ use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicU8, AtomicBool, Ordering}};
 #[derive(Clone, Copy, PartialEq, Eq)] enum PrimaryLinkIdentity { Fixture }
 """
 
-def generate(candidate_path, registry_body):
+def generate(tests_path, registry_body):
     return "\n".join((
         stub, causes, shutdown_struct, "impl SessionShutdownState {", shutdown_methods, "}",
         "mod window_registry {",
@@ -93,18 +95,27 @@ def generate(candidate_path, registry_body):
         "struct PendingOriginalDocumentDestroy; struct PendingOriginalLoad; struct OriginalWindowSelection;",
         renderer_types, entry_types, capacity, "impl Entry {", entry_methods, "}",
         registry_struct, "impl WindowRegistry {", registry_body, "}",
-        "mod tests { use super::*;", helpers, "mod terminal_quit_candidate {", PROTOTYPE,
-        "#[path = " + json.dumps(str(candidate_path)) + "] mod core_owner_integration;",
-        "}}}}",
+        "#[path = " + json.dumps(str(tests_path)) + "] mod tests;",
+        "}}",
     ))
 
 def build_and_run(tmp, label, candidate, registry_body, only=None, expected=0):
-    path = tmp / f"{label}_candidate.rs"
-    path.write_text(candidate)
-    source = tmp / f"{label}.rs"
-    source.write_text(generate(path, registry_body))
-    binary = tmp / label
-    subprocess.run(["rustc", "--edition=2024", "--test", str(source), "-o", str(binary)], check=True)
+    root = tmp / label
+    session = root / "app_session"
+    tests = session / "window_registry/tests.rs"
+    tests.parent.mkdir(parents=True)
+    # Reproduce the actual registered relative module paths and Rust visibility.
+    # The real socket/FS test is deliberately excluded: this projection cannot
+    # build the full Core router or claim its results.
+    assert FIXTURES.count(REGISTER) == 1
+    assert PROTOTYPE.count(REAL_FS) == 1
+    tests.write_text("use super::*;\n" + helpers + "\n" + REGISTER + "\n")
+    (session / "terminal_quit_candidate.rs").write_text(PROTOTYPE.replace(REAL_FS, ""))
+    (session / "terminal_quit_core_owner_integration_candidate.rs").write_text(candidate)
+    source = root / "projection.rs"
+    source.write_text(generate(tests, registry_body))
+    binary = root / "probe"
+    subprocess.run(["rustc", "--edition=2024", "--test", "-D", "warnings", str(source), "-o", str(binary)], check=True)
     command = [str(binary)]
     if only:
         command.extend(["--exact", "app_session::window_registry::tests::terminal_quit_candidate::core_owner_integration::" + only])

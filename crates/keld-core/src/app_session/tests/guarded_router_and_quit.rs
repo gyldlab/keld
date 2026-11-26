@@ -2,12 +2,12 @@
 /// by a test gate after it takes its job (GH-528 T2 router tests; T5 runs
 /// them on every OS with a router).
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-struct GuardedTestRouter {
-    router: PrimaryRouter,
-    snapshot: GuardSnapshot,
-    allowed: PathBuf,
-    taken: Receiver<()>,
-    release: Sender<()>,
+pub(in crate::app_session) struct GuardedTestRouter {
+    pub(in crate::app_session) router: PrimaryRouter,
+    pub(in crate::app_session) snapshot: GuardSnapshot,
+    pub(in crate::app_session) allowed: PathBuf,
+    pub(in crate::app_session) taken: Receiver<()>,
+    pub(in crate::app_session) release: Sender<()>,
     window: Receiver<AppWindowCommand>,
     guardian: Receiver<TestPrimaryOwnerCommand>,
     _temp: tempfile::TempDir,
@@ -16,7 +16,7 @@ struct GuardedTestRouter {
 /// A guarded router over a connected link pair (a Unix socket pair, or an
 /// authenticated named-pipe pair on Windows), and the pair's client end.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn guarded_test_router() -> (GuardedTestRouter, BootstrapStream) {
+pub(in crate::app_session) fn guarded_test_router() -> (GuardedTestRouter, BootstrapStream) {
     use keld_ipc::link::AppLinkDeadlines as _;
 
     let (server, client) = primary_test_stream_pair();
@@ -102,7 +102,11 @@ mod accepted_primary_identity;
 pub(in crate::app_session) mod worker_link_e2e;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn write_fs_call(client: &mut BootstrapStream, corr: u32, target: &Path) {
+pub(in crate::app_session) fn write_fs_call(
+    client: &mut BootstrapStream,
+    corr: u32,
+    target: &Path,
+) {
     write_frame(
         client,
         FrameKind::Call,

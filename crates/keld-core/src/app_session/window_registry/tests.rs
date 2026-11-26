@@ -12,6 +12,9 @@ use keld_wv::WebviewId;
 
 mod close_policy;
 mod close_state_table;
+#[cfg(target_os = "macos")]
+#[path = "../terminal_quit_candidate.rs"]
+mod terminal_quit_candidate;
 
 fn phase_name(phase: Phase) -> char {
     match phase {

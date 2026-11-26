@@ -1,9 +1,17 @@
-//! GH-451 draft transaction candidate; deliberately not registered in Core.
+//! GH-451 draft transaction candidate; registered only in Core's registry tests.
 //! No IPC, native termination, window authority or production behavior is
 //! changed. The existing Host owner must supply these facts under its
 //! transition/current/registry ordering before this can be integrated.
 
 use std::num::{NonZeroU32, NonZeroU64};
+
+#[cfg(test)]
+#[path = "terminal_quit_core_owner_integration_candidate.rs"]
+mod core_owner_integration;
+
+#[cfg(all(test, not(keld_core_native_renderer_main)))]
+#[path = "terminal_quit_core_real_fs_candidate.rs"]
+mod real_fs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Token {
@@ -37,6 +45,10 @@ impl TerminalWinner {
 }
 
 /// Facts supplied by the existing Host owner, never by the calling app.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent test inputs, not a boolean encoding of transaction phases"
+)]
 #[derive(Clone, Copy)]
 struct HostFacts {
     generation: Option<NonZeroU32>,
