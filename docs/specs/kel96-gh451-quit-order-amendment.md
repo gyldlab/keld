@@ -48,7 +48,11 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
   generation and close sequence.
 - **Then:** Public last-window suppression resets. The Host retains ordered
   window facts. The selected sweep finishes without terminal reservation.
-  A fresh qualified attempt can run after confirmed noncommit.
+  After a matched pre-Prepare veto, a fresh qualified attempt needs no
+  conditional receipt if no conditional record exists.
+  Any retry with a recorded conditional effect needs confirmed noncommit.
+  Require exact receipt consumption and independent no-late proof before that
+  retry. The current role must remain qualified and no terminal winner may exist.
 - **Negative control:**
   - **Single fault:** Keep suppression set after the matched veto.
   - **At-risk precondition:** Save finishes and the last window is destroyed.
@@ -56,6 +60,12 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
 
 Hold or lose the exact Veto acknowledgement separately. An optimistic listener veto or public handoff settlement
 cannot substitute for the matching Host receipt. Test later valid receipt and exact-role retirement without stale reset.
+
+Test a retry after confirmed noncommit with a retained conditional receipt.
+Withhold receipt consumption and no-late proof in separate runs on the live role.
+Remove only the corresponding retry guard in each run.
+The test goes RED if a fresh conditional effect starts before both proofs hold.
+The matched pre-Prepare veto with no conditional record remains a valid control.
 
 ### AC-2: Prepare and Create share the existing owner
 
@@ -92,12 +102,20 @@ cannot substitute for the matching Host receipt. Test later valid receipt and ex
   retirement. Do not require Status or Consume on the dead link. Neither case publishes false Accepted or retryable Retained.
   A successfully delivered typed FS Err is a settled reply, not a failed write.
 - **Negative control:**
-  - **Single fault:** Convert an indeterminate drain to retryable Retained.
-  - **At-risk precondition:** An admitted reply or lease remains unresolved on the viable link, or the actual writer failed.
-  - **Expected RED:** New work starts without proved settlement, failed writer remains live, or the original error disappears.
+  - **Single fault:** Convert a viable indeterminate drain to retryable Retained.
+  - **At-risk precondition:** An admitted reply or lease remains unresolved on the viable link.
+  - **Expected RED:** The owner reports retryable Retained before settlement.
+
+Test the actual failed writer with a separate negative control.
+Omit only exact-generation retirement after an actual write failure.
+Force the terminal writer to fail, then release its lease.
+The test goes RED if the failed generation remains current before fixture cleanup.
+Check that the failed generation admits no later work.
 
 Run distinct viable-held-drain and actual-failed-writer cases, plus successful Reply and successfully delivered typed Err
 controls. An in-flight count of zero alone cannot establish write success or a live role.
+In both failure cases, also check the original error and attempt custody.
+Check that new work cannot start without proved settlement on a viable link.
 
 ### AC-5: One committed terminal decision
 
@@ -268,10 +286,10 @@ a prerequisite for the reversible design decision.
 
 | Criteria | Planned witness |
 |---|---|
-| AC-1 | Exact facade attempt and ordered registry facts with veto and Save retry |
+| AC-1 | Exact facade veto and Save retry, plus retained receipt with each missing proof |
 | AC-2 | Admit Create, CreateWithPreload and adoption separately, then check invalidation even if the operation later fails |
 | AC-3 | Authenticated FS Reply and Err, held lease, pause and reserve counters |
-| AC-4 | Separate viable unresolved drain and actual failed-writer retirement; preserve exact error; successful Reply/Err controls |
+| AC-4 | Independent viable-drain and failed-writer mutations, exact error custody, successful Reply/Err controls |
 | AC-5 | Both eligible reservation orders, queued reader contender and one tail |
 | AC-6 | Lost reply, held cleanup failure and committed decision readback |
 | AC-7 | Existing legacy Quit bytes, live-window behavior and old-peer refusal |
