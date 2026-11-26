@@ -24,8 +24,10 @@ selection, deadline changes, Windows or Linux parity, signing or release.
 - FACT: [Approved KEL-96 section 4.5](https://github.com/gyldlab/keld/blob/2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a/docs/specs/kel96-no-flag-host-boot.md#L452-L480)
   owns the correlated reply, retirement and cleanup order. Its blob is
   `179353fa4a2fcbd8ec294d85ca6e804afe14db40`.
-- FACT: #1432 `docs/specs/gh451-cancelable-two-phase-quit.md:210@c779aa2ac08270911b86cdbe3ebcb4e5f6dbcf2a`
-  selects the GH-451 conditional contract. GH-451 Q-2 and GH-451 Q-8 are separate gates.
+- FACT: [GH-451 conditional contract at #1432](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/specs/gh451-cancelable-two-phase-quit.md)
+  selects conditional behavior. GH-451 Q-2 and GH-451 Q-8 are separate gates.
+- FACT: [Exact proposed IPC contract](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/engineering/gh451-conditional-quit-ipc-amendment.md)
+  defines the receipt consumption and transport proof proposed for review.
 - FACT: #1432 `docs/specs/gh523-host-authorized-app-exit.md:100@c779aa2ac08270911b86cdbe3ebcb4e5f6dbcf2a`
   proposes one terminal winner and a shared filesystem drain.
 - FACT: GH-531 `docs/specs/gh531-window-registry-close-state-machine.md:389`
@@ -79,8 +81,9 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
 - **Given:** The terminal writer fails during the reversible drain.
 - **When:** The lifecycle owner cannot prove all owed obligations settled.
 - **Then:** The owner retains the original error and attempt identity.
-  It does not publish Accepted or retryable Retained. Dispatch stays fenced
-  until an approved disposition proves what may proceed.
+  It does not publish Accepted or retryable Retained. A viable writer stays
+  fenced until an approved disposition proves what may proceed. An actual
+  failed writer follows existing exact-generation retirement, not live recovery.
 - **Negative control:**
   - **Single fault:** Convert an indeterminate drain to retryable Retained.
   - **At-risk precondition:** An admitted reply or lease remains unresolved.
@@ -106,7 +109,8 @@ Use a validated Exit fixture for the second contender until GH-523 is approved.
 - **When:** A correlated reply is lost or the existing cleanup owner fails.
 - **Then:** The committed decision stays fixed. The owner retains the actual
   error. No rollback, second effect or clean-exit claim follows.
-  The Host attempts the correlated reply before link close.
+  The Host attempts the correlated reply before link close if its exact writer
+  and existing acceptance prerequisites remain available.
 - **Negative control:**
   - **Single fault:** Treat failed cleanup as successful exit.
   - **At-risk precondition:** A held owned cleanup operation returns failure.
@@ -146,10 +150,13 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    replies and leases while Running. Do not hold required locks during drain.
    Prove that no other admission path can add owed work behind the pause.
 4. Recheck the current role, token, registry and drain at the final existing
-   serialized cut. Reserve the terminal decision once. Only a successful
-   reservation closes successor and new work admission.
-5. Use the existing post-reservation tail once. Send the correlated acceptance
-   before link closure. Revoke the exact endpoint, token and generation.
+   serialized cut. Reserve the terminal decision once. A successful terminal
+   reservation closes successor and new work admission. Independent failure
+   retirement still uses the existing owner.
+5. Use the existing post-reservation tail once. Attempt the correlated acceptance
+   before link closure when the exact writer and existing acceptance prerequisites
+   permit it. A failure before reply does not undo the reservation. Revoke the
+   exact endpoint, token and generation.
    Reap the owned child and finish native cleanup through existing owners.
    Preserve section 4.5 step 5 and its KEL-75 portability caveat.
 
@@ -160,17 +167,35 @@ Do not call the full legacy Quit again after reservation.
 
 ### D-2: Failure and receipt custody
 
-A failed or indeterminate drain cannot establish noncommit plus settled work.
-Preserve the original error, operation identity and outstanding obligations.
-Restore dispatch only after both facts are proven. Otherwise retain custody
-under the existing lifecycle and FS owners. Do not invent a timeout or exit code.
+Distinguish the following three cases under the existing owners:
+
+- Caller acknowledgement timeout on a viable link: keep the unresolved
+  conditional attempt. Ordinary permitted work keeps its existing owner.
+  Use ordered same-link reconciliation. Timeout alone proves no disposition.
+- Indeterminate drain on a viable link: do not admit new work or reserve.
+  Status can run only when the original reader can service ordered control
+  without bypassing the outstanding obligations. Do not start a second reader.
+  Resume only on proven noncommit, successful owed reply/lease settlement,
+  current live generation and no competing terminal winner.
+- Actual terminal writer failure: use the existing exact-generation retirement.
+  The current writer marks the failed write before lease release. Retain the
+  primary error, attempt/correlation and recovery custody. Do not pretend the
+  failed link is live or require Status/Consume after its retirement.
+
+A zero in-flight count alone does not prove successful terminal writes or a
+current live generation. Check actual write failure and identity at the cut.
+Preserve unresolved work and exact errors. Do not invent a timeout or exit code.
 
 Keep committed decisions immutable after reservation. A lost reply does not
 prove noncommit. Reconcile only the original attempt using the negotiated
-GH-451 contract. Never wait for Host exit or a post-EOF reply to reclaim a receipt.
+GH-451 contract. Reclaim live-link receipt identities only with exact consumption
+and proven no-late delivery. Definitive old-link retirement ends its local
+reservations, not the historical known winner or unknown custody. Never require
+post-EOF Status or Host exit as a condition for sending a terminal reply.
 Do not delay the existing terminal tail for a receipt-consumption confirmation.
-Keep unresolved custody through retirement under the approved reconciliation
-policy. A known committed decision survives local fence or cleanup failure.
+Keep a known committed decision and exact primary failure if Guardian preparation,
+echo retirement, correlated reply, local fence or cleanup fails. Do not synthesize
+acceptance or repeat the tail. Never transfer an old identity to a successor.
 
 ### D-3: Owner and compatibility boundaries
 
@@ -279,7 +304,8 @@ fixtures. Do not claim a faster shutdown from a model.
 - **Owner:** KEL-96, GH-523 and FS owners.
 - **Impact:** No conditional reservation without agreed owed-work and failure custody.
 - **Check:** Adopt the shared rule without requiring completed Exit API or CLI work.
-  Approve the applicable existing failure disposition and its bound.
+  Approve exact viable-drain, failed-writer and postreservation failure custody.
+  Keep any applicable bounded failure policy under the existing owner.
 
 ### B-3: Negotiation and receipt reclamation
 
