@@ -70,13 +70,25 @@ The matched pre-Prepare veto with no conditional record remains a valid control.
 ### AC-2: Prepare and Create share the existing owner
 
 - **Given:** Physical release and an empty authoritative registry at Prepare.
-- **When:** The owner admits Create, CreateWithPreload or adoption after Prepare.
-- **Then:** Admission permanently invalidates the token, even if the operation later fails and the census returns to zero.
+- **When:** The current owner admits Create or CreateWithPreload after Prepare.
+- **Then:** Admission permanently invalidates the token, even if the operation
+  later fails and the census returns to zero.
   Known invalidation suppresses will-quit. An unobserved invalidation still prevents Commit.
 - **Negative control:**
   - **Single fault:** Derive token validity from the final zero census alone.
-  - **At-risk precondition:** An admitted Create, CreateWithPreload or adoption fails before Commit.
+  - **At-risk precondition:** An admitted Create or CreateWithPreload fails before Commit.
   - **Expected RED:** The invalidated token reserves terminal shutdown.
+
+Under GH-531, adoption claims an existing Open survivor after role transfer.
+An adoptable survivor prevents Prepare. A retired role's token cannot authorize
+Commit on a successor. Do not construct an impossible empty-registry adoption.
+Test each same-role failed-build path independently.
+For adoption, omit the Open-survivor census guard in a separate mutation.
+The successor has subscribed and has an adoptable Open survivor.
+The test goes RED if Prepare grants a token while that survivor exists.
+Verify that a genuine successor adopts the survivor without a new build.
+Reject an old-generation token even after the successor's registry becomes empty.
+Mutate only the generation check at the final cut for that stale-token test.
 
 ### AC-3: Owed filesystem replies precede reservation
 
@@ -144,6 +156,13 @@ Use a validated Exit fixture for the second contender until GH-523 is approved.
   - **At-risk precondition:** A held owned cleanup operation returns failure.
   - **Expected RED:** Success appears without the required cleanup receipt.
 
+Test lost correlated acceptance separately from cleanup failure.
+Withhold the exact acceptance after a final reservation.
+Remove only the rule that retains the committed winner when delivery fails.
+The test goes RED if the owner erases that winner or admits another terminal effect.
+With the rule intact, retain the original cause and code and run one cleanup tail.
+Do not treat a missing caller acknowledgement as proof of noncommit.
+
 ### AC-7: Legacy order stays unchanged
 
 - **Given:** A legacy or unqualified session uses the existing Quit path.
@@ -172,8 +191,10 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    authenticated current Ready and subscribed original and its registry under its
    existing admission order. Opening and Closing count as live.
    Prepare grants reversible authority only. The existing owner mints the token.
-   Admission of a later Create, CreateWithPreload or adoption permanently invalidates the token.
+   Admission of a later Create or CreateWithPreload permanently invalidates the token.
    A later failure does not restore the token.
+   GH-531 adoption needs an existing Open survivor. Such a survivor prevents
+   Prepare. Generation retirement revokes the old token before successor adoption.
 3. Cancel revokes the exact preparation without terminal reservation.
    Commit pauses further reader dispatch. Drain all admitted FS terminal
    replies and leases while Running. Do not hold required locks during drain.
@@ -287,11 +308,11 @@ a prerequisite for the reversible design decision.
 | Criteria | Planned witness |
 |---|---|
 | AC-1 | Exact facade veto and Save retry, plus retained receipt with each missing proof |
-| AC-2 | Admit Create, CreateWithPreload and adoption separately, then check invalidation even if the operation later fails |
+| AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption and old-token rejection |
 | AC-3 | Authenticated FS Reply and Err, held lease, pause and reserve counters |
 | AC-4 | Independent viable-drain and failed-writer mutations, exact error custody, successful Reply/Err controls |
 | AC-5 | Both eligible reservation orders, queued reader contender and one tail |
-| AC-6 | Lost reply, held cleanup failure and committed decision readback |
+| AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
 | AC-7 | Existing legacy Quit bytes, live-window behavior and old-peer refusal |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
