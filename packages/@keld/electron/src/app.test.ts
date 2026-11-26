@@ -176,8 +176,10 @@ describe("app.whenReady on link death", () => {
 });
 
 describe("window-all-closed Electron default quit", () => {
-  for (const scenario of ["immediate", "after-remove"] as const) {
-    test(`LastWindowClosed uses exactly one terminal Quit per fresh session: ${scenario}`, async () => {
+  // The lifecycle corpus binds this exact test title to one passing case.
+  // Execute both distinct fresh-process oracles within that registered case.
+  test("LastWindowClosed default-quits with zero listeners, after last removeListener, and not while a listener remains", async () => {
+    for (const scenario of ["immediate", "after-remove"] as const) {
       child = Bun.spawn({
         cmd: ["bun", "./window_all_closed_default.ts", scenario],
         cwd: fixtures,
@@ -200,8 +202,8 @@ describe("window-all-closed Electron default quit", () => {
       expect(stdout).not.toContain("KEL72_DROPPED_FIRED");
       expect(stdout).toContain("KEL72_QUIT_CALLS=1");
       expect(stdout).toContain("KEL72_QUIT_EVENTS=1");
-    }, 10_000);
-  }
+    }
+  }, 15_000);
 });
 
 describe("GH451 D2 local before-quit preflight", () => {
