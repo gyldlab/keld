@@ -7,13 +7,43 @@ This is state/ordering evidence, not full Core integration or physical OS eviden
 from pathlib import Path
 import hashlib
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
 SOURCE_HASHES = {}
+COMPILE_TIMEOUT_SECONDS = 60
+PROJECTION_TIMEOUT_SECONDS = 30
+
+
+def run_bounded(command, label, timeout, *, check=False):
+    """Bound one owned process group and preserve its combined diagnostics."""
+    with tempfile.TemporaryFile() as diagnostics:
+        with subprocess.Popen(command, stdout=diagnostics, stderr=subprocess.STDOUT,
+                              start_new_session=True) as child:
+            try:
+                child.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                # The leader has not been reaped, so its group identity is owned.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait()
+                diagnostics.seek(0)
+                output = diagnostics.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"{label}: timed out after {timeout}s\n{output}") from error
+        diagnostics.seek(0)
+        output = diagnostics.read().decode("utf-8", errors="replace")
+    result = subprocess.CompletedProcess(command, child.returncode, stdout=output)
+    if check and result.returncode != 0:
+        print(output, end="", flush=True)
+        result.check_returncode()
+    return result
 
 
 def read_source(file):
@@ -130,11 +160,12 @@ def build_and_run(tmp, label, candidate, registry_body, only=None, expected=0):
     source = root / "projection.rs"
     source.write_text(generate(tests, registry_body))
     binary = root / "probe"
-    subprocess.run(["rustc", "--edition=2024", "--test", "-D", "warnings", str(source), "-o", str(binary)], check=True)
+    run_bounded(["rustc", "--edition=2024", "--test", "-D", "warnings", str(source), "-o", str(binary)],
+                f"{label} compile", COMPILE_TIMEOUT_SECONDS, check=True)
     command = [str(binary)]
     if only:
         command.extend(["--exact", "app_session::window_registry::tests::terminal_quit_candidate::core_owner_integration::" + only])
-    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = run_bounded(command, label, PROJECTION_TIMEOUT_SECONDS)
     print(f"=== {label} (exit {result.returncode}, expected {expected}) ===", flush=True)
     print(result.stdout, flush=True)
     if result.returncode != expected or (expected != 0 and "1 failed" not in result.stdout):
@@ -217,8 +248,9 @@ struct PrimaryRouterHandle {
     )))
     source = root / "dispatch_projection.rs"
     source.write_text(generated)
-    subprocess.run(["rustc", "--edition=2024", "--test", "--emit=metadata",
-                    "-D", "warnings", str(source), "-o", str(root / "dispatch.rmeta")], check=True)
+    run_bounded(["rustc", "--edition=2024", "--test", "--emit=metadata",
+                 "-D", "warnings", str(source), "-o", str(root / "dispatch.rmeta")],
+                "dispatch projection compile", COMPILE_TIMEOUT_SECONDS, check=True)
     print("=== actual dispatch adapter typecheck (source projection; no Core execution) PASS ===", flush=True)
 
 def main():

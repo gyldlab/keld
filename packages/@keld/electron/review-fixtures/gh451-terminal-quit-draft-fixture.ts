@@ -142,6 +142,7 @@ export function fixture(
   );
   return {
     f,
+    host,
     trace,
     closes,
     prepares,

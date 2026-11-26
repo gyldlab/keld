@@ -568,7 +568,10 @@ export class DraftQuitCoordinator<T> {
           token: p.token,
           original: p.original,
           disposition: d,
-        }) ?? { ready: true }
+        }) ?? {
+          ready: false,
+          error: new Error("missing receipt acknowledgement"),
+        }
       );
     } catch (error) {
       return { ready: false, error };
@@ -748,7 +751,10 @@ export class DraftQuitCoordinator<T> {
     // Publish the authoritative result before any injected error-owner callback
     // can reenter or retire the link. A known terminal result is irreversible.
     this.publish(a, outcome);
-    const consumed = consume?.();
+    // Terminal history and cleanup do not depend on receipt reclamation.
+    // Only report an acknowledgement result when a terminal adapter supplies one.
+    const consumed =
+      consume && this.host.consumeDisposition ? consume() : undefined;
     if (consumed && !consumed.ready) {
       // An accepted reservation and completed local fence do not depend on
       // reclaiming a nonterminal correlation. Retain its custody; report

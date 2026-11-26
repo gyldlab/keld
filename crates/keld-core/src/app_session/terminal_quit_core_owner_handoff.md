@@ -36,6 +36,11 @@ wire discriminants, native AppKit success and all permission checks unchanged.
 From the worktree root:
 `python3 -B crates/keld-core/src/app_session/terminal_quit_core_owner_probe.py`
 
+Runner regression checks:
+`python3 -B crates/keld-core/src/app_session/test_terminal_quit_core_owner_probe.py`
+The disposable projection has a 30-second run bound and a 60-second compile
+bound. A timeout fails the probe, retains diagnostics and reaps its owned child.
+
 macOS rustc 1.99.1. The standalone probe projects the exact production
 registry and shutdown method bodies, original prototype and this fixture;
 unrelated IPC/native values and receipt delivery are minimal stubs.

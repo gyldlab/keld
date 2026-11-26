@@ -70,6 +70,7 @@ export interface DraftHost<T> {
   status?(original: Original<T>): Promise<StatusResult<T>>;
   observedInvalidation?(token: T): boolean;
   // Explicit consumer acknowledgement; true requires receipt release/no-late proof.
+  // An absent callback cannot release a nonterminal recorded disposition.
   consumeDisposition?(receipt: ConsumedDisposition<T>): Consumption;
   // The existing owner retains the exact cause and scope, including legacy
   // close-handoff retirement. Conditional unknown must preserve Status custody.
