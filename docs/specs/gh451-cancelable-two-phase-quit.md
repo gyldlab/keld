@@ -44,7 +44,8 @@ boundary and approves none of those changes.
 
 - **Given:** a before-quit listener that vetoes
 - **When:** quit is requested
-- **Then:** it runs once and no window close or terminal host action occurs.
+- **Then:** it runs once and the canceled Quit issues no window close or terminal Host action. A separately committed
+  authorized terminal operation is governed by the shared winner contract, not by this veto.
 - **Negative control:** Remove the before-quit veto branch; assert the first native-close counter becomes nonzero.
   - **Single fault:** Remove the before-quit veto branch.
   - **At-risk precondition:** a before-quit listener that vetoes; quit is requested.
@@ -82,7 +83,7 @@ boundary and approves none of those changes.
 
 ### AC-5: Will-quit veto and fresh retry
 
-- **Given:** zero windows and a will-quit veto
+- **Given:** zero windows, a will-quit veto, and no independently committed terminal operation
 - **When:** quit is requested again later
 - **Then:** the host is still alive and before-quit/will-quit re-run without invented close events.
 - **Negative control:** Leave the application permanently in Quitting after a will-quit veto.
@@ -114,11 +115,19 @@ boundary and approves none of those changes.
 
 - **Given:** a closed listener creates a replacement window or a create reservation is still Opening
 - **When:** the original sweep has received all destruction receipts
-- **Then:** the app cannot enter WillQuit or Terminal until the current authoritative registry has no live or Opening entry.
+- **Then:** Host admission to WillQuit linearizes at the authenticated Prepare cut after physical release and an authoritative
+  empty registry (including Opening and Closing). A later admitted Create permanently invalidates that token and prevents its
+  Commit, even if the Create fails before delivery. Suppress the callback if invalidation is already observed. Neither a
+  Prepared nor a Status reply proves registry emptiness at a later JS callback start.
 - **Negative control:** Treat an exhausted sweep snapshot as an empty current registry; the replacement-window survival counter must fail.
   - **Single fault:** Treat an exhausted sweep snapshot as the current empty registry.
   - **At-risk precondition:** a closed listener creates a replacement window or a create reservation is still Opening; the original sweep has received all destruction receipts.
-  - **Expected RED:** The replacement-window survival counter fails or terminal starts with live/Opening entries.
+  - **Expected RED:** Prepare is granted against a nonempty registry, or the invalidated token commits.
+
+Hold the Prepare reply and, separately, a recovered Prepared Status reply; admit Create before JS dispatch. Check that known
+invalidation suppresses the callback, and that an unobserved intervening Create still prevents Commit. The proposed Host cut
+semantics require explicit approval; if callback-start emptiness is required instead, obtain a separate proven coordination
+mechanism before implementation. No stale reply grants terminal authority.
 
 ### AC-9: Zero-window terminal/Create serialization
 
@@ -134,8 +143,9 @@ boundary and approves none of those changes.
 
 - **Given:** a qualified Prepared attempt races a newly admitted Create, CreateWithPreload, or authorized GH-523 Exit.
 - **When:** the existing lifecycle/registry owner orders admission and terminal commitment.
-- **Then:** Create invalidates the old token even if the build fails and the registry returns to zero. Exit first fixes its
-  cause/code and invalidates Quit; Quit first fixes its cause/code. No later request issues a second successful receipt or tail.
+- **Then:** Create invalidates the old token even if the build fails and the registry returns to zero. Exit committing first
+  fixes its cause/code and invalidates Quit; Quit committing first fixes its cause/code. The losing operation cannot claim a
+  successful receipt, or report a live-link Retained if an independent terminal winner has committed. No second tail runs.
 - **Negative control:**
   - **Single fault:** Permit an invalidated token to reserve terminal shutdown after a transient admitted Create.
   - **At-risk precondition:** the admitted Opening has already failed before Commit checks the census.
@@ -147,14 +157,18 @@ Exercise both Exit/Quit admission orders, including invalid Exit and exact winni
 
 - **Given:** a qualified conditional operation receives Retained, confirmed Cancel, or loses an acknowledgement.
 - **When:** the same current link observes a response or obtains an ordered exact-attempt Status result.
-- **Then:** proven nonexecution or cancellation permits a fresh attempt on that link. A currently valid Prepared is consumed
-  once; known Commit acceptance fences once. Both facade and API converge on the same disposition. Indeterminate stays blocked.
+- **Then:** proven nonexecution or cancellation permits a fresh attempt on that link only while no terminal winner exists.
+  Prepared authorization is valid at its ordered Host cut, not a later callback-time census; consume it at most once subject to
+  observed invalidation and the final Commit recheck. Known Commit acceptance fences once. Both facade and API converge on the
+  same disposition. Indeterminate stays blocked; generation retirement is not proof of noncommit.
 - **Negative control:**
   - **Single fault:** allow a fresh terminal effect before an ambiguous prior operation has an authoritative disposition.
   - **At-risk precondition:** the original operation may have committed although the reply was lost.
   - **Expected RED:** a second effect, wrong-token continuation, duplicate fence or premature success occurs.
 
 Test separate lost Prepare, Cancel and Commit acknowledgements, mismatch, retirement, stale Prepared and correlation reuse.
+Hold the original or recovered Prepared reply across Create or competing Exit; no stale success may admit Commit. Distinguish
+proven cancellation from a losing attempt after a committed winner, and unknown effect from actual nonexecution.
 The real allocator must prevent reuse before write. An old/unselected peer sees no new conditional choreography or frames;
 the existing separately approved legacy path and bytes are unchanged.
 
@@ -162,18 +176,24 @@ the existing separately approved legacy path and bytes are unchanged.
 
 - **Given:** an admitted FS call still owes a real terminal Reply/Err when conditional Commit begins.
 - **When:** the existing owner pauses further reader admission and drains while Running.
-- **Then:** the terminal reply and lease settle before the final locked check and one reservation; Retained restores the same
-  live dispatch path. No second full Quit call or early terminal reserve can lose the admitted reply.
+- **Then:** the terminal reply and lease settle before the final locked check and one reservation. Retained restores the same
+  live dispatch path only when no independent terminal winner exists. No second full Quit call or early reserve can lose the
+  admitted reply. A competing Exit must obey the shared owner and the already owed reply/lease obligations, not bypass the pause.
 - **Negative control:**
   - **Single fault:** reserve terminal shutdown before the admitted FS terminal reply is written.
   - **At-risk precondition:** an admitted worker has a reply that needs the running-state transition/writer path.
   - **Expected RED:** the reply disappears, a lease remains, or cleanup cannot complete.
 
+Hold an actual FS reply/lease while Exit races Draining, then exercise each winner order after the obligations settle. Prove
+one reservation, exact cause/code/receipt and one cleanup tail, or a separately qualified non-success outcome on transport
+failure. The isolated shared-winner model does not exercise this real I/O or Exit admission.
+
 ### AC-13: Native reply and actual termination are separate witnesses
 
 - **Given:** a qualified native Quit strategy and a real signed disposable original with held cleanup work.
 - **When:** the OS requests Quit, including while a native event callback is active.
-- **Then:** veto or precommit refusal keeps the app alive; success is not reported before the required pre-reply obligations
+- **Then:** veto or precommit refusal keeps the app alive when no independent terminal operation commits; the canceled Quit
+  never claims the other winner. Success is not reported before the required pre-reply obligations
   complete. If delayed reply is selected, the live Host sends one matching main-thread reply, then its own natural kernel exit
   is observed independently. No successful exit is inferred from a reservation or a model.
 - **Negative control:**
@@ -195,16 +215,24 @@ including a Merged result from an earlier close; no older attempt's terminal aut
 CloseRequested, user-facing closed or Allow is not physical Destroyed. Use the existing bounded receipt owner.
 
 Under the existing ordered lifecycle/registry cut, only authenticated current-role preparation after physical release and
-authoritative empty census including Opening/Closing can authorize will-quit. Prepare is reversible and mints one bounded
-attempt token. Successful Create, preload or adoption invalidates it at admission even if the build later fails. Will-quit
-veto or throw cancels the exact token. For Commit, pause further reader admission reversibly, keep Running until admitted FS
+authoritative empty census including Opening/Closing can authorize will-quit. Admission linearizes at Prepare; the reply
+does not establish a later JS callback-time census. Prepare is reversible and mints one bounded attempt token. Successful
+Create, preload or adoption invalidates it at admission even if the build later fails. This includes the interval between
+the original/recovered Prepared reply's Host cut and callback dispatch. Suppress a callback on observed invalidation; the
+final Commit check must reject the token regardless of delivery timing. Will-quit veto or throw cancels the exact token.
+For Commit, pause further reader admission reversibly, keep Running until admitted FS
 terminal replies and leases settle without holding their required locks, then recheck the exact token, current role, registry
 and drain under the existing serialization. Reserve once and enter the existing post-reservation tail once. Never run the full
 legacy Quit again after reservation. Refused/Retained and unknown terminal effects are distinct.
 
-GH-523 AC-7 and KEL-96 must share this single terminal decision. An independently validated authorized Exit winning first
+GH-523 AC-7 and KEL-96 must share this single terminal decision. An independently validated authorized Exit committing first
 invalidates the reversible Quit and fixes cause/code; Quit winning first fixes its own cause/code. The losing operation cannot
-overwrite the winner, repeat terminal cleanup or claim its receipt. This adds no Exit API or policy change to GH-451.
+overwrite the winner, repeat terminal cleanup or claim its receipt. A competing committed terminal is a distinct disposition
+from Retained/nonexecution on a live link; if the losing caller cannot obtain authoritative status, its effect stays unknown.
+Both terminal paths must respect outstanding FS terminal replies/leases and one reader/cleanup owner. A competing Exit
+during Draining must use the same reversible pause/drain obligations or an independently approved non-success disposition;
+no early reserve or dropped reply is allowed to manufacture success. Joint owners must approve that ordering in GH-523 and
+KEL-96. This adds no Exit API or unilateral policy change to GH-451.
 Do not add a second lifecycle/registry owner, terminal timeout or permission grant.
 
 ### 4.2 Source and ordering
@@ -224,23 +252,28 @@ settlement, late error and retry matrix before wiring. A void migration needs a 
 
 Negotiate conditional support through the existing trusted link owner before starting new conditional choreography.
 Do not infer support from Ready, package version or a successful legacy Quit. Preserve existing legacy wire and behavior.
-Typed Retained or confirmed Cancel keeps the same live link. Commit Accepted proves one irreversible reservation, not clean
+Typed Retained or confirmed Cancel keeps the same live link only when no independent terminal winner has committed.
+Commit Accepted proves one irreversible reservation, not clean
 exit or public quit event. A known commitment remains known even if subsequent local fencing or cleanup fails.
 
 For an ambiguous reply, the existing allocator and Host owner retain the original operation/identity, current authenticated
 link, role, attempt and token when known. Ordered read-only Status on the same link uses a distinct correlation; it returns
 the exact authoritative disposition, including invalidated rather than stale Prepared. Do not reuse an unresolved identity,
 start a fresh effect, reconnect, replay or downgrade to forceful Quit. The API and facade must converge on the same original
-attempt: continue a still-valid Prepared once, settle confirmed Cancel/Retained without repeating callbacks, or fence a known
-Accepted once. Missing/mismatched/retired/indeterminate status remains unknown and blocks retry until authoritative retirement
-or another approved disposition. A bounded record/retirement policy and real transport ordering need owner approval.
+attempt: continue Prepared authorized at the ordered cut at most once, with observed-invalidation and final Commit checks;
+settle confirmed Cancel/Retained without repeating callbacks, or fence a known Accepted once. A competing committed winner
+is not this attempt's acceptance or Retained. Missing/mismatched/retired/indeterminate status remains unknown. Retirement
+revokes the old role's authority but never proves noncommit, erases a known committed cause, or permits replay on a successor.
+Keep unknown custody fenced until an authoritative outcome or an approved terminal/retirement disposition establishes what
+may proceed, without assuming nonexecution. A bounded record/retirement policy and real transport ordering need owner approval.
 
 ### 4.4 Native terminal boundary
 
 Only the ordered Host terminal owner may end the process. Current native cancellation remains the safe scoped behavior;
 it is not proof of successful OS Quit. The council selects delayed AppKit reply only as an experiment candidate under GH443.
 Reject immediate termination on initial OS intent. A delayed strategy must prove real callback progress in and outside native
-modal dispatch. Veto/precommit refusal keeps the app alive and denies the native request. A live main-thread owner sends one
+modal dispatch. Veto/precommit refusal denies that native request and keeps the app alive absent a separately committed
+terminal winner. A live main-thread owner sends one
 correlated success reply only after the required actual window release, terminal commitment and pre-reply cleanup obligations
 are proven. Observe the Host's own kernel exit independently after that reply; requiring its own exit before reply is circular.
 A postcommit failure cannot roll back the committed cause or promise restored windows. The native/cleanup owners must approve
@@ -275,7 +308,7 @@ architecture, generated schemas, code and unrelated work remain with their exist
 scoped D2 behavior until the joint contract is approved.
 
 ### T-2: Implement the facade-to-Host transaction and GH531 sweep
-- **Blocked by:** T-1, Q-1, Q-3, Q-4, Q-5, Q-6
+- **Blocked by:** T-1, Q-1, Q-2, Q-3, Q-4, Q-5, Q-6
 
 - [ ] Implement one facade-to-host quit transaction together with the GH531 per-window sweep and zero-window will-quit branch;
 include every veto negative control. Include closed-listener replacement, Opening and same-turn zero-window Quit/Create controls
@@ -306,8 +339,8 @@ acknowledgements rather than sleeping.
 Documentation validation in this batch covers immutable reference/readback, all ten sections, independent controls,
 source-versus-proposal wording and file limits. Full runtime, native and original-app acceptance tests are planned, not executed. GitHub CI status
 belongs to the exact published head; a documentation-only green run does not prove platform behavior.
-The user restricted this session to GitHub. Local `just ci`, native execution, hooks and machine session closeout were not run.
-Official upstream GitHub sources were used within that source restriction; no Context7 or external-machine evidence is claimed.
+The original documentation-only session was restricted to GitHub. The later isolated model and specification-check evidence
+is identified separately; no full runtime or native acceptance is claimed from these documentation checks.
 
 ### E-1: Historical documentation-only review; native acceptance not run
 - **Run:** The original GitHub-only drafting session reported source readback and documentation checks, not an executed native-app test.
@@ -320,7 +353,10 @@ Official upstream GitHub sources were used within that source restriction; no Co
   and Bun scripted model tests were reported in the issue handoff. These are not authenticated/native acceptance.
 - **n:** 22/22 current Rust projection/model tests (including four shared-decision additions); earlier combined 66/66 Bun tests.
 - **Environment:** isolated macOS prototype `24187ab15e6294493bf8790e35092d214b109ee8`; prior combined `9bfb73eff`.
-- **Limits:** no real new wire, OS Quit, physical cleanup, process exit, public API migration or owner approval. Council approved
+- **Limits:** no real new wire, OS Quit, physical cleanup, process exit, public API migration or owner approval. The four
+  shared-decision model additions use simulated reservation outcomes and already validated input; they do not prove malformed
+  Exit-code validation, actual owed FS reply/lease settlement, winner-overwrite mutation, cleanup or parent process status.
+  Council approved
   architecture direction, requested contract revision and withheld production/native approval.
 
 ## 8. Review gates triggered
@@ -355,18 +391,22 @@ retention/retirement. Require API/facade convergence and no fallback on unknown;
 
 ### Q-4: Terminal/Create fence and late-created windows
 Reconcile late-created windows, exact GH531 merged sequences and physical Destroyed, and the shared terminal/Create fence with
-the pinned Electron oracle. No stale snapshot or prior attempt authorizes terminal admission.
+the pinned Electron oracle. Approve the Host Prepare linearization rather than assuming JS callback-start emptiness. If the
+stronger callback-start property is required, a separate proved synchronization contract is blocking. No stale snapshot or
+prior attempt authorizes terminal admission.
 
 ### Q-5: One shared terminal winner
 Joint GH-451/GH-523/KEL-96 owners must approve immutable cause, code, exact receipt and one existing cleanup tail across both
 admission orders; no unrelated Exit implementation is authorized here.
 
 ### Q-6: Running-state FS drain
-Approve and prove reversible dispatch pause, actual FS terminal reply/lease completion, final serialized recheck and one reserve.
+Approve and prove reversible dispatch pause, actual FS terminal reply/lease completion, final serialized recheck and one
+reserve. Joint lifecycle/FS/Exit owners must resolve competing Exit during Draining without losing any owed reply or creating
+a second cleanup tail.
 
 ### Q-7: Native cleanup failure and resource qualification
 Approve bounded non-success dispositions before/after irreversible commit; verify a disposable signed original and independent
-native process/cleanup witnesses. GH-1404 B-2/B-3, G0–G12 and applicable release/provenance gates remain separate.
+native process/cleanup witnesses. GH-1404 B-2, GH-1404 B-3, G0–G12 and applicable release/provenance gates remain separate.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
