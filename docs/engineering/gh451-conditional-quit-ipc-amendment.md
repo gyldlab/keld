@@ -133,6 +133,10 @@ permanently invalidated preparation). Retained requires proved
 noncommit, no surviving preparation, successful owed-work settlement,
 current usable link and no independent terminal winner. Choose the
 narrow two-reason rule over treating generic nonadmission as Retained.
+If final-cut registry facts conflict without a proved exact invalidation,
+do not invent Retained. Keep a non-success/unknown disposition. The
+alternative broader registry-not-quiescent Commit reason was considered;
+this proposal retains the stricter operation-specific choice.
 AdmissionRefusal: Unavailable, ReceiptPending, WrongPhase. These are
 pre-effect refusals only when the existing owner proves the exact
 new request never executed. They cannot erase a surviving preparation,
@@ -229,9 +233,15 @@ separate ports. This is the smallest explicit retirement barrier;
 do not add a parallel transport queue. No general public caller can
 mint quiescence proof.
 
+Retire a resolved Status control identity independently of original
+receipt consumption. Require the exact terminal control response to be
+processed/discarded and its own no-late proof, or definitive old-link
+retirement. Otherwise Status would block the Consume that follows it.
+This control retirement never releases the original effect identity.
 If Status times out, keep its control identity until a real terminal
-frame is processed/discarded or a qualified no-late witness is obtained;
-no fresh Status while it occupies the slot. If Consume times out,
+frame is processed/discarded and no-late delivery is proven, or a
+qualified independent retirement witness exists. No fresh Status or
+Consume while it occupies the slot. If Consume times out,
 retain both original and control; a later exact valid Consumed may
 finish private custody/retirement without resurrecting an expired
 public Promise. Reissue only the idempotent Consume, never the original
@@ -307,7 +317,8 @@ erase known terminal cause on fence failure. Each must fail its own
 wire/Host/counter oracle. No full build or test run performed by this
 read-only design review.
 
-Joint owners still must approve proposed selector, envelope/field
-schema, exact Retained reason enum, receipt confirmation mechanism and
-retirement contract; only then reconcile and allocate numeric values.
+The GH451-side proposed semantic selections above follow the user-delegated
+council review. Joint owners still must adopt the selector, envelope/field
+schema, exact refusal/error mapping, receipt confirmation mechanism and
+retirement contract. Only then reconcile and allocate numeric values.
 GH523/KEL96/FS Q5/Q6 and Q7 are separate approvals and execution proof.
