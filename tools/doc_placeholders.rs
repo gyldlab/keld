@@ -11,6 +11,8 @@
 //! generator variable is unlisted by construction, and adding a real template slot stays
 //! a deliberate one-line act.
 
+#![forbid(unsafe_code)]
+
 #[path = "markdown_contract.rs"]
 #[allow(
     dead_code,

@@ -10,6 +10,8 @@
 //! and does not encode VS Code or package names. Repository maturity and evidence live
 //! in `docs/engineering/product-status.tsv`.
 
+#![forbid(unsafe_code)]
+
 pub mod evidence;
 
 #[cfg(test)]

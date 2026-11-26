@@ -33,9 +33,31 @@ fn ac10_source_scan_finds_no_forbidden_reference_in_keld_pack() {
         concat!("Find", "Resource"),
         concat!("Update", "Resource"),
     ];
+    // The crate-root compiler prohibition contains the forbidden keyword.
+    // Require the exact attribute, then exclude only its own literal bytes.
+    let compiler_forbid = concat!("#![forbid(", "un", "safe_code)]");
     let mut scanned_container_module = false;
     for file in &files {
         let text = std::fs::read_to_string(file).expect("read source file");
+        let text = if file == &root.join("src/lib.rs") {
+            // Reject a spoofed commented-out attribute before filtering bytes.
+            let first_code_line = text
+                .lines()
+                .find(|line| !line.is_empty() && !line.starts_with("//!"))
+                .expect("crate root has a compiler policy");
+            assert_eq!(
+                first_code_line, compiler_forbid,
+                "lib.rs must begin authored code with the compiler prohibition"
+            );
+            assert_eq!(
+                text.matches(compiler_forbid).count(),
+                1,
+                "lib.rs must retain exactly one compiler prohibition"
+            );
+            text.replacen(compiler_forbid, "", 1)
+        } else {
+            text
+        };
         for word in forbidden {
             assert!(
                 !text.contains(word),

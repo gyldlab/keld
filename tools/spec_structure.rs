@@ -3267,7 +3267,10 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
         }
         let slugs = anchors.entry(resolved.clone()).or_insert_with(|| {
             let raw = fs::read_to_string(&on_disk).ok()?;
-            Some((heading_slugs(&Doc::parse(&resolved, &raw)), raw.lines().count()))
+            Some((
+                heading_slugs(&Doc::parse(&resolved, &raw)),
+                raw.lines().count(),
+            ))
         });
         let Some((slugs, lines)) = slugs else {
             report.add(
@@ -4769,11 +4772,7 @@ fn settle_unknowns(
 
 /// Read a policy input only after rejecting indexed and native symlinks. The checkout
 /// is assumed stable during validation; this is not a concurrent-mutation sandbox.
-fn read_policy_text(
-    root: &Path,
-    rel: &str,
-    symlinks: &BTreeSet<String>,
-) -> Result<String, String> {
+fn read_policy_text(root: &Path, rel: &str, symlinks: &BTreeSet<String>) -> Result<String, String> {
     let fail = |detail| format!("SPEC-STRUCTURE: policy input `{rel}`: {detail}");
     if let Some(link) = symlink_on_path(root, rel, symlinks) {
         return Err(fail(format!(

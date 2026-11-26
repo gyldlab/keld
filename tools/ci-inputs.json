@@ -342,7 +342,8 @@
     {
       "owner": "Repository hygiene",
       "outputs": [
-        "local_hygiene"
+        "local_hygiene",
+        "input_hygiene"
       ],
       "inputs": [
         "bunfig.toml",
@@ -355,9 +356,75 @@
         "AGENTS.md",
         "*/AGENTS.md",
         "crates/keld-ipc/channel_allocations.txt",
-        "crates/keld-ipc/src/channel_table.rs"
+        "crates/keld-ipc/src/channel_table.rs",
+        "packages/@keld/kipc/tsconfig.json",
+        ".[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
+        "*/.[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
+        "*.js",
+        "*.jsx",
+        "*.mjs",
+        "*.cjs",
+        "*.ts",
+        "*.tsx",
+        "*.mts",
+        "*.cts",
+        "justfile",
+        "crates/keld-ipc/src/echo.rs",
+        "crates/keld-native/src/fs.rs",
+        "crates/keld-native/src/auth/mod.rs",
+        ".[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN]",
+        "*/.[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN]",
+        ".[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN][cC]",
+        "*/.[oO][xX][fF][mM][tT][rR][cC].[jJ][sS][oO][nN][cC]",
+        "[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "*/[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "*/[oO][xX][fF][mM][tT].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "[pP][aA][cC][kK][aA][gG][eE].[jJ][sS][oO][nN]",
+        "*/[pP][aA][cC][kK][aA][gG][eE].[jJ][sS][oO][nN]",
+        "[pP][aA][cC][kK][aA][gG][eE].[yY][aA][mM][lL]",
+        "*/[pP][aA][cC][kK][aA][gG][eE].[yY][aA][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][aA][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[yY][aA][mM][lL]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]5",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS][oO][nN]5",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[mM][tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[mM][tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][jJ][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][jJ][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][jJ][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][jJ][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][tT][sS]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[cC][tT][sS]",
+        "[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][tT][sS]",
+        "*/[pP][rR][eE][tT][tT][iI][eE][rR].[cC][oO][nN][fF][iI][gG].[cC][tT][sS]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
+        "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
+        ".[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
+        "*/.[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][iI][gG][nN][oO][rR][eE]"
       ],
-      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does.",
+      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does. The workflow-tool compiler admission test reads the KIPC compiler project; edits to that project select both hosted and local hygiene.",
       "reader_set": "policy-readers"
     },
     {
@@ -414,8 +481,7 @@
     {
       "owner": "Native JavaScript formatting",
       "outputs": [
-        "local_js-fmt-check",
-        "input_hygiene"
+        "local_js-fmt-check"
       ],
       "inputs": [
         ".[gG][iI][tT][iI][gG][nN][oO][rR][eE]",
@@ -486,7 +552,7 @@
         "*/.[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
         ".[pP][rR][eE][tT][tT][iI][eE][rR][iI][gG][nN][oO][rR][eE]"
       ],
-      "contract": "Direct native Bun JS/TS globs use root bunfig.toml and native ignores, including nonignored untracked files locally. The existing echo generator explicitly checks freshness/stamps. Its exact Rust enum/channel inputs select the same gate; hosted hygiene is additively routed by ci_changes.sh. Exact Bun 1.4.4 config basenames use ASCII case classes for Windows discovery; ancestor configs apply recursively, while .prettierignore is cwd-only. This same consumer selects hosted hygiene through input_hygiene.",
+      "contract": "Direct native Bun JS/TS globs use root bunfig.toml and native ignores, including nonignored untracked files locally. The existing echo generator explicitly checks freshness/stamps. Its exact Rust enum/channel inputs select the same gate; hosted hygiene is additively routed by ci_changes.sh. Exact Bun 1.4.4 config basenames use ASCII case classes for Windows discovery; ancestor configs apply recursively, while .prettierignore is cwd-only. Hosted hygiene is owned by the Repository hygiene consumer, which mirrors the Native JavaScript formatter's inputs so every existing formatting input retains hosted hygiene routing.",
       "reader_set": "policy-readers"
     }
   ],
