@@ -1,0 +1,8 @@
+# Preserve exact upstream bytes and original raw evidence, including whitespace.
+# Authored fixture source keeps the repository's normal LF/whitespace checks.
+source_binding/vendor/drawio/src/main/*.js -text -whitespace
+source_binding/vendor/drawio/electron-builder-win.json -text -whitespace
+source_binding/vendor/drawio/package.json -text -whitespace
+source_binding/vendor/drawio/LICENSE -text -whitespace
+source_binding/evidence/*.txt -text -whitespace
+source_binding/evidence/*.json -text whitespace=cr-at-eol

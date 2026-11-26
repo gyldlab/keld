@@ -1,0 +1,128 @@
+{
+  "schema": "keld.w1-input-census-limits/v1",
+  "status": "INCOMPLETE",
+  "source_repository": "jgraph/drawio-desktop",
+  "source_commit": "2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e",
+  "exact_byte_audit": "Five files in source_manifest.json only",
+  "observed_relative_main_imports": [
+    {
+      "path": "src/main/args.js",
+      "main_import_line": 10,
+      "git_blob": "e5ab92e4468fc80d888f953945b60a24e20c8b06",
+      "bytes": 13993,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/window-bounds.js",
+      "main_import_line": 11,
+      "git_blob": "dd4c6b35928c5a2341b1e79367c6913f4a12c12b",
+      "bytes": 2733,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/update-channel.js",
+      "main_import_line": 12,
+      "git_blob": "8bcbf42f2f9b9604d128e39da0c6bc0a986b722e",
+      "bytes": 592,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/export-files.js",
+      "main_import_line": 13,
+      "git_blob": "d49c1717f874417910a7e9ba25877149fe4c8559",
+      "bytes": 2913,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/system-path.js",
+      "main_import_line": 14,
+      "git_blob": "ef6f454482eea6ca4a68c88899e4de0c3b99f060",
+      "bytes": 629,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/backup-file.js",
+      "main_import_line": 15,
+      "git_blob": "d1529035dbcb391ef3a2fb5ee64a8f4b45d24450",
+      "bytes": 1004,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/file-watcher.js",
+      "main_import_line": 16,
+      "git_blob": "b97a07fbc8c55748edc886d6ce68f09a7901674f",
+      "bytes": 2162,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/progress-bar.js",
+      "main_import_line": 21,
+      "git_blob": "6622c6bfe9c74d1a345f2d673f6345e37a84790e",
+      "bytes": 4391,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    },
+    {
+      "path": "src/main/disableUpdate.js",
+      "main_import_line": 24,
+      "git_blob": "26979f162da70c37147f64d190382b4bba78fca8",
+      "bytes": 48,
+      "verification": "immutable GitHub tree metadata only; not vendored or SHA256-audited"
+    }
+  ],
+  "other_observed_input_metadata": [
+    {
+      "path": "package-lock.json",
+      "git_blob": "aab2e8562ea5fd1b46e6a9cbc2a432feb78de550",
+      "bytes": 160985
+    },
+    {
+      "path": "drawio",
+      "kind": "git submodule commit",
+      "commit": "24b76c2cbd55d88e354042e8d329a2e4708972bc"
+    },
+    {
+      "path": "build/fuses.mjs",
+      "git_blob": "36e1d0e84cf1cf64bbe6ed7071cf4f6ddc7694b5",
+      "bytes": 2403,
+      "reference": "electron-builder-win.json:60"
+    },
+    {
+      "path": "build/msi-project-created.mjs",
+      "git_blob": "d3b6518eb0be53765324ba29a5d23d8184f4dab9",
+      "bytes": 1361,
+      "reference": "electron-builder-win.json:61"
+    },
+    {
+      "path": "build/sign-trusted.mjs",
+      "git_blob": "fb0e6802d9cda13eb517fd1fe974bc05571d4835",
+      "bytes": 2848,
+      "reference": "electron-builder-win.json:28"
+    }
+  ],
+  "observed_renderer_entries": [
+    {
+      "path": "drawio/src/main/webapp/index.html",
+      "main_line": 771
+    },
+    {
+      "path": "drawio/src/main/webapp/vsdxImporter.html",
+      "main_line": 1470
+    },
+    {
+      "path": "drawio/src/main/webapp/export3.html",
+      "main_line": 3100
+    }
+  ],
+  "packaging_observation": "Windows x64 config includes broad **/* source set and explicit exclusions; build hooks, generated web assets and ASAR packaging affect delivered bytes.",
+  "missing_authority": [
+    "Q15 authoritative build-input census and complete transitive/package/generated asset set",
+    "Exact production mainDigest canonical byte serialization",
+    "B4 Windows installed package/image trust root and source authority",
+    "B10 generated public-interface output rows and B11 reviewed-channel carrier",
+    "Q2 immutable per-window constructor/preload/entry site mapping"
+  ],
+  "production_main_digest": null,
+  "grants": [],
+  "executable_inputs_run_by_source_auditor": [],
+  "evidence_limit": "These metadata pins identify known dependencies but are not a complete dependency graph or attestation input set. No main/config/build hook was executed."
+}
