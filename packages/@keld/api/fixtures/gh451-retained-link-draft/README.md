@@ -1,6 +1,7 @@
 # GH-451 W2 retained-link contract fixture (review only)
 
-Base: PR #1581 `db74c84673d912c720320470e04f84468e760589`.
+Original base: PR #1581 `db74c84673d912c720320470e04f84468e760589`.
+Q3 revision base: local consolidated prototype `24187ab15e6294493bf8790e35092d214b109ee8`.
 Reference only: W7 appendix at `6c13ce03346835982c8a70eda4390881e4b38b0c`,
 canonical draft AC-11/12 and §4.2 in the local W3 report, Core prototype
 `2c02443271a3b36d8cfbd4edaacfb20180f2617e` (not merged into this tree).
@@ -50,11 +51,10 @@ Its illustrative strings and error vocabulary allocate no protocol values.
 The fixture conservatively leaves unapproved alternative Cancel dispositions
 and delivery after role retirement unknown. A known Accepted for the
 still-current original may precede EOF, but never means clean OS exit.
-An unexpected synchronous start failure lacking an original correlation
-blocks new effects and cannot be reconciled by guessing. Actual same-link
-Status support and the bounded disposition owner are approval/integration
-blockers. The fixture detects a reused correlation at receipt processing;
-the real allocator must prohibit the alias before sending anything.
+An unexpected synchronous send failure retains the pre-reserved original
+identity. Actual same-link Status support and the bounded Host disposition
+owner are approval/integration blockers. The Q3 allocator model prevents
+alias before send; it does not implement or prove the real WorkerLink allocator.
 The production owner must also preserve captured intrinsic/error behavior,
 define accepted-fence failure custody and verify actual link and reader
 ordering; no cleanup success is inferred by this model.
@@ -69,7 +69,7 @@ python3 -B packages/@keld/api/fixtures/gh451-retained-link-draft/negative_contro
 git diff --exit-code HEAD -- crates/keld-ipc packages/@keld/kipc packages/@keld/api/src packages/@keld/electron/src crates/keld-core
 ```
 
-Observed final: 23/23 tests, 211 assertions; 7/7 single-fault controls
+Historical initial W2 receipt: 23/23 tests, 211 assertions; 7/7 single-fault controls
 detected (exit 1 at the named test; overall harness exit 0). The first
 mutation run targeted a null case that returns earlier than the mutated
 generic-error branch; corrected the test selector to the actual affected
@@ -77,9 +77,64 @@ generic-error case, then reran all controls and restored baseline.
 Tracked production path diff empty. No new dependencies, wire tags, policy,
 production enablement, external publication, installed execution, full Cargo
 build, full CI or TypeScript typecheck (compiler unavailable on PATH).
-The files remain local, uncommitted review artifacts in this managed tree.
+The original four files were preserved byte-identically in owned scratch
+`.keld-work/reports/gh451-w2-pre-24187ab15-20261126` before the fast-forward
+to the exact consolidated base. The current Q3 delta is isolated here.
 
-SHA-256:
+Historical SHA-256:
 - candidate.ts: ab76cffe6d7f1404ac4e6f77c79cd82016b0d0718c58954d8311491a413e4cce
 - candidate.test.ts: e6c1ed146b1126967fbbb07c1bc9dbbef718b291009c7882ed4c4bce5eb992bf
 - negative_controls.py: f258832d44e0ec567b1facab10e74dcfc9eb983b127da4e43d6473a99a67dec3
+
+## Q3 retained identity and recovery handoff
+
+`reservation.ts` models one link-local allocator shared by ordinary calls,
+one active attempt, one unresolved effect and one Status reservation. It
+reserves before invoking the scripted send; no timeout or capacity-driven
+eviction is allowed. A numeric identifier may wrap only after both exact
+receipt consumption and independent transport evidence that no late reply
+can alias that identity. A stale lease object cannot release a recycled
+numeric slot. A lost Status consumes its local result but retains its
+separate reservation until independently proven quiescent; repeated Status
+while it remains reserved sends nothing.
+
+W3/prime composition contract:
+
+- Construct the trusted port with one `DraftCorrelationLedger`, captured
+  selected/negotiated facts, current/live observations and
+  `send(lease, request): Promise<unknown>`. Use the already-reserved
+  `lease.correlation` and do not allocate again in send. The transport
+  independently calls `ledger.proveNoLate(lease)` only on valid quiescence
+  evidence. A rejected Promise by itself supplies none.
+- `conditionalAvailable` is preflight for a **new** attempt; it is not a
+  condition for `reconcile()` on an existing indeterminate attempt.
+- `prepare()/cancel()/commit()/reconcile()` return typed outcomes.
+  Unknown always contains the original identity, even on synchronous
+  send failure. `invalidated` does not grant Prepared authority;
+  `competing-terminal` is distinct from Retained and Accepted.
+- After applying a resolved disposition, W3 reads the exact
+  `pendingReceipt` object (original, disposition, direct/status source)
+  and calls `consumeReceipt(receipt)`. A false result leaves the
+  reservation held until independent no-late proof. Never clone a receipt
+  or interpret delayed release as nonexecution. Reading `pendingReceipt`
+  synchronizes a release that the transport subsequently proved.
+- Known Accepted fences the captured current link once, before any
+  receipt consumption; a fence exception remains available as
+  `fenceError` and never changes `terminalDisposition` to unknown.
+  Historical Accepted on a retired link remains evidence and does not
+  fence a successor. Cleanup is independent of receipt consumption.
+- The original link/generation owns the ledger. This fixture does not
+  implement the Host's ordered disposition record, actual transport
+  quiescence proof, a wire receipt-consumption acknowledgement, automatic
+  retirement, or an approved nonprogress deadline. Those require named
+  owners and real tests. The fixture's local lease identity is not a
+  Host-minted wire attempt/token.
+
+Current focused validation: 32/32 Bun tests, 708 assertions; 15/15 named
+single-fault negative controls detected, including pre-send reservation,
+active-attempt exclusivity, exact receipt consumption, late-alias release,
+capacity, Status identity and fence failure. No dependencies installed.
+The prior composed facade fixture still uses the older port interface;
+prime owns its adapter update. W2 does not change facade/Core/production
+paths. No full workspace CI, typecheck or authenticated/native proof
+is claimed.
