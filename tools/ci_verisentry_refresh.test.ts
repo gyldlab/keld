@@ -341,7 +341,7 @@ test("refresh is a protected-main-only cron and authorized manual dispatch, with
     VERISENTRY_BATCH_INDEX: "${{ inputs.batch_index || 'auto' }}",
   });
   expect(job.steps[0].uses).toBe(
-    "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
+    "actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc",
   );
   expect(job.steps[0].with).toEqual({
     "app-id": "5550363",

@@ -805,6 +805,7 @@ test("CI rejects unreviewed external actions, including mutable Docker image tag
     `docker://ghcr.io/example/unknown@sha256:${"0".repeat(64)}`,
     `unreviewed/third-party-action@${"0".repeat(40)}`,
     `oven-sh/setup-bun@${"0".repeat(40)}`,
+    "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
   ];
   for (const uses of unreviewed) {
     const f = fixture();
@@ -1610,20 +1611,24 @@ test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded rele
     );
     expect(installer).toBeDefined();
     expect(installer!.uses).toBe(
-      "taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519",
+      "taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c",
     );
     expect((installer!.with as Step).tool).toBe(reviewed);
     expect((installer!.with as Step).fallback).toBe("none");
     expect(() => check(clean)).not.toThrow();
 
-    // v2.87.29 cannot resolve 0.9.149 from its embedded manifest.
-    const oldAction = fixture();
-    const staleInstaller = oldAction.jobs[jobName]!.steps.find((candidate) =>
-      String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
-    )!;
-    staleInstaller.uses =
-      "taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283";
-    expect(() => check(oldAction)).toThrow("reviewed immutable action refs");
+    // v2.87.29 lacks 0.9.149; previously approved v2.90.5 is now stale too.
+    for (const staleSha of [
+      "8cca0918f8471c33515202b73f56ab27f2bed283",
+      "ab49d3c64680143e184118bed66a46419fc15519",
+    ]) {
+      const oldAction = fixture();
+      const staleInstaller = oldAction.jobs[jobName]!.steps.find((candidate) =>
+        String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+      )!;
+      staleInstaller.uses = `taiki-e/install-action@${staleSha}`;
+      expect(() => check(oldAction)).toThrow("reviewed immutable action refs");
+    }
 
     for (const rejected of [
       unpinned,
@@ -1936,15 +1941,19 @@ for (const language of codeqlLanguages) {
   });
 
   test(`CodeQL ${language} rejects uniformly changed unreviewed pinned actions`, () => {
-    const f = fixture();
-    const init = step(f, job, "Initialize CodeQL");
-    const analyze = step(f, job, "Analyze and upload CodeQL results");
-    const unreviewedSha = "0".repeat(40);
-    init.uses = `github/codeql-action/init@${unreviewedSha}`;
-    analyze.uses = `github/codeql-action/analyze@${unreviewedSha}`;
-    expect(() => check(f)).toThrow(
-      "CodeQL init and analyze must use the reviewed pinned commit",
-    );
+    for (const unreviewedSha of [
+      "0".repeat(40),
+      "33d7b85da1a04171e211befe2c739303b9a4c066",
+    ]) {
+      const f = fixture();
+      const init = step(f, job, "Initialize CodeQL");
+      const analyze = step(f, job, "Analyze and upload CodeQL results");
+      init.uses = `github/codeql-action/init@${unreviewedSha}`;
+      analyze.uses = `github/codeql-action/analyze@${unreviewedSha}`;
+      expect(() => check(f)).toThrow(
+        "CodeQL init and analyze must use the reviewed pinned commit",
+      );
+    }
   });
 
   test(`CodeQL cannot omit the ${language} job`, () => {
@@ -2138,6 +2147,217 @@ test("B3 Bun setup ownership rejects duplicated and rogue post-cache savers", ()
   const rogue = fixture();
   rogue.jobs.fmt!.steps.push({ ...b3BunAction(rogue, "check") });
   expect(() => check(rogue)).toThrow("B3 Bun cache action not approved in job");
+});
+
+const gh502NodeAction =
+  "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1";
+
+function gh502NodeStep(f: Fixture): Step {
+  const matches = f.jobs["bun-test"]!.steps.filter(
+    (candidate) => candidate.uses === gh502NodeAction,
+  );
+  expect(matches.length).toBe(1);
+  return matches[0]!;
+}
+
+test("GH502 Node oracle pins exact version and disables package-manager caching", () => {
+  const original = gh502NodeStep(fixture());
+  expect(original.with).toEqual({
+    "node-version": "26.10.0",
+    "check-latest": false,
+    "package-manager-cache": false,
+  });
+  for (const [key, bad] of [
+    ["node-version", "24.0.0"],
+    ["node-version", "${{ vars.NODE_VERSION }}"],
+    ["node-version", undefined],
+    ["check-latest", true],
+    ["check-latest", undefined],
+    ["package-manager-cache", true],
+    ["package-manager-cache", undefined],
+    ["cache", "npm"],
+  ] as const) {
+    const f = fixture();
+    const inputs = gh502NodeStep(f).with as Step;
+    if (bad === undefined) delete inputs[key];
+    else inputs[key] = bad;
+    expect(() => check(f), `${key}=${String(bad)}`).toThrow(
+      "GH502 Node oracle",
+    );
+  }
+});
+
+test("GH502 Node oracle requires one pinned step in the Bun test lane", () => {
+  const missing = fixture();
+  const steps = missing.jobs["bun-test"]!.steps;
+  const originalIndex = steps.indexOf(gh502NodeStep(missing));
+  const [original] = steps.splice(originalIndex, 1);
+  expect(() => check(missing)).toThrow("GH502 Node oracle");
+
+  const duplicate = fixture();
+  duplicate.jobs["bun-test"]!.steps.push({ ...gh502NodeStep(duplicate) });
+  expect(() => check(duplicate)).toThrow("GH502 Node oracle");
+
+  const moved = fixture();
+  const movedSteps = moved.jobs["bun-test"]!.steps;
+  const [node] = movedSteps.splice(movedSteps.indexOf(gh502NodeStep(moved)), 1);
+  movedSteps.push(node!);
+  expect(() => check(moved)).toThrow("GH502 Node oracle");
+
+  const rogue = fixture();
+  rogue.jobs["linux-gui-smoke"]!.steps.push({ ...gh502NodeStep(rogue) });
+  expect(() => check(rogue)).toThrow("GH502 Node oracle");
+
+  const misplaced = fixture();
+  const misplacedSteps = misplaced.jobs["bun-test"]!.steps;
+  const [nodeFromBun] = misplacedSteps.splice(
+    misplacedSteps.indexOf(gh502NodeStep(misplaced)),
+    1,
+  );
+  misplacedSteps.splice(1, 0, nodeFromBun!);
+  expect(() => check(misplaced)).toThrow("GH502 Node oracle");
+
+  expect(original?.uses).toBe(gh502NodeAction);
+});
+
+test("GH502 Node oracle rejects test-step replacement and unreviewed prelude effects", () => {
+  const mutations: Array<[string, (f: Fixture) => void]> = [
+    [
+      "fake-green test command",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").run =
+          "echo fake-green";
+      },
+    ],
+    [
+      "untrusted prelude before Bun",
+      (f) => {
+        f.jobs["bun-test"]!.steps.splice(1, 0, {
+          run: "printf 'attacker' > ./packages/@keld/api/src/entry.ts",
+        });
+      },
+    ],
+    [
+      "untrusted postlude",
+      (f) => {
+        f.jobs["bun-test"]!.steps.push({ run: "echo bypass" });
+      },
+    ],
+    [
+      "disabled test step",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").if =
+          "false";
+      },
+    ],
+    [
+      "test step node preload",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").env = {
+          NODE_OPTIONS: "--require=rogue.cjs",
+        };
+      },
+    ],
+    [
+      "test step PATH override",
+      (f) => {
+        const command = step(
+          f,
+          "bun-test",
+          "frozen install, typecheck, and bun test",
+        );
+        command.env = { ...(command.env as Step), PATH: "rogue-bin" };
+      },
+    ],
+    [
+      "test step shell override",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").shell =
+          "sh";
+      },
+    ],
+    [
+      "test step extra cache",
+      (f) => {
+        step(f, "bun-test", "frozen install, typecheck, and bun test").env = {
+          ...(step(f, "bun-test", "frozen install, typecheck, and bun test")
+            .env as Step),
+          npm_config_cache: "/tmp/unreviewed",
+        };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), name).toThrow("GH502 Node oracle");
+  }
+});
+
+test("GH502 Node oracle freezes Bun lane routing and inherited environment", () => {
+  const mutations: Array<[string, (f: Fixture) => void]> = [
+    [
+      "job NODE_OPTIONS",
+      (f) => {
+        f.jobs["bun-test"]!.env = { NODE_OPTIONS: "--require=rogue.cjs" };
+      },
+    ],
+    [
+      "job PATH",
+      (f) => {
+        f.jobs["bun-test"]!.env = { PATH: "rogue-bin" };
+      },
+    ],
+    [
+      "job runner",
+      (f) => {
+        f.jobs["bun-test"]!["runs-on"] = "self-hosted";
+      },
+    ],
+    [
+      "job skip condition",
+      (f) => {
+        f.jobs["bun-test"]!.if = "false";
+      },
+    ],
+    [
+      "job router dependency",
+      (f) => {
+        f.jobs["bun-test"]!.needs = "fmt";
+      },
+    ],
+    [
+      "job timeout",
+      (f) => {
+        f.jobs["bun-test"]!["timeout-minutes"] = "1";
+      },
+    ],
+    [
+      "job matrix reduction",
+      (f) => {
+        f.jobs["bun-test"]!.strategy!.matrix.os = ["ubuntu-latest"];
+      },
+    ],
+    [
+      "job matrix fast-fail",
+      (f) => {
+        f.jobs["bun-test"]!.strategy!["fail-fast"] = true;
+      },
+    ],
+    [
+      "job inherited defaults",
+      (f) => {
+        f.jobs["bun-test"]!.defaults = {
+          run: { "working-directory": "rogue" },
+        };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), name).toThrow();
+  }
 });
 
 const b3RustCacheJobs = [
