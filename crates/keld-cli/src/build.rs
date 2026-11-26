@@ -438,13 +438,19 @@ mod tests {
                 .contains("const sealedOriginalRelative = \"src/with space.mjs\";"),
             "space in a signed filesystem path must remain one JS string literal"
         );
-        for valid in ["src/malicious?query.mjs", "src/main#fragment.mjs"] {
+        for valid in ["src/main#fragment.mjs", "src/main%25.mjs"] {
             assert!(
                 installed_generated_sources(valid, true).is_ok(),
                 "a valid graph filename is a filesystem member, not an import URL: {valid}"
             );
         }
-        for invalid in ["src/../other.mjs", "src/./main.mjs", "src\\main.mjs"] {
+        for invalid in [
+            "src/../other.mjs",
+            "src/./main.mjs",
+            "src\\main.mjs",
+            "src/main?query.mjs",
+            "src/folder?name/main.mjs",
+        ] {
             assert!(
                 installed_generated_sources(invalid, true).is_err(),
                 "producer must preserve the graph path refusal: {invalid}"
