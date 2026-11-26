@@ -1,146 +1,193 @@
-// GH451 W3 review-only fixture, based on #1581 db74c846 and draft #1432.
-// Never imported by the facade or shipped. No protocol allocations, real Host
-// calls, or public quit emission. The injected facts/replies stand in for the
-// existing authenticated GH531 and lifecycle owners; they mint no authority.
-export type WindowIdentity = Readonly<{
-  id: number;
-  incarnation: bigint;
-  document: bigint;
-}>;
-export type Census = Readonly<{
-  generation: bigint;
-  ready: boolean;
-  selected: boolean;
-  // Existing Source snapshot, in creation order. It cannot prove Host zero.
-  windows: readonly WindowIdentity[];
-}>;
-export type CloseResult =
-  | { kind: "requested" | "merged"; sequence: bigint }
-  | { kind: "refused" | "unknown" };
-export type PrepareResult<T> =
-  | { kind: "prepared"; token: T }
-  | { kind: "retained" | "unknown" };
-export type Outcome = "vetoed" | "retained" | "committed" | "unknown" | "retired";
+// GH451 W3 nonshipping review fixture. No wire allocation or real Host authority.
+// The injected GH531 receipt and lifecycle owners are the only fact sources.
+import type {
+  WindowIdentity, Census, Effect, Original, PrepareResult, Disposition,
+  CancelResult, CommitResult, Outcome, ErrorCustody, DraftHost, DraftListeners,
+  Consumption,
+} from "./gh451-terminal-quit-draft-contract";
+export type * from "./gh451-terminal-quit-draft-contract";
 
-export interface DraftHost<T> {
-  census(): Census;
-  requestClose(window: WindowIdentity, dispatched: (sequence: bigint) => void): Promise<CloseResult>;
-  prepare(): Promise<PrepareResult<T>>;
-  cancel(token: T): Promise<"canceled" | "unknown">;
-  commit(token: T): Promise<"accepted" | "retained" | "unknown">;
+type Handle = {
+  public: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+  settled: boolean;
+  outcome: Promise<Outcome>;
+  observe: (value: Outcome) => void;
+};
+function handle(): Handle {
+  let resolve!: Handle["resolve"], reject!: Handle["reject"], observe!: Handle["observe"];
+  const publicPromise = new Promise<void>((ok, fail) => { resolve = ok; reject = fail; });
+  // Internal fixture observers may use only outcome; never change rejection
+  // for an actual caller of quit().
+  void publicPromise.catch(() => {});
+  const outcome = new Promise<Outcome>(ok => { observe = ok; });
+  return { public: publicPromise, resolve, reject, settled: false, outcome, observe };
 }
-export interface DraftListeners {
-  beforeQuit(): boolean; // true = synchronous preventDefault
-  willQuit(): boolean;
-  lastWindowClosed(): void;
-}
-
 type Entry = {
   window: WindowIdentity;
   sequence?: bigint;
-  // A held merged result can be preceded by the matching Veto receipt.
-  earlyVeto: Set<bigint>;
+  // Bounded projection of one undelivered exact GH531 receipt. A conflicting
+  // second receipt before binding is ambiguous, never guessed or accumulated.
+  earlyVeto?: bigint;
   destroyed: boolean;
   acknowledged: boolean;
 };
-type Attempt = {
-  phase: "before" | "closing" | "prepare" | "will" | "cancel" | "commit";
+type Pending<T> = { operation: Effect; token?: T; original?: Original<T>; held?: Disposition<T> };
+type Recovery = { promise: Promise<Outcome>; resolve: (value: Outcome) => void };
+type Attempt<T> = {
+  h: Handle;
+  phase: "before" | "closing" | "will" | "unknown" | Effect;
   entries: Entry[];
   dispatching: boolean;
   vetoed: boolean;
+  willVeto: boolean;
   refused: boolean;
   uncertain: boolean;
-  result: Promise<Outcome>;
-  resolve: (outcome: Outcome) => void;
+  pending?: Pending<T>;
+  recovery?: Recovery;
+  queued?: Handle;
+  cancelOutcome: "vetoed" | "retained";
 };
-
 function same(a: WindowIdentity, b: WindowIdentity): boolean {
   return a.id === b.id && a.incarnation === b.incarnation && a.document === b.document;
 }
+function sameOriginal<T>(a: Original<T>, b: Original<T>): boolean {
+  return a.operation === b.operation && a.correlation === b.correlation && a.token === b.token;
+}
+function refusal(message: string): Error {
+  return new Error("KELD-COMPAT-012: " + message);
+}
+function unknownError(): Error {
+  return new Error("draft Quit effect unknown");
+}
 
 export class DraftQuitCoordinator<T> {
-  private active?: Attempt;
-  private stopped?: "committed" | "unknown" | "retired";
+  private active?: Attempt<T>;
+  private stopped?: { outcome: Outcome; h: Handle };
+  private last?: Handle;
+  private lastDisposition?: Outcome;
+  private reportFailure?: { error: unknown; custody: ErrorCustody<T>; cause: unknown };
+  private readonly eligible: boolean;
   constructor(
     private readonly host: DraftHost<T>,
     private readonly listeners: DraftListeners,
     private readonly generation: bigint,
-  ) {}
+  ) {
+    this.eligible = host.conditionalEligible === true;
+  }
 
+  /** Simulated public D2 interface. Never waits for physical close/Save. */
+  quit(): Promise<void> {
+    return this.begin(true).public;
+  }
+
+  /** Existing internal fixture probe; not a public API or an exit receipt. */
   requestQuit(): Promise<Outcome> {
-    if (this.stopped) return Promise.resolve(this.stopped);
-    if (this.active) return this.active.result;
-    let resolve!: Attempt["resolve"];
-    const result = new Promise<Outcome>(r => { resolve = r; });
-    const a: Attempt = {
-      phase: "before", entries: [], dispatching: false, vetoed: false,
-      refused: false, uncertain: false, result, resolve,
+    if (this.stopped) return Promise.resolve(this.stopped.outcome);
+    return this.begin(false).outcome;
+  }
+
+  /** First observation remains immutable; disposition reflects later Status. */
+  get outcome(): Promise<Outcome> | undefined { return this.last?.outcome; }
+  get disposition(): Outcome | undefined { return this.lastDisposition; }
+  get heldDisposition(): Disposition<T> | undefined { return this.active?.pending?.held; }
+  get custodyFailure() { return this.reportFailure; }
+
+  private begin(publicCall: boolean): Handle {
+    if (this.stopped) return this.stopped.h;
+    const a = this.active;
+    if (a) {
+      // Synchronous nested listeners share the original handle. One explicit
+      // call after the veto callback returned may wait for confirmed Cancel.
+      if (publicCall && a.phase === "cancel" && a.willVeto) {
+        return a.queued ??= handle();
+      }
+      return a.h;
+    }
+    if (this.reportFailure) {
+      const h = handle();
+      this.reject(h, this.reportFailure.error);
+      h.observe("unknown");
+      this.stopped = { outcome: "unknown", h };
+      return h;
+    }
+    return this.start(handle());
+  }
+
+  private start(h: Handle): Handle {
+    const a: Attempt<T> = {
+      h, phase: "before", entries: [], dispatching: false, vetoed: false,
+      willVeto: false, refused: false, uncertain: false, cancelOutcome: "retained",
     };
     this.active = a;
+    this.last = h;
+    this.lastDisposition = undefined;
     try {
-      // Synchronous before-quit, including nested calls.
-      if (this.listeners.beforeQuit()) {
-        this.finish(a, "vetoed");
-        return result;
-      }
-      if (this.active !== a) return result;
+      let veto: boolean;
+      try { veto = this.listeners.beforeQuit(); } catch { veto = true; }
+      if (veto) { this.finish(a, "vetoed"); return h; }
+      if (this.active !== a) return h;
       const census = this.current();
-      if (!census) {
-        this.finish(a, "retained");
-        return result;
+      // Old/unselected peers never see the new close sweep or Prepare.
+      if (!this.eligible || !census) {
+        this.finish(a, "retained", refusal("conditional Quit not qualified"));
+        return h;
       }
       a.phase = "closing";
       a.entries = [...census.windows].reverse().map(window => ({
-        window, earlyVeto: new Set(), destroyed: false, acknowledged: false,
+        window, destroyed: false, acknowledged: false,
       }));
       a.dispatching = true;
       for (const e of a.entries) {
-        // Complete the selected sweep despite a synchronous veto. Role
-        // retirement, in contrast, revokes further use of that link.
-        if (this.active !== a) break;
+        if (this.active !== a) break; // retirement, not veto, revokes dispatch
         try {
           const reply = this.host.requestClose(e.window, seq => {
             if (this.active !== a) return;
-            this.bind(a, e, seq);
+            if (this.bind(a, e, seq)) this.fulfill(h); // before user close listener
             this.advance(a);
           });
           void reply.then(r => {
-            if (this.active !== a) return;
-            if (r.kind === "requested" || r.kind === "merged") {
-              this.bind(a, e, r.sequence);
-              e.acknowledged = true;
-            } else if (r.kind === "refused") {
-              a.refused = true;
-            } else {
-              a.uncertain = true;
+            if (r.kind === "refused" || r.kind === "unknown") {
+              this.closeFailure(a, e, r.error ?? refusal("close handoff refused"), r.kind === "unknown");
+            } else if (r.kind === "already-closing" && e.sequence === undefined) {
+              this.closeFailure(a, e, new Error("KELD-CORE-054: no bound close sequence"), false);
+            } else if (this.active === a) {
+              if (r.kind === "already-closing" || this.bind(a, e, r.sequence)) {
+                e.acknowledged = true;
+                this.fulfill(h);
+              }
+            } else if (r.kind !== "already-closing" && e.sequence !== undefined) {
+              this.bind(a, e, r.sequence); // validate late reply, never touch a successor
             }
             this.advance(a);
-          }, () => {
-            if (this.active !== a) return;
-            a.uncertain = true;
+          }, error => {
+            this.closeFailure(a, e, error, true);
             this.advance(a);
           });
-        } catch {
-          a.uncertain = true;
+        } catch (error) {
+          this.closeFailure(a, e, error, true);
         }
       }
       a.dispatching = false;
       this.advance(a);
-    } catch {
-      // No proof of terminal admission. A throwing before listener has no
-      // Host effect; an unexpected failure later is conservatively unknown.
-      this.finish(a, a.phase === "before" ? "retained" : "unknown");
+    } catch (error) {
+      this.finish(a, a.phase === "before" ? "retained" : "unknown", error);
     }
-    return result;
+    return h;
   }
 
   observeVetoApplied(generation: bigint, window: WindowIdentity, sequence: bigint): void {
     const a = this.active;
     if (generation !== this.generation || !a || a.phase !== "closing") return;
     const e = a.entries.find(x => same(x.window, window));
-    if (!e || e.destroyed) return;
+    if (!e) return;
     if (e.sequence === sequence) a.vetoed = true;
-    else if (e.sequence === undefined) e.earlyVeto.add(sequence);
+    else if (e.sequence === undefined) {
+      if (e.earlyVeto !== undefined && e.earlyVeto !== sequence) {
+        this.closeFailure(a, e, unknownError(), true);
+      } else e.earlyVeto = sequence;
+    }
     this.advance(a);
   }
 
@@ -156,18 +203,24 @@ export class DraftQuitCoordinator<T> {
   observeLastWindowClosed(generation: bigint): void {
     if (generation !== this.generation || this.stopped) return;
     const a = this.active;
-    if (a && a.phase !== "before" && !a.vetoed) return;
-    // Stale LastWindowClosed must not notify against a replacement window.
+    if (a && a.phase !== "before" && !a.vetoed && !a.willVeto) return;
     const census = this.current();
     if (census && census.windows.length === 0) this.listeners.lastWindowClosed();
   }
 
   retire(generation: bigint): void {
     if (generation !== this.generation || this.stopped) return;
-    // Role retirement after a sent Commit is not proof of nonexecution.
-    const outcome = this.active?.phase === "commit" ? "unknown" : "retired";
-    this.stopped = outcome;
-    if (this.active) this.finish(this.active, outcome);
+    const a = this.active;
+    if (a) {
+      // Retirement cannot prove that an unresolved effect did not commit.
+      const outcome = a.pending || a.phase === "unknown" ? "unknown" : "retired";
+      this.finish(a, outcome, refusal("original role retired"), true);
+    } else {
+      const h = handle();
+      this.reject(h, refusal("original role retired"));
+      h.observe("retired");
+      this.stopped = { outcome: "retired", h };
+    }
   }
 
   private current(): Census | undefined {
@@ -176,87 +229,252 @@ export class DraftQuitCoordinator<T> {
       ? census : undefined;
   }
 
-  private bind(a: Attempt, e: Entry, sequence: bigint): void {
-    if (e.sequence !== undefined && e.sequence !== sequence) {
-      a.uncertain = true;
-      return;
+  private bind(a: Attempt<T>, e: Entry, sequence: bigint): boolean {
+    if (sequence <= 0n || sequence > 0xffff_ffff_ffff_ffffn ||
+        (e.sequence !== undefined && e.sequence !== sequence)) {
+      this.closeFailure(a, e, new Error("KELD-IPC-003: conflicting close sequence"), true);
+      return false;
     }
     e.sequence = sequence;
-    if (e.earlyVeto.has(sequence)) a.vetoed = true;
-    e.earlyVeto.clear();
+    if (e.earlyVeto === sequence) a.vetoed = true;
+    e.earlyVeto = undefined;
+    return true;
   }
 
-  private advance(a: Attempt): void {
+  private closeFailure(a: Attempt<T>, e: Entry, error: unknown, ambiguous: boolean): void {
+    if (this.active === a) {
+      if (ambiguous) a.uncertain = true;
+      else a.refused = true;
+    }
+    this.failPublic(a, error, { phase: "close", window: e.window, generation: this.generation });
+  }
+
+  private advance(a: Attempt<T>): void {
     if (this.active !== a || a.phase !== "closing" || a.dispatching) return;
     if (a.uncertain) return this.finish(a, "unknown");
     if (a.vetoed) return this.finish(a, "vetoed");
     if (a.refused) return this.finish(a, "retained");
-    // Neither the close RPC nor LastWindowClosed can stand in for Destroyed.
     if (!a.entries.every(e => e.destroyed && e.acknowledged)) return;
     try {
       const census = this.current();
       if (!census || census.windows.length !== 0) return this.finish(a, "retained");
-      a.phase = "prepare";
-      // Initiate Prepare in the same turn after the local rejection checks.
-      // Only Host may prove no Opening/Closing reservation is outstanding.
-      void this.host.prepare().then(
-        prepared => this.afterPrepare(a, prepared),
-        () => this.finish(a, "unknown"),
-      );
-    } catch {
-      this.finish(a, "unknown");
+      this.effect(a, { operation: "prepare" });
+    } catch (error) {
+      this.finish(a, "unknown", error);
     }
   }
 
-  private afterPrepare(a: Attempt, prepared: PrepareResult<T>): void {
+  private effect(a: Attempt<T>, p: Pending<T>): void {
     if (this.active !== a) return;
-    if (prepared.kind === "retained") return this.finish(a, "retained");
-    if (prepared.kind !== "prepared") return this.finish(a, "unknown");
+    a.pending = p;
+    a.phase = p.operation;
+    try {
+      const promise: Promise<CancelResult<T> | CommitResult<T> | PrepareResult<T>> =
+        p.operation === "prepare" ? this.host.prepare() :
+        p.operation === "cancel" ? this.host.cancel(p.token!) : this.host.commit(p.token!);
+      void promise.then(
+        value => {
+          try { this.accept(a, p, typeof value === "string" ? { kind: value } : value); }
+          catch (error) { this.uncertain(a, p, p.original, error); }
+        },
+        error => this.uncertain(a, p, undefined, error),
+      );
+    } catch (error) {
+      this.uncertain(a, p, undefined, error);
+    }
+  }
+
+  private accept(a: Attempt<T>, p: Pending<T>, d: Disposition<T>): void {
+    if (this.active !== a || a.pending !== p) return;
+    if (d.kind === "unknown") return this.uncertain(a, p, d.original, d.error ?? unknownError());
+    if (d.kind === "competing") return this.finish(a, "competing", d.error ?? refusal("another terminal winner committed"), false, () => this.consume(p, d));
+    // An impossible operation/result pair is not evidence of no effect.
+    if (d.kind === "accepted") {
+      if (p.operation !== "commit") return this.uncertain(a, p, undefined, unknownError());
+      // Known acceptance survives an error in local fencing.
+      return this.finish(a, "committed", d.error, false, () => this.consume(p, d));
+    }
+    if (!this.current()) return this.uncertain(a, p, undefined, refusal("original role is no longer current"));
+    if (d.kind === "retained" || d.kind === "invalidated" || d.kind === "refused") {
+      // Cancel needs actual cancellation/nonexecution, not a generic refusal.
+      // An adapter's refused Status/Commit is not evidence of nonexecution.
+      if ((p.operation === "cancel" && d.kind !== "invalidated") ||
+          (d.kind === "refused" && (p.operation !== "prepare" || p.original))) {
+        return this.uncertain(a, p, undefined, d.error ?? unknownError());
+      }
+    }
+    if ((d.kind === "canceled" && p.operation !== "cancel") ||
+        (d.kind === "prepared" && p.operation !== "prepare")) {
+      return this.uncertain(a, p, undefined, unknownError());
+    }
+    // Store the exact known reply before acknowledging consumption. No
+    // subsequent effect or fresh attempt until allocator custody is safe.
+    if (d.kind !== "refused") {
+      p.held = d;
+      const consumed = this.consume(p, d);
+      if (this.active !== a || a.pending !== p) return;
+      if (!consumed.ready) return this.uncertain(a, p, p.original, consumed.error);
+      p.held = undefined;
+    }
+    if (d.kind === "retained" || d.kind === "invalidated" || d.kind === "refused") {
+      return this.finish(a, p.operation === "cancel" ? a.cancelOutcome : "retained", d.error);
+    }
+    if (d.kind === "canceled") return this.finish(a, a.cancelOutcome);
+    if (d.kind !== "prepared") return this.uncertain(a, p, undefined, unknownError());
+    // Consume this exact Prepare authorization once; Status cannot repeat will.
+    a.pending = undefined;
     try {
       const census = this.current();
-      if (!census) return this.finish(a, "unknown");
-      // If a replacement is already visible before the callback, give up
-      // the reversible token without emitting will-quit.
-      if (census.windows.length !== 0) {
-        return this.cancel(a, prepared.token, "retained");
+      if (!census) return this.finish(a, "unknown", refusal("original role retired"));
+      if (census.windows.length !== 0 || this.host.observedInvalidation?.(d.token)) {
+        return this.cancel(a, d.token, "retained");
       }
       a.phase = "will";
       let veto: boolean;
-      try { veto = this.listeners.willQuit(); }
-      catch { veto = true; }
+      try { veto = this.listeners.willQuit(); } catch { veto = true; }
       if (this.active !== a) return;
-      if (!this.current()) return this.finish(a, "unknown");
+      if (!this.current()) return this.finish(a, "unknown", refusal("original role retired"));
       if (veto) {
-        return this.cancel(a, prepared.token, "vetoed");
+        a.willVeto = true;
+        this.fulfill(a.h);
+        return this.cancel(a, d.token, "vetoed");
       }
-      a.phase = "commit";
-      // Even if a Create was admitted and failed during will-quit, only Host
-      // can detect irrevocable token invalidation at its existing admission cut.
-      void this.host.commit(prepared.token).then(
-        r => this.finish(a, r === "accepted" ? "committed" : r === "retained" ? "retained" : "unknown"),
-        () => this.finish(a, "unknown"),
-      );
-    } catch {
-      this.finish(a, "unknown");
+      this.effect(a, { operation: "commit", token: d.token });
+    } catch (error) {
+      this.finish(a, "unknown", error);
     }
   }
 
-  private cancel(a: Attempt, token: T, outcome: "retained" | "vetoed"): void {
-    a.phase = "cancel";
-    void this.host.cancel(token).then(
-      r => this.finish(a, r === "canceled" ? outcome : "unknown"),
-      () => this.finish(a, "unknown"),
-    );
+  private cancel(a: Attempt<T>, token: T, outcome: "vetoed" | "retained"): void {
+    a.cancelOutcome = outcome;
+    this.effect(a, { operation: "cancel", token });
   }
 
-  private finish(a: Attempt, outcome: Outcome): void {
+  private consume(p: Pending<T>, d: Disposition<T>): Consumption {
+    try {
+      return this.host.consumeDisposition?.({
+        operation: p.operation, token: p.token, original: p.original, disposition: d,
+      }) ?? { ready: true };
+    } catch (error) { return { ready: false, error }; }
+  }
+
+  private uncertain(a: Attempt<T>, p: Pending<T>, original: Original<T> | undefined, error: unknown): void {
+    if (this.active !== a || a.pending !== p) return;
+    if (original && original.operation === p.operation && original.token === p.token &&
+        Number.isInteger(original.correlation) && original.correlation > 0 &&
+        original.correlation <= 0xffff_ffff && (!p.original || sameOriginal(original, p.original))) {
+      p.original ??= Object.freeze({ ...original });
+    }
+    a.phase = "unknown";
+    this.publish(a, "unknown");
+    this.rejectQueued(a, error, "unknown");
+    this.failPublic(a, error, { phase: p.operation, original: p.original, generation: this.generation });
+  }
+
+  /** One ordered read-only Status for the same original operation; never replay. */
+  reconcile(): Promise<Outcome> {
+    const a = this.active;
+    if (!a) return Promise.resolve(this.stopped?.outcome ?? this.lastDisposition ?? "retained");
+    if (a.recovery) return a.recovery.promise;
+    const p = a.pending;
+    if (a.phase !== "unknown" || !p || !this.current() ||
+        (!p.held && (!p.original || !this.host.status))) {
+      return a.phase === "unknown" ? Promise.resolve("unknown") : a.h.outcome;
+    }
+    const original = p.original;
+    let resolve!: Recovery["resolve"];
+    const promise = new Promise<Outcome>(ok => { resolve = ok; });
+    a.recovery = { promise, resolve };
+    if (p.held) {
+      // Already-known disposition: retry only the local release check.
+      try { this.accept(a, p, p.held); }
+      catch (error) { this.uncertain(a, p, p.original, error); }
+      return promise;
+    }
+    const failed = (error?: unknown): void => {
+      if (this.active !== a || a.pending !== p) return;
+      this.publish(a, "unknown");
+      if (error !== undefined) this.report(error, { phase: "status", original, generation: this.generation });
+    };
+    try {
+      void this.host.status!(original!).then(status => {
+        if (this.active !== a || a.pending !== p) return;
+        try {
+          if (!status?.original || !status.disposition || !sameOriginal(status.original, original!)) return failed();
+          // Accepted may already have fenced its exact link inside the API owner.
+          if (status.disposition.kind !== "accepted" && !this.current()) return failed();
+          if (status.disposition.kind === "unknown") return failed(status.disposition.error);
+          this.accept(a, p, status.disposition);
+        } catch (error) { failed(error); }
+      }, failed);
+    } catch (error) { failed(error); }
+    return promise;
+  }
+
+  private fulfill(h: Handle): void {
+    if (!h.settled) { h.settled = true; h.resolve(); }
+  }
+  private reject(h: Handle, error: unknown): void {
+    if (!h.settled) { h.settled = true; h.reject(error); }
+  }
+  private report(error: unknown, custody: ErrorCustody<T>): void {
+    try { this.host.reportLateError(error, custody); } catch (cause) {
+      // Preserve the first failed custody transfer without undoing commitment.
+      this.reportFailure ??= { error, custody, cause };
+    }
+  }
+  private failPublic(a: Attempt<T>, error: unknown, custody: ErrorCustody<T>): void {
+    if (a.h.settled) this.report(error, custody);
+    else this.reject(a.h, error);
+  }
+  private rejectQueued(a: Attempt<T>, error: unknown, outcome: Outcome): void {
+    if (!a.queued) return;
+    this.reject(a.queued, error);
+    a.queued.observe(outcome);
+    a.queued = undefined;
+  }
+  private publish(a: Attempt<T>, outcome: Outcome): void {
+    if (this.last === a.h) this.lastDisposition = outcome;
+    a.h.observe(outcome); // immutable first internal observation
+    const recovery = a.recovery;
+    a.recovery = undefined;
+    recovery?.resolve(outcome);
+  }
+  private finish(a: Attempt<T>, outcome: Outcome, error?: unknown, retired = false, consume?: () => Consumption): void {
     if (this.active !== a) return;
-    this.active = undefined;
-    if (outcome === "committed" || outcome === "unknown" || outcome === "retired") {
-      this.stopped = outcome;
+    const unknown = outcome === "unknown" && !retired;
+    if (unknown) a.phase = "unknown";
+    else {
+      this.active = undefined;
+      if (retired || outcome === "committed" || outcome === "competing" || outcome === "retired") {
+        this.stopped = { outcome, h: a.h };
+      }
     }
-    // Accepted is commit admission only. This fixture never emits public quit
-    // or claims cleanup, process exit, link closure or AppKit success.
-    a.resolve(outcome);
+    // Publish the authoritative result before any injected error-owner callback
+    // can reenter or retire the link. A known terminal result is irreversible.
+    this.publish(a, outcome);
+    const consumed = consume?.();
+    if (consumed && !consumed.ready) {
+      if (error === undefined) error = consumed.error;
+      else this.report(consumed.error, {
+        phase: a.pending?.operation ?? "close", original: a.pending?.original, generation: this.generation,
+      });
+    }
+    if (error !== undefined) this.failPublic(a, error, {
+      phase: a.pending?.operation ?? "close", original: a.pending?.original, generation: this.generation,
+    });
+    else if (outcome === "committed" || outcome === "vetoed") this.fulfill(a.h);
+    else if (!a.h.settled) this.reject(a.h, outcome === "unknown" ? unknownError() : refusal(outcome));
+    if (unknown) {
+      this.rejectQueued(a, error ?? unknownError(), outcome);
+      return;
+    }
+    if (this.stopped || this.active || this.reportFailure) {
+      this.rejectQueued(a, error ?? refusal(outcome), outcome);
+      return;
+    }
+    const queued = a.queued;
+    a.queued = undefined;
+    if (queued) this.start(queued); // only on proved Cancel/Retained
   }
 }

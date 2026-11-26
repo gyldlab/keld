@@ -1,96 +1,7 @@
-// W3 model-only deterministic fixture. Exact observations below are supplied
-// independently of the coordinator, not received from an authenticated Host.
+// GH451 W3 model-only: scripted facts, not authenticated Host evidence.
 import { expect, test } from "bun:test";
-import {
-  DraftQuitCoordinator,
-  type CloseResult,
-  type DraftHost,
-  type Outcome,
-  type PrepareResult,
-  type WindowIdentity,
-} from "./gh451-terminal-quit-draft";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: Error) => void;
-  const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
-  return { promise, resolve, reject };
-}
-type Token = Readonly<{ opaque: symbol }>;
-const g = 1n;
-const w1 = { id: 1, incarnation: 11n, document: 101n };
-const w2 = { id: 2, incarnation: 22n, document: 202n };
-const token = (): Token => Object.freeze({ opaque: Symbol() });
-const turn = async () => { await Promise.resolve(); };
-
-function fixture(initial: readonly WindowIdentity[] = []) {
-  const trace: string[] = [];
-  const f = {
-    windows: [...initial],
-    ready: true,
-    selected: true,
-    generation: g,
-    before: () => false as boolean,
-    will: () => false as boolean,
-    last: () => {},
-    onRequest: (_w: WindowIdentity, _dispatch: (s: bigint) => void) => {},
-  };
-  const closes: Array<{
-    w: WindowIdentity; dispatched: (seq: bigint) => void;
-    reply: ReturnType<typeof deferred<CloseResult>>;
-  }> = [];
-  const prepares: Array<ReturnType<typeof deferred<PrepareResult<Token>>>> = [];
-  const cancels: Array<{ token: Token; reply: ReturnType<typeof deferred<"canceled" | "unknown">> }> = [];
-  const commits: Array<{ token: Token; reply: ReturnType<typeof deferred<"accepted" | "retained" | "unknown">> }> = [];
-  const host: DraftHost<Token> = {
-    census: () => ({
-      generation: f.generation, ready: f.ready, selected: f.selected, windows: f.windows,
-    }),
-    requestClose(w, dispatched) {
-      trace.push("close:" + w.id);
-      const reply = deferred<CloseResult>();
-      closes.push({ w, dispatched, reply });
-      f.onRequest(w, dispatched);
-      return reply.promise;
-    },
-    prepare() {
-      trace.push("prepare");
-      const reply = deferred<PrepareResult<Token>>();
-      prepares.push(reply);
-      return reply.promise;
-    },
-    cancel(t) {
-      trace.push("cancel");
-      const reply = deferred<"canceled" | "unknown">();
-      cancels.push({ token: t, reply });
-      return reply.promise;
-    },
-    commit(t) {
-      trace.push("commit");
-      const reply = deferred<"accepted" | "retained" | "unknown">();
-      commits.push({ token: t, reply });
-      return reply.promise;
-    },
-  };
-  const coordinator = new DraftQuitCoordinator(host, {
-    beforeQuit() { trace.push("before"); return f.before(); },
-    willQuit() { trace.push("will"); return f.will(); },
-    lastWindowClosed() { trace.push("last"); f.last(); },
-  }, g);
-  return {
-    f, trace, closes, prepares, cancels, commits, coordinator,
-    destroy(w: WindowIdentity, generation = g) {
-      f.windows = f.windows.filter(x => x !== w);
-      coordinator.observeDestroyed(generation, w);
-    },
-    last() { coordinator.observeLastWindowClosed(g); },
-    async prepared(index: number, t = token()) {
-      prepares[index]!.resolve({ kind: "prepared", token: t });
-      await turn();
-      return t;
-    },
-  };
-}
+import type { Outcome } from "./gh451-terminal-quit-draft";
+import { fixture, g, w1, w2, turn } from "./gh451-terminal-quit-draft-fixture";
 
 test("AC2: newest-first requests, physical receipts, then qualified Prepare and conditional Commit", async () => {
   const x = fixture([w1, w2]);
@@ -337,7 +248,8 @@ test("C9: stale role or same WindowRef with different document cannot satisfy ph
   x.coordinator.observeDestroyed(g, w1);
   expect(x.prepares).toHaveLength(1);
   x.coordinator.retire(g);
-  expect(await a).toBe("retired");
+  // A sent Prepare with no reply is not proof of nonexecution.
+  expect(await a).toBe("unknown");
   await x.prepared(0);
   expect(x.trace).toEqual(["before", "close:1", "prepare"]);
 });
