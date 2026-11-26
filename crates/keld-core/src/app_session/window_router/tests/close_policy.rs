@@ -154,6 +154,93 @@ fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn gh451_release_and_opening_failure_gate_last_window_fact() -> TestResult {
+    // Real Core caller/registry/writer; injected native facts, no GUI.
+    let mut fixture = Fixture::new(Some(true))?;
+    fixture.subscribe()?;
+    fixture.ready()?;
+    let first = fixture.build(1, 7)?;
+    fixture.call(&WindowRequest::RequestClose { window: first }, 2)?;
+    fact(
+        &mut fixture,
+        &WindowEvent::CloseRequested {
+            window: first,
+            close_seq: 1,
+        },
+    )?;
+    reply(
+        &mut fixture,
+        2,
+        WindowResponse::CloseRequested { close_seq: 1 },
+    )?;
+    fixture.call(&WindowRequest::RequestClose { window: first }, 3)?;
+    reply(&mut fixture, 3, WindowResponse::Merged { close_seq: 1 })?;
+    verdict(&fixture, first, 1, CloseVerdict::Allow, 4)?;
+    reply(&mut fixture, 4, WindowResponse::ReplyApplied)?;
+    assert!(matches!(
+        fixture.commands.recv_timeout(Duration::from_secs(3))?,
+        AppWindowCommand::DestroyWindow { view: WebviewId(7) }
+    ));
+
+    // An unmatched receipt is not release; this correlated marker must be
+    // the next frame, not an early Destroyed or LastWindowClosed.
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowReleased {
+            view: WebviewId(99),
+        })?;
+    fixture.call(&WindowRequest::RequestClose { window: first }, 5)?;
+    reply(&mut fixture, 5, WindowResponse::AlreadyClosing)?;
+    fixture.call(
+        &WindowRequest::Create {
+            width: 640,
+            height: 480,
+            x: None,
+            y: None,
+        },
+        6,
+    )?;
+    let AppWindowCommand::CreateWindow { build, .. } =
+        fixture.commands.recv_timeout(Duration::from_secs(3))?
+    else {
+        panic!("expected admitted replacement");
+    };
+
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+    fact(&mut fixture, &WindowEvent::Destroyed { window: first })?;
+    // Opening is not visible in replay but must still fence the last-window
+    // transition. A deterministic correlated error proves no extra event.
+    fixture.call(&WindowRequest::RequestClose { window: first }, 7)?;
+    fixture.error(7, "KELD-CORE-038")?;
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowBuildFailed {
+            build,
+            stage: keld_wv::BuildStage::Window,
+        })?;
+    fixture.error(6, "KELD-CORE-041")?;
+    let (header, bytes) = read_frame(&mut fixture.peer)?;
+    assert_eq!(
+        (header.kind, header.channel, header.corr),
+        (FrameKind::Event, LIFECYCLE_CHANNEL, CorrelationId(0))
+    );
+    assert_eq!(
+        decode::<LifecycleEvent>(&bytes)?,
+        LifecycleEvent::LastWindowClosed
+    );
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+    fixture.call(&WindowRequest::RequestClose { window: first }, 8)?;
+    fixture.error(8, "KELD-CORE-038")?;
+    assert!(fixture.commands.try_recv().is_err());
+    Ok(())
+}
+
+#[test]
 fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_error() -> TestResult {
     let mut fixture = Fixture::new(Some(true))?;
     fixture.subscribe()?;

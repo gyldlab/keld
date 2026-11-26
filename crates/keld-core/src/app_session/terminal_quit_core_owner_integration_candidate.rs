@@ -1,5 +1,5 @@
-//! Local draft test module. Registration is deliberately excluded from shipping Core.
-//! Intended parent: window_registry::tests::terminal_quit_candidate (the unchanged prototype).
+//! Local draft test module, registered only under Core's test configuration.
+//! Parent: `window_registry::tests::terminal_quit_candidate`.
 //! The real registry and shutdown state are used; the fixture substitutes only authenticated
 //! caller delivery, FS completion, and native event delivery. It does not claim native/IPC proof.
 
