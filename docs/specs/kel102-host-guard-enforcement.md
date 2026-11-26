@@ -60,10 +60,9 @@ Non-goals:
 - `docs/specs/kel96-no-flag-host-boot.md`: the prerequisite no-flag host boot
   artifact and process-lifecycle owner.
 
-This spec makes the destination enforcement stated in architecture 03
-executable; it does not change the architecture contract. Architecture LIVE /
-TARGET labels move only in the implementation PR that proves the relevant
-acceptance criteria.
+This spec makes the architecture 03 contract executable.
+Only an implementation PR proving the criteria moves LIVE / TARGET labels.
+[GH-541](gh541-channel-grants-navigation/references.md) proposes changes to D5, section 4 and section 7.
 
 ### 2.1 Approved decision record
 
