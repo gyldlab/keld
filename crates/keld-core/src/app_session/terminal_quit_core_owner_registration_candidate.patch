@@ -1,0 +1,20 @@
+diff --git a/crates/keld-core/src/app_session/window_registry/tests.rs b/crates/keld-core/src/app_session/window_registry/tests.rs
+--- a/crates/keld-core/src/app_session/window_registry/tests.rs
++++ b/crates/keld-core/src/app_session/window_registry/tests.rs
+@@ -13,2 +13,5 @@
+ mod close_policy;
++#[cfg(target_os = "macos")]
++#[path = "../terminal_quit_candidate.rs"]
++mod terminal_quit_candidate;
+ mod close_state_table;
+diff --git a/crates/keld-core/src/app_session/terminal_quit_candidate.rs b/crates/keld-core/src/app_session/terminal_quit_candidate.rs
+--- a/crates/keld-core/src/app_session/terminal_quit_candidate.rs
++++ b/crates/keld-core/src/app_session/terminal_quit_candidate.rs
+@@ -485,3 +485,7 @@
+         assert_eq!(quit.serial, u64::MAX);
+     }
+ }
++
++#[cfg(all(test, target_os = "macos"))]
++#[path = "terminal_quit_core_owner_integration_candidate.rs"]
++mod core_owner_integration;
