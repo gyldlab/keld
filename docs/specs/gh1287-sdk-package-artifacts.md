@@ -3,8 +3,8 @@
 - Status: approved
 - Tracker: GH-1287
 - Owner: @0monish
-- Updated: 2026-11-15
-- Pin: 3a514aa3cdbeb0b2fd22bd6311dbf89372a60fe5
+- Updated: 2026-11-26
+- Pin: ab9f49efb0b6a8623e8fa8bdb3c198c3aad37849
 
 ## 1. Goal & non-goals
 
@@ -29,6 +29,8 @@ Architecture 02 §1 owns the one transport Worker and its self-entry; architectu
 6. Installed-graph lifecycle, protected hooks, terminal/recovery and Source retention are qualified with independent security/memory evidence. Source-only results do not prove this criterion.
 7. Actual Node cold import of the installed artifacts succeeds: under Node 26.10 the offline consumer imports the API root, its internal entries and KIPC, `require` of the API root yields the same app, and API and KIPC share one transport identity (main fcf013a8, PR #1289, merged into this branch). Opening an app link under Node remains
    unqualified: `WorkerLink.open` refuses with typed `KELD-IPC-005` before reading options or constructing a MessageChannel, Worker or SharedArrayBuffer. No fake pass, shim, or alternate transport is permitted.
+
+**Integration extension (pending GH-1287 owner decision):** Criterion 2 still approves only four source exports. PR #1507 requires three additional entries for the Electron codecs and original runtime. Those entries are candidate implementation facts, not approved SDK authority. See proposed D-1 in §4. Until the owner approves or replaces this inventory, installed distribution remains blocked.
 
 Hosted Node selection is now pinned: `.github/workflows/ci.yml` uses
 `actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1` with
@@ -56,7 +58,11 @@ does not close installed-graph Source, security, native or final-head CI gates.
 
 ## 4. Design
 
-API source uses `@keld/kipc`, with `link:../kipc` as its real local development dependency. API source exports enumerate its four entries. A KIPC-owned cold producer invokes the existing pinned compiler with strict options, unbundled JS, declarations and relative extension rewrite. It derives distribution manifests from an allowlist of source
+API source uses `@keld/kipc`, with `link:../kipc` as its real local development dependency. The approved base SDK exports four entries.
+
+The current integrated candidate exports seven. Proposed D-1 below does not grant approval.
+
+A KIPC-owned cold producer invokes the existing pinned compiler with strict options, unbundled JS, declarations and relative extension rewrite. It derives distribution manifests from an allowlist of source
 fields (name, version, description, license, type, engines, exports, dependencies, peerDependencies, devDependencies), changes the one API dependency to the actual KIPC version, and packs real output. Source `scripts` and `packageManager` are never shipped: the scripts name files the tarball omits, and an install script would run on consumers'
 machines. KIPC emits declarations and uses its one standalone Bun release build, `buildReleaseTransport` in `scripts/package-artifacts.ts`, with the exported stamp/verification helpers; `src/release-build.test.ts` checks that same function, so hook stripping and Node import are proven on the build that ships. It remains one readable Worker
 self-entry; the transport is not bundled into API.
@@ -71,6 +77,26 @@ alternative: `Bun.build`'s `root:` option does not fix the comment. A Bun 1.4.4 
 Types/channels: no wire types or channels change. Capabilities and permission manifest: none. Runtime seam: package loading changes from repository-relative to declared package resolution; the process, grants, callback lifetimes and failure semantics remain owned by existing implementations. Migration includes source callers, generated
 adapters, mocks and staged-sidecar mapping; no permanent adapter is added. Platform behavior is unqualified beyond recorded Bun probes and the Node 26.10 cold-import result in criterion 7; Node link opening is refused, not qualified.
 
+### D-1: Proposed exact integrated export inventory (owner approval pending)
+
+FACT: The current candidate source manifest and packer at `ab9f49efb0b6a8623e8fa8bdb3c198c3aad37849` contain these entries.
+
+| Export                    | Source module             | Current consumer           |
+| ------------------------- | ------------------------- | -------------------------- |
+| `.`                       | `src/index.ts`            | Public API                 |
+| `./internal/app`          | `src/app.ts`              | Electron facade            |
+| `./internal/dialog-codec` | `src/dialog.generated.ts` | Electron dialog options    |
+| `./internal/menu-codec`   | `src/menu.generated.ts`   | Electron menu              |
+| `./internal/link`         | `src/link.ts`             | Installed lifecycle        |
+| `./internal/window-codec` | `src/window-codec.ts`     | Electron window identity   |
+| `./runtime-preload`       | `src/runtime-preload.ts`  | Installed original runtime |
+
+FACT: `packages/@keld/api/src/package-artifact.test.ts` imports the three additions from offline-installed API artifacts. Their consumers do not approve a change to GH-1287 criterion 2. The GH-1404 installed graph amendment remains draft and has an open independent design gate.
+
+The SDK owner MUST decide whether the seven-entry inventory is an approved extension. The owner MUST record any approved revision on GH-1287 before release. Until then, the packed SDK integration remains unqualified.
+
+An added or changed export MUST fail the exact inventory test. The fault control adds one unapproved export key and requires a failed comparison. No signed native qualification is claimed.
+
 ## 5. Boundaries
 
 Implement in API package manifests, compiler config, transport imports, relevant tests and staged fixture; KIPC build config, package manifest, generator and artifact producer/tests; this spec.
@@ -79,7 +105,7 @@ The branch also changes these shared files, without which hosted CI cannot pass 
 
 - GH1301 CI dependency preparation, carried from d181830c and 4b5c2ade (neither is on main yet). `.github/workflows/ci.yml` installs the frozen kipc, api and electron graphs before the native `check` job's clippy and tests, because the Rust-hosted Bun corpus executes actual package sources that now resolve `@keld/kipc` through the declared
   edge and a fresh hosted checkout has no package-local `node_modules`. The `bun-test` job installs every selected package before any package's typecheck or test, because the API suite runs KIPC's pinned compiler and package graph and no `node_modules` survives between jobs. `tools/ci_workflow_security.ts` binds the `bun-test` job's execution
-context (exact keys, name, runner, timeout, needs, condition, OS matrix) and freezes the `check` and `bun-test` step inventories by SHA-256; `tools/ci_workflow_security.test.ts` covers both contracts. `.agents/ci.md` makes CI routing an independently reviewed shared-file concern owned by its own issue (GH1301); if GH1301 lands first, these hunks should become empty on rebase.
+  context (exact keys, name, runner, timeout, needs, condition, OS matrix) and freezes the `check` and `bun-test` step inventories by SHA-256; `tools/ci_workflow_security.test.ts` covers both contracts. `.agents/ci.md` makes CI routing an independently reviewed shared-file concern owned by its own issue (GH1301); if GH1301 lands first, these hunks should become empty on rebase.
 - `tools/ci-inputs.json` rebinds the reader digests whose readers this branch changes (Bun package, Rust test and policy readers).
 - `.gitleaksignore` admits one fingerprint-specific finding: the SHA-256 literal in `window-source-semantic-release.test-role.ts` is a hash oracle, not a credential.
 - Staged-source canonical KIPC resolution (test-only Rust, macOS): `crates/keld-host/tests/no_flag/macos/renderer_bridge.rs` stages byte-identical package manifests plus the one API-to-staged-KIPC package link, and `staged_source_packages_resolve_one_canonical_kipc_and_refuse_a_missing_edge` proves the staged API consumes canonical KIPC and fails when only that edge is removed.
@@ -90,9 +116,9 @@ Do not edit canonical transport runtime, Electron implementation, production Rus
 ## 6. Tasks
 
 - [x] T1 Land actual-pack failure-first regression and implement the declared package graph and artifact producer. Evidence: regression commit 6faae784 precedes the graph and producer commits bda41b1f and d5cf1f2d (its RED run is not re-executed here); on d8e49206, `env -u CLAUDECODE bun test src/package-artifact.test.ts` in
-  `packages/@keld/api` passes 2/0 and logs `"runtimes":{"bun":"1.4.4","node":"v26.10.0"}` (darwin arm64, 2026-10-31).
+      `packages/@keld/api` passes 2/0 and logs `"runtimes":{"bun":"1.4.4","node":"v26.10.0"}` (darwin arm64, 2026-10-31).
 - [ ] T2 Qualify artifact closure, reproducibility, Worker integrity, lifecycle and Source representation with negative controls and independent review. Landed in `package-artifact.test.ts`: missing-edge repack and removed installed KIPC package controls, byte-equal tarballs from two producer directories, a corrupted stamp with zero accepted
-  connections, installed initial and recovery lifecycle with two `link.js` mutations, and Source witnesses on installed emitted JS; the staged-source Rust test in §5 (not run in this reconciliation). Open: independent security/memory review on the exact final diff (criterion 6).
+      connections, installed initial and recovery lifecycle with two `link.js` mutations, and Source witnesses on installed emitted JS; the staged-source Rust test in §5 (not run in this reconciliation). Open: independent security/memory review on the exact final diff (criterion 6).
 - [ ] T3 Reconcile separately owned Node prerequisite, routed gates and integration evidence before merge. Done: the Node prerequisite (fcf013a8, PR #1289) is merged here and criterion 7 records its result. Open: the §8 gates, hosted `CI required` at the final head, and the remaining npm toolchain/reproducibility follow-up under §3.
 
 ### T-1: Verify packed SDK identity through offline imports

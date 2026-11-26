@@ -120,6 +120,43 @@ test("real packed SDK installs offline with one API app identity", async () => {
       ),
     );
     expect(manifest.dependencies["@keld/kipc"]).toBe(source.kipc.version);
+    // Exact GH-1404 integration inventory is a candidate pending GH-1287
+    // owner approval. The approved four-entry SDK baseline is not expanded by
+    // this test. Reject a new source or packed export without silent admission.
+    const candidateApiExports = {
+      ".": "./src/index.ts",
+      "./internal/app": "./src/app.ts",
+      "./internal/dialog-codec": "./src/dialog.generated.ts",
+      "./internal/menu-codec": "./src/menu.generated.ts",
+      "./internal/link": "./src/link.ts",
+      "./internal/window-codec": "./src/window-codec.ts",
+      "./runtime-preload": "./src/runtime-preload.ts",
+    };
+    const expectedInstalledExports = {
+      ".": { types: "./index.d.ts", default: "./index.js" },
+      "./internal/app": { types: "./app.d.ts", default: "./app.js" },
+      "./internal/dialog-codec": {
+        types: "./dialog.generated.d.ts",
+        default: "./dialog.generated.js",
+      },
+      "./internal/menu-codec": {
+        types: "./menu.generated.d.ts",
+        default: "./menu.generated.js",
+      },
+      "./internal/link": { types: "./link.d.ts", default: "./link.js" },
+      "./internal/window-codec": {
+        types: "./window-codec.d.ts",
+        default: "./window-codec.js",
+      },
+      "./runtime-preload": {
+        types: "./runtime-preload.d.ts",
+        default: "./runtime-preload.js",
+      },
+    };
+    expect(source.api.exports).toEqual(candidateApiExports);
+    expect(manifest.exports).toEqual(expectedInstalledExports);
+    expect(Object.keys(manifest.exports).length).toBe(7);
+
     for (const name of ["api", "kipc"]) {
       const installed = JSON.parse(
         readFileSync(
