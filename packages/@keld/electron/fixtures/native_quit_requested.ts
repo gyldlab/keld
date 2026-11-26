@@ -252,8 +252,13 @@ if (mode?.startsWith("scope-")) {
         : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
     );
   } else if (mode?.startsWith("zero-duplicate")) {
-    if (mode === "zero-duplicate-legacy") await app.quit();
-    else await nested;
+    if (mode === "zero-duplicate-legacy") {
+      await app.quit();
+    } else {
+      assert.ok(nested, "native Quit intent must dispatch before-quit");
+      await nested;
+    }
+    assert.ok(reentrantAccepted, "accepted Quit must invoke its listener");
     await reentrantAccepted;
     await app.quit();
     assert.equal(terminals, 1, "one accepted terminal request");

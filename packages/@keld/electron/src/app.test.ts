@@ -3,6 +3,7 @@
  * into `link.test.ts` (bun test keeps a process-wide module cache across files).
  */
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const fixtures = join(import.meta.dir, "..", "fixtures");
@@ -262,12 +263,37 @@ test("GH451 accepted legacy Quit notifies once under reentrant and later calls",
 });
 
 test("GH451 accepted native Quit notifies once under reentrant and later calls", async () => {
+  // Reuse the qualified schema-7 fixture and role selection from the existing
+  // native Quit test. An env flag alone cannot admit a Host-selected Source.
+  const installedFacts = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../kipc/test/fixtures/installed-launch-facts-v7.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    KELD_NATIVE_WINDOW_FACADE: "1",
+  };
+  delete env.BUN_OPTIONS;
+  delete env.NODE_OPTIONS;
   child = Bun.spawn({
-    cmd: [process.execPath, "./native_quit_requested.ts", "zero-duplicate"],
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      `--define=__KELD_HOST_LAUNCH_FACTS__:${JSON.stringify(installedFacts)}`,
+      "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+      "./native_quit_requested.ts",
+      "zero-duplicate",
+    ],
     cwd: fixtures,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+    env,
   });
   const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
   expect(code).toBe(0);
