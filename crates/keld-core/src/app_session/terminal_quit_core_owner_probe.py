@@ -13,11 +13,23 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
-REGISTRY = (ROOT / "window_registry.rs").read_text()
-CORE = (ROOT.parent / "app_session.rs").read_text()
-FIXTURES = (ROOT / "window_registry/tests.rs").read_text()
-PROTOTYPE = (ROOT / "terminal_quit_candidate.rs").read_text()
-CANDIDATE = (ROOT / "terminal_quit_core_owner_integration_candidate.rs").read_text()
+SOURCE_HASHES = {}
+
+
+def read_source(file):
+    data = (ROOT / file).read_bytes()
+    SOURCE_HASHES[file] = hashlib.sha256(data).hexdigest()
+    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+REGISTRY = read_source("window_registry.rs")
+CORE = read_source("../app_session.rs")
+FIXTURES = read_source("window_registry/tests.rs")
+PROTOTYPE = read_source("terminal_quit_candidate.rs")
+CANDIDATE = read_source("terminal_quit_core_owner_integration_candidate.rs")
+ROUTER_FIXTURES = read_source("window_router/tests.rs")
+ROUTER = read_source("window_router.rs")
+DISPATCH = read_source("terminal_quit_core_dispatch_candidate.rs")
 REGISTER = '#[cfg(target_os = "macos")]\n#[path = "../terminal_quit_candidate.rs"]\nmod terminal_quit_candidate;'
 REAL_FS = '#[cfg(all(test, not(keld_core_native_renderer_main)))]\n#[path = "terminal_quit_core_real_fs_candidate.rs"]\nmod real_fs;'
 REAL_DISPATCH = '#[cfg(all(test, not(keld_core_native_renderer_main)))]\n#[path = "terminal_quit_core_dispatch_candidate.rs"]\nmod real_dispatch;'
@@ -139,8 +151,8 @@ def compile_dispatch_projection(tmp):
     tests = session / "window_registry/tests.rs"
     tests.parent.mkdir(parents=True)
     registry_observation = method(FIXTURES, "fixture_terminal_observation")
-    window_observation = method((ROOT / "window_router/tests.rs").read_text(), "fixture_terminal_observation")
-    selection = method((ROOT / "window_router.rs").read_text(), "original_menu_quit_selected")
+    window_observation = method(ROUTER_FIXTURES, "fixture_terminal_observation")
+    selection = method(ROUTER, "original_menu_quit_selected")
     caller_guard = method(CORE, "with_primary_caller_locked", "")
     hook = "type ConditionalQuitFixtureHandler" + between(
         CORE, "type ConditionalQuitFixtureHandler", "/// How a post-Quit drain ended"
@@ -149,9 +161,7 @@ def compile_dispatch_projection(tmp):
                      "\nimpl WindowRegistry {\n" + registry_observation + "}\n")
     (session / "terminal_quit_candidate.rs").write_text(PROTOTYPE.replace(REAL_FS, ""))
     (session / "terminal_quit_core_owner_integration_candidate.rs").write_text(CANDIDATE)
-    (session / "terminal_quit_core_dispatch_candidate.rs").write_text(
-        (ROOT / "terminal_quit_core_dispatch_candidate.rs").read_text()
-    )
+    (session / "terminal_quit_core_dispatch_candidate.rs").write_text(DISPATCH)
     owner_shapes = r"""
 use crate::CorrelationId;
 use std::{io, sync::{Weak, atomic::AtomicU32}};
@@ -214,9 +224,8 @@ struct PrimaryRouterHandle {
 def main():
     if sys.platform != "darwin":
         raise SystemExit("Run this pinned macOS projection on the macOS owner host.")
-    for file in ("window_registry.rs", "../app_session.rs", "window_registry/tests.rs", "terminal_quit_candidate.rs", "terminal_quit_core_owner_integration_candidate.rs"):
-        path = ROOT / file
-        print(hashlib.sha256(path.read_bytes()).hexdigest(), file)
+    for file, digest in SOURCE_HASHES.items():
+        print(digest, file)
     with tempfile.TemporaryDirectory(prefix="gh451-core-owner-w1-") as folder:
         tmp = Path(folder)
         build_and_run(tmp, "exact_projection", CANDIDATE, registry_methods)

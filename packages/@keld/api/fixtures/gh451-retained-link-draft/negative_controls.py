@@ -106,6 +106,25 @@ ledger_controls = [
 ]
 cases = [("candidate.ts", *control) for control in controls]
 cases += [("reservation.ts", *control) for control in ledger_controls]
+def run_fixture(folder, selected):
+    return subprocess.run(
+        [bun, "test", str(folder / "candidate.test.ts"), "-t", re.escape(selected)],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
+
+
+def reported_test(output, outcome, selected):
+    # Require exactly one named result of the expected kind. Do not accept a
+    # compilation error, empty selection, or a failure from an unrelated test.
+    results = re.findall(r"^\((pass|fail|skip)\) (.+)$", output, re.MULTILINE)
+    if len(results) != 1 or results[0][0] != outcome:
+        return None
+    name = re.sub(r" \[\d+(?:\.\d+)?(?:ms|s)\]$", "", results[0][1])
+    if re.match(re.escape(selected) + r"(?!\w)", name):
+        return name
+    return None
+
+
 for filename, name, old, new, expected in cases:
     source = sources[filename]
     if old not in source:
@@ -113,17 +132,18 @@ for filename, name, old, new, expected in cases:
     with tempfile.TemporaryDirectory(prefix=".negative-", dir=root) as tmp:
         folder = Path(tmp)
         for name_in_tree, contents in sources.items():
-            (folder / name_in_tree).write_text(
-                source.replace(old, new, 1) if name_in_tree == filename else contents
-            )
+            (folder / name_in_tree).write_text(contents)
         (folder / "candidate.test.ts").write_text(tests)
-        run = subprocess.run(
-            [bun, "test", str(folder / "candidate.test.ts"), "-t", expected],
-            capture_output=True, text=True, timeout=20, check=False,
-        )
-        output = run.stdout + run.stderr
-        # A compile error or unrelated failure is not a successful control.
-        if run.returncode == 0 or not re.search(r"\(fail\) " + re.escape(expected), output):
+        baseline = run_fixture(folder, expected)
+        output = baseline.stdout + "\n" + baseline.stderr
+        baseline_name = reported_test(output, "pass", expected)
+        if baseline.returncode != 0 or baseline_name is None:
+            print(output)
+            raise SystemExit(f"unmodified fixture did not pass expected test: {name}")
+        (folder / filename).write_text(source.replace(old, new, 1))
+        run = run_fixture(folder, expected)
+        output = run.stdout + "\n" + run.stderr
+        if run.returncode == 0 or reported_test(output, "fail", expected) != baseline_name:
             print(output)
             raise SystemExit(f"control did not falsify expected test: {name}")
         print(f"RED {name}: {expected} (exit {run.returncode})")
