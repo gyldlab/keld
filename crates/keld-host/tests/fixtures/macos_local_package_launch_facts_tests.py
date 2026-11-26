@@ -15,6 +15,18 @@ import macos_local_package_acceptance as smoke
 import macos_local_package_launch_facts as facts
 
 
+class LaunchFactsFixtureInventoryTests(unittest.TestCase):
+    def test_stock_non_graph_bundle_has_only_three_generated_owner_leaves(self):
+        # stage_fixture uses smoke.stage_hello without rendererSource or graphSource.
+        # The fourth Core runtime entry belongs only to an original-graph bundle.
+        self.assertEqual(facts.BOOTSTRAP, (
+            "keld-launch-facts/kipc/src/launch-facts.ts",
+            "keld-launch-facts/electron/src/process-facts.ts",
+            "keld-launch-facts/electron/src/installed-launch-preload.ts",
+        ))
+        self.assertEqual(len(facts.BOOTSTRAP) * 2, 6)
+
+
 class LaunchFactsExitTests(unittest.TestCase):
     def exercise(self, exit_code=0, fatal="", wait_error=None, quit_error=None):
         with TemporaryDirectory() as temporary:

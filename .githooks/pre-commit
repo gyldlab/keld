@@ -18,6 +18,20 @@ while IFS= read -r -d '' path; do
     *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts) ;;
     *) continue ;;
   esac
+  # Only ordinary indexed file blobs are source code. Git records a symlink's
+  # target text as mode 120000, even if its pathname ends in .ts or .js.
+  # Read a NUL-terminated index row with an exact literal pathspec. No glob,
+  # whitespace or newline in a path may select another index entry.
+  stage_row=''
+  IFS= read -r -d '' stage_row < <(
+    git ls-files --stage -z -- ":(literal)$path"
+  ) || :
+  mode="${stage_row%% *}"
+  case "$mode" in
+    120000) continue ;;
+    100644|100755) ;;
+    *) printf 'pre-commit: unknown staged file mode for %q.\n' "$path" >&2; exit 1 ;;
+  esac
   git show ":$path" >"$scratch/staged"
   if ! bun fmt --no-script --stdin-filepath="$path" \
     <"$scratch/staged" >"$scratch/formatted"; then

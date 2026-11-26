@@ -47,6 +47,19 @@ pub fn macos_local_original_entry_bootstrap_source(
     original_relative: &str,
 ) -> Result<Vec<u8>, HostAppError> {
     super::graph_contract::validate_graph_relative_path(original_relative)?;
+    // Pinned Bun 1.4.4 refuses `bun run <existing-file-with-?>` with
+    // "Module not found" even though the literal path is an ordinary macOS
+    // filename. Never sign an original-graph boot that cannot reach Ready.
+    // Reject only the affected original main filename class. Graph resources
+    // and ordinary (non-graph) paths retain their existing admission rules.
+    if original_relative.contains('?') {
+        return Err(HostAppError::new(
+            "KELD-CORE-036",
+            "installed original entry path",
+            "Bun 1.4.4 cannot launch an original entry containing '?'",
+            "Rename the original entry to a literal filename without '?' before building.",
+        ));
+    }
     // The Bun preload resolves a signed *filesystem* path with realpathSync.
     // Serialize the graph-approved spelling as one JavaScript string literal,
     // not as an import URL or an unescaped insertion into quoted source.
@@ -702,7 +715,6 @@ mod tests {
             "src/with space.mjs",
             "src/with\"quote.mjs",
             "src/entry#fragment.mjs",
-            "src/entry?query.mjs",
             "src/%2e%2e/not-traversal.mjs",
             "src/entry\nline.mjs",
             "src/über.mjs",
@@ -747,6 +759,8 @@ mod tests {
             "src\\entry.js",
             "src//entry.js",
             "src/entry:stream.mjs",
+            "src/entry?query.mjs",
+            "src/folder?name/entry.mjs",
             "src/entry\0.js",
         ] {
             assert!(

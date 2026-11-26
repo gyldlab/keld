@@ -34,6 +34,8 @@ import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 type Message = {
   kind: string;
   entryStarted?: boolean;
+  entryStartedAtNs?: string;
+  probeObservedAtNs?: string;
   before?: Record<string, string>;
   appReady?: boolean;
   observedHostReady?: boolean;
@@ -53,6 +55,7 @@ function withEntryMainIdentityProbe(source: string): string {
   return (
     'import { statSync } from "node:fs";\n' +
     'import { fileURLToPath } from "node:url";\n' +
+    "const __keld_entry_started_at_ns = process.hrtime.bigint().toString();\n" +
     `function sameUsablePhysicalFile(a, b) {
   const first = statSync(a, { bigint: true });
   const second = statSync(b, { bigint: true });
@@ -69,6 +72,7 @@ function withEntryMainIdentityProbe(source: string): string {
   kind: "entry",
   before,
   after: { ...process.versions },
+  entryStartedAtNs: __keld_entry_started_at_ns,
   entryIdentity: {
     importMetaMain: import.meta.main,
     bunMainMatchesArgv1:
@@ -359,6 +363,9 @@ async function provePackedHandshake(
   const messages: Message[] = [];
   let authenticated = false;
   let enteredBeforeAuth = 0;
+  let finalReplyWriteStartNs: bigint | undefined;
+  let childToHostOffsetLowerNs: bigint | undefined;
+  let childToHostOffsetUpperNs: bigint | undefined;
   let pending: ((message: Message) => void) | undefined;
   let pendingProbe: ((message: Message) => void) | undefined;
   let pendingEntryProbe: ((message: Message) => void) | undefined;
@@ -374,6 +381,7 @@ async function provePackedHandshake(
     process.send?.({
       kind: "entry-execution-observed",
       entryStarted: globalThis.__keld_test_entry_executed === true,
+      probeObservedAtNs: process.hrtime.bigint().toString(),
     });
   }
 });
@@ -521,15 +529,50 @@ async function provePackedHandshake(
         // independent IPC message path while this Host frame is withheld.
         // A missing await in the signed preload exposes true here.
         step = "entry-before-final-subscription-reply";
-        const observation = new Promise<Message>((resolve) => {
-          pendingEntryProbe = resolve;
-        });
-        child.send({ kind: "probe-entry-execution" });
-        const observed = await withIoDeadline(observation, 1_500);
-        expect(observed.kind).toBe("entry-execution-observed");
-        if (observed.entryStarted !== false) {
-          throw new Error("original executed before final subscription reply");
+        // Bun process.hrtime bigint values have process-dependent origins.
+        // Calibrate the child clock to the Host clock through three causally
+        // bounded IPC round trips while the final Host ACK is withheld.
+        // Intersect the offset intervals; an unsupported or drifting clock
+        // must fail instead of returning a false negative.
+        for (let probe = 0; probe < 3; probe++) {
+          const observation = new Promise<Message>((resolve) => {
+            pendingEntryProbe = resolve;
+          });
+          const probeSentAtNs = process.hrtime.bigint();
+          child.send({ kind: "probe-entry-execution" });
+          const observed = await withIoDeadline(observation, 1_500);
+          const probeReceivedAtNs = process.hrtime.bigint();
+          expect(observed.kind).toBe("entry-execution-observed");
+          const observedAtNs = BigInt(observed.probeObservedAtNs ?? "0");
+          const lower = probeSentAtNs - observedAtNs;
+          const upper = probeReceivedAtNs - observedAtNs;
+          if (
+            childToHostOffsetLowerNs === undefined ||
+            lower > childToHostOffsetLowerNs
+          )
+            childToHostOffsetLowerNs = lower;
+          if (
+            childToHostOffsetUpperNs === undefined ||
+            upper < childToHostOffsetUpperNs
+          )
+            childToHostOffsetUpperNs = upper;
+          expect(childToHostOffsetLowerNs <= childToHostOffsetUpperNs!).toBe(
+            true,
+          );
+          if (observed.entryStarted !== false)
+            throw new Error(
+              "original executed before final subscription reply",
+            );
         }
+      }
+      if (
+        probeEntryBeforeLastSubscription &&
+        channel === COMPAT_CONTROL_CHANNEL
+      ) {
+        // Capture the entire withheld-reply interval, not only the preceding
+        // probe instant. A child can send its `entry` IPC notification late;
+        // compare its first *execution* timestamp after receiving the entry.
+        finalReplyWriteStartNs = process.hrtime.bigint();
       }
       await writer.writeFrame(
         FrameKind.Reply,
@@ -555,6 +598,17 @@ async function provePackedHandshake(
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
     expect(enteredBeforeAuth).toBe(0);
+    if (probeEntryBeforeLastSubscription) {
+      expect(finalReplyWriteStartNs).toBeDefined();
+      expect(childToHostOffsetLowerNs).toBeDefined();
+      // A later-delivered IPC entry cannot hide a start during the entire
+      // period when the last Subscribe reply was still withheld. Use the
+      // earliest possible Host-clock time within the calibrated interval.
+      const earliestHostEntryAtNs =
+        BigInt(entered.entryStartedAtNs ?? "0") + childToHostOffsetLowerNs!;
+      if (earliestHostEntryAtNs < finalReplyWriteStartNs!)
+        throw new Error("original executed before final subscription reply");
+    }
     expect(entered.before).toEqual(captured.versions);
     // One real Bun main must share the authenticated SDK with its preloader.
     // The signed Mac preload leaves import.meta.main truthful for the original.
