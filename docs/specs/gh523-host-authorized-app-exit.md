@@ -31,6 +31,8 @@ architecture](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c
 - [Electron ExitWithCode
 source](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/browser.cc).
 - [Owner issue and CLI amendment](https://github.com/gyldlab/keld/issues/523).
+- [GH-451 delegated shared terminal decision](https://github.com/gyldlab/keld/issues/451#issuecomment-7182471840).
+- [GH-451 revised terminal contract](https://github.com/gyldlab/keld/blob/fb8b968ff0168f3618d1ad170ab6bbdb4550a703/docs/specs/gh451-cancelable-two-phase-quit.md).
 
 Historical baseline at the pinned source: the app facade does not expose `app.exit`. Electron's pinned source skips cancelable quit callbacks,
 destroys windows after loop readiness and has an earlier direct-exit branch. Current Keld CLI status behavior must be read in the
@@ -98,9 +100,10 @@ boundary and approves none of those changes.
 ### AC-7: Exit and Quit commit only one terminal decision
 
 - **Given:** An authenticated Exit(7) races a reversible GH-451 Quit preparation or its terminal Commit.
-- **When:** The Host lifecycle owner orders the two admission operations.
-- **Then:** Exit first invalidates the preparation and commits Exit(7); Quit first retains its committed cause and code.
-  The later operation cannot change the winner, issue a second terminal receipt, emit a second quit event or repeat cleanup.
+- **When:** The existing Host owner orders eligible irreversible reservations after owed FS obligations settle.
+- **Then:** Exit committing first invalidates the preparation and fixes Exit(7); Quit committing first retains its cause and code.
+  The loser cannot change the winner, claim live-link Retained after commitment, issue a second successful receipt, emit a
+  second quit event or repeat cleanup. Unknown disposition is not evidence that the original can be replayed.
 - **Negative control:**
   - **Single fault:** Allow Exit to overwrite a committed Quit code.
   - **At-risk precondition:** Quit committed before authenticated Exit(7) reached terminal admission.
@@ -108,6 +111,19 @@ boundary and approves none of those changes.
 
 Run the reverse admission order independently. Mutate acceptance of an invalidated Quit token after Exit wins; require RED if
 that Commit succeeds or repeats terminal cleanup.
+
+### AC-8: Competing terminal requests preserve admitted filesystem obligations
+- **Given:** An existing authenticated FS call owes its terminal Reply/Err and lease settlement during GH-451 Draining.
+- **When:** A validated Exit contends with conditional Quit for the shared terminal decision.
+- **Then:** A same-reader queued Exit is not admitted during the reversible pause; any independently eligible contender honors
+  the same running-state drain. Required replies and leases settle before one final serialized reservation. An indeterminate
+  drain or transport failure remains non-success under the existing owner; no dropped reply creates a successful receipt.
+- **Negative control:**
+  - **Single fault:** Allow the competing Exit to reserve terminal state before an owed FS terminal reply/lease settles.
+  - **At-risk precondition:** The admitted FS worker requires the running-state writer path during Quit Draining.
+  - **Expected RED:** An owed reply disappears, a lease is stranded, or terminal success is claimed before those obligations.
+
+Test each eligible reservation order, a queued same-reader Exit, an actual FS Reply and Err, and failure with exact custody.
 
 ## 4. Design
 
@@ -118,12 +134,20 @@ and validated code before teardown can kill a child. Supervisor recovery consume
 Ordinary crashes retain their existing classification.
 
 GH-451 Prepare is reversible and does not own the terminal latch. Use one ordered Host admission boundary for Exit and the
-GH-451 Commit. A validated, authorized Exit admitted first invalidates the active Quit preparation in that same decision;
+GH-451 Commit. A validated, authorized Exit reserving first invalidates the active Quit preparation in that same decision;
 subsequent Commit/Cancel for that token cannot change the winner. If Quit commits first, later Exit receives a typed
-already-terminal refusal while a response path remains available. Do not invent a second successful terminal receipt.
+already-terminal refusal while a response path remains available. A losing operation must not imply a live retained link.
+Do not invent a second successful terminal receipt.
 Duplicate requests for the winning decision may report that same outcome, never a new code or terminal action. The committed
 cause and code remain authoritative for native cleanup, supervisor classification and the actual process status. This proposed
 cross-feature ordering requires joint GH-451/GH-523 and KEL-96 owner approval; it is not a current runtime contract.
+
+Respect the existing reversible reader-pause and FS drain contract from GH-451. A queued same-reader Exit is not yet admitted.
+An independently eligible Exit must share the running-state owed terminal Reply/Err and lease obligations before reservation.
+Do not hold required transition/registry/writer locks over drain. Recheck admission and reserve once at the existing final cut.
+A failed/indeterminate drain is non-success; resume only with proven noncommit and settled obligations, otherwise preserve
+custody under the existing lifecycle owner. Joint lifecycle/FS owners must approve the exact failure disposition. The GH-451
+selection records this shared requirement, not approval of the independent Exit API, code range or CLI migration.
 
 ### 4.2 API proposal
 
@@ -173,7 +197,8 @@ architecture, generated schemas, code and unrelated work remain with their exist
 - **Blocked by:** T-1
 - [ ] Implement validated host exit admission and one atomic terminal latch.
 - [ ] Test duplicate requests, stale identities and terminal-vs-crash classification.
-- [ ] Test both GH-451 Commit/Exit admission orders with a reversible preparation and one terminal receipt, event and status.
+- [ ] Test both GH-451 Commit/Exit reservation orders with a reversible preparation and one terminal receipt, event and status.
+- [ ] Test the real owed FS reply/lease barrier and failure disposition before either contender can reserve.
 
 ### T-3: Connect native exit paths and parent status propagation
 - **Blocked by:** T-2, B-2
@@ -194,6 +219,8 @@ Use a parent process that records actual child exit status and role-generation e
 from a mock response or forced harness kill. Assert cleanup order without arbitrary sleep and keep a normal crash-recovery
 positive control. Use explicit barriers to order Exit admission against Quit Commit, then check one terminal decision,
 receipt, event and actual process status in both orders; also verify rejected invalid Exit leaves the reversible Quit unchanged.
+Hold actual admitted FS Reply/Err and lease obligations during Draining, including the queued and independently eligible Exit
+cases. Preserve the prior failure until its exact custody is known; do not infer success from a mock reservation.
 
 Documentation validation covers immutable source readback, all ten sections, independent controls, proposal wording and file limits.
 Runtime, native and original-app tests remain planned, without new execution evidence from this specification migration.
@@ -209,7 +236,8 @@ Documentation checks in the migration cannot qualify any OS behavior.
 ## 8. Review gates triggered
 
 Public API, wire protocol and lifecycle/CLI owner approval; architecture amendment required before implementation.
-Joint GH-451/GH-523 approval must cover the shared terminal winner, receipt and status rule in section 4.1.
+Joint GH-451/GH-523/KEL-96/FS approval must cover the shared terminal winner, receipt, drain and status rule in section 4.1.
+The user-delegated GH-451 choice does not approve the remaining GH-523 API, code range, wire or CLI contracts.
 
 Status remains draft. Implementation admission requires the exact owning decisions in section 10 and approval of this contract.
 Draft PR publication is not that approval.
@@ -236,7 +264,8 @@ Use the existing lifecycle family. Allocate one generated schema entry and appro
 - **Status:** open
 - **Owner:** @0monish (GH-523 draft owner), coordinating KEL-75 and KEL-96 lifecycle owners.
 - **Impact:** T-1 cannot authorize new exit semantics or relabel unexpected role death without a named owner decision.
-- **Check:** Read the approved, pinned supervisor and KEL-96 intentional-exit amendment, with both early and ready cases.
+- **Check:** Read the approved, pinned supervisor and KEL-96 intentional-exit amendment, with both early and ready cases,
+  including the shared owed-FS-reply and lease drain before reservation and exact losing-attempt custody.
 
 ### B-2: Code range, generated schema and CLI status mapping require approval
 - **Status:** open
