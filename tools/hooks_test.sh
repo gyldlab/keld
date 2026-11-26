@@ -130,4 +130,17 @@ if [[ "$(git -C "$fixture" show HEAD:checked.ts)" != 'const broken = { ok: true 
   echo "error: pre-commit changed or selected the wrong source of staged bytes" >&2
   exit 1
 fi
+# Legitimate tracked symlinks with a source-language suffix have link target
+# text in the index, not JavaScript/TypeScript. Their bytes must stay unchanged
+# and a staged source formatter must skip the symlink itself. A glob-looking
+# pathname also checks that stage-mode lookup uses a literal pathspec.
+ln -s 'target-which-is-not-typescript' "$fixture/[generated].ts"
+git -C "$fixture" add -- '[generated].ts'
+git -C "$fixture" commit -qm 'hook: allow tracked source-suffix symlink'
+if [[ "$(git -C "$fixture" ls-tree HEAD -- '[generated].ts' | cut -d' ' -f1)" != '120000' ]] ||
+  [[ "$(git -C "$fixture" show 'HEAD:[generated].ts')" != 'target-which-is-not-typescript' ]]; then
+  echo "error: staged symbolic source path was changed or not committed" >&2
+  exit 1
+fi
+
 echo "hooks checkout and installed staged pre-commit trust-boundary tests ok"
