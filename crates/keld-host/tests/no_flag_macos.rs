@@ -21,6 +21,8 @@ mod lifecycle;
 #[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/media/mod.rs"]
 mod media;
+#[path = "no_flag/macos/module_process.rs"]
+mod module_process;
 #[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/profiles/mod.rs"]
 mod profiles;
