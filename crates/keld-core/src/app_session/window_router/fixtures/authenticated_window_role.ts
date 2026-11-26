@@ -6,6 +6,7 @@ import {
   WINDOW_CHANNEL,
   WorkerLink,
   isCallError,
+  quitAndCloseLink,
 } from "../../../../../../packages/@keld/kipc/src/transport.ts";
 import {
   decodeWindowEvent,
@@ -53,6 +54,8 @@ const maximized = new Promise<void>((resolve) => {
 const ended = new Promise<string>((resolve) => {
   link.onEnd((error) => resolve(error.code));
 });
+let openingCreate: Promise<string> | undefined;
+let openingQuit: Promise<string> | undefined;
 link.setStateApplier(LIFECYCLE_CHANNEL, (payload) => {
   readyBytes = Array.from(payload, (byte) =>
     byte.toString(16).padStart(2, "0"),
@@ -117,6 +120,41 @@ for await (const command of commands) {
   } else if (command === "READY") {
     await ready;
     report(`READY ${readyBytes}`);
+  } else if (command === "CREATE-OPENING") {
+    if (openingCreate !== undefined)
+      throw new Error("only one outstanding Opening Create is allowed");
+    openingCreate = call({
+      variant: "Create",
+      width: 640,
+      height: 480,
+      x: null,
+      y: null,
+    }).then(
+      (response) => `reply:${response.variant}`,
+      (error: unknown) =>
+        isCallError(error) ? `error:${error.code}` : "error:untyped",
+    );
+    report("CREATE-OPENING SENT");
+  } else if (command === "QUIT-OPENING") {
+    if (openingCreate === undefined)
+      throw new Error("Quit requires a previously admitted Create");
+    // Send the real lifecycle Quit over the same authenticated WorkerLink.
+    // The Rust owner holds the native build command until after this cut.
+    openingQuit = quitAndCloseLink(link, 5000).then(
+      () => "reply",
+      (error: unknown) =>
+        isCallError(error) ? `error:${error.code}` : "error:untyped",
+    );
+    report("QUIT-OPENING SENT");
+  } else if (command === "OPENING-RESULT") {
+    if (openingCreate === undefined || openingQuit === undefined)
+      throw new Error("no authenticated Create/Quit result to observe");
+    const [createResult, quitResult, end] = await Promise.all([
+      openingCreate,
+      openingQuit,
+      ended,
+    ]);
+    report(`OPENING-RESULT ${createResult} ${quitResult} ${end} ${facts}`);
   } else if (command === "CREATE") {
     const response = await call({
       variant: "Create",

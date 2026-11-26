@@ -46,7 +46,12 @@ const { LifecycleLink } = await import("./link.ts");
 const emitted: string[] = [];
 const session = await LifecycleLink.connect("controlled-link", {
   onReady() {},
-  onLastWindowClosed() {
+  onLastWindowClosed(receipt) {
+    assert.equal(
+      receipt,
+      session,
+      "actual LastWindowClosed must retain its link owner",
+    );
     emitted.push("all-closed");
   },
   onLinkDead() {

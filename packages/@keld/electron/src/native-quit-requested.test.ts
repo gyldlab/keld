@@ -62,6 +62,56 @@ const modes = [
   "request-error",
   "veto",
   "zero",
+  "zero-before-overwrite",
+  "zero-before-global-noop",
+  "zero-before-global-throw",
+  "zero-before-getter-spoof",
+  "zero-off-before-clean",
+  "zero-off-before-splice-poison",
+  "zero-off-will-clean",
+  "zero-off-will-splice-poison",
+  "zero-register-before-push-noop",
+  "zero-register-will-push-noop",
+  "zero-before-reflect-noop",
+  "zero-before-reflect-throw",
+  "zero-before-slice-noop",
+  "zero-before-slice-throw",
+  "zero-will-veto",
+  "zero-will-overwrite",
+  "zero-will-global-noop",
+  "zero-will-global-throw",
+  "zero-will-getter-spoof",
+  "zero-will-reflect-noop",
+  "zero-will-reflect-throw",
+  "zero-will-slice-noop",
+  "zero-will-slice-throw",
+  "zero-will-retry",
+  "zero-will-throw",
+  "zero-will-create",
+  "zero-preexisting-pending-create",
+  "zero-preexisting-pending-preload",
+  "zero-dynamic-from-create",
+  "zero-dynamic-from-preload",
+  "zero-dynamic-proxy-from-preload",
+  "zero-dynamic-will-blocking-from-create",
+  "zero-dynamic-will-blocking-from-preload",
+  "zero-dynamic-to-create",
+  "zero-dynamic-to-preload",
+  "zero-before-pending-create",
+  "zero-before-pending-preload",
+  "zero-before-transient-create",
+  "zero-will-pending-create",
+  "zero-will-pending-preload",
+  "zero-will-transient-create",
+  "zero-will-transient-preload",
+  "zero-will-transient-blocking-create",
+  "zero-will-transient-blocking-preload",
+  "zero-will-transient-sync-throw-create",
+  "live-census-filter-only",
+  "live-census-some-only",
+  "live-census-both",
+  "live-census-index-setter",
+  "zero-will-index-setter",
   "multi",
   "missing-selection",
   "pre-ready",
@@ -137,7 +187,17 @@ for (const { facts, mode } of cases) {
       expect(child.stderr.toString()).toContain(
         "KELD-IPC-006: controlled original RequestClose failure",
       );
-    } else if (mode === "multi") {
+    } else if (
+      mode === "zero-will-create" ||
+      mode?.startsWith("zero-preexisting-pending-") ||
+      (mode?.startsWith("zero-dynamic-") && mode.includes("-from-")) ||
+      mode?.startsWith("zero-before-pending-") ||
+      mode?.startsWith("zero-before-transient-") ||
+      mode?.startsWith("zero-will-pending-") ||
+      mode?.startsWith("zero-will-transient-") ||
+      mode === "multi" ||
+      mode?.startsWith("live-census-")
+    ) {
       expect(child.stderr.toString()).toContain(
         "KELD native menu Quit failed;",
       );

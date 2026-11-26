@@ -436,6 +436,7 @@ void [app, internalApp, isCallError, encodeDialogRequest, encodeMenuRequest]; co
     );
     for (const name of [
       "window-source.test.ts",
+      "window-source-array-poison.test-role.ts",
       "window-source-release.test-role.ts",
       "window-source-semantic-release.test-role.ts",
       "window-source-diagnostic-release.test-role.ts",

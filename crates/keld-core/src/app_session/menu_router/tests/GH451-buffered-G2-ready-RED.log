@@ -1,0 +1,19 @@
+   Compiling keld-core v0.0.1 (/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh1404-native-quit-product-20261120/crates/keld-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.34s
+     Running unittests src/lib.rs (target/debug/deps/keld_core-1bcf199112ad9bb7)
+
+running 1 test
+
+thread 'app_session::menu_router::tests::native_os_quit::buffered_g1_intent_must_not_reach_fully_ready_g2_subscriber' (7106573) panicked at crates/keld-core/src/app_session/menu_router/tests/native_os_quit.rs:67:36:
+unqualified native Quit must emit no frame: (FrameHeader { kind: Event, flags: 0, channel: ChannelId(3), corr: CorrelationId(0), len: 1 }, [2])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app_session::menu_router::tests::native_os_quit::buffered_g1_intent_must_not_reach_fully_ready_g2_subscriber ... FAILED
+
+failures:
+
+failures:
+    app_session::menu_router::tests::native_os_quit::buffered_g1_intent_must_not_reach_fully_ready_g2_subscriber
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 427 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p keld-core --lib`

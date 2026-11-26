@@ -25,17 +25,20 @@ import {
   linkError,
   nativeFacadeBootSelected,
   runtimeProcessFactsSelected,
+  stateApply,
   stateFreeze,
   stateMap,
   stateMapDelete,
   stateMapSet,
   stateMapValues,
 } from "@keld/kipc";
-import type {
-  WindowEvent,
-  WindowRef,
-  WindowRequest,
-  WindowResponse,
+import {
+  decodeWindowRequest,
+  encodeWindowRequest,
+  type WindowEvent,
+  type WindowRef,
+  type WindowRequest,
+  type WindowResponse,
 } from "./window-codec.ts";
 import type { DesktopSnapshot, WindowSnapshot } from "./window-source.ts";
 export type { DesktopSnapshot } from "./window-source.ts";
@@ -319,7 +322,9 @@ function dispatchObservedLifecycle(
     }
   }
 }
-function onLastWindowClosed(): void {
+function onLastWindowClosed(session: LifecycleLink): void {
+  // A stale/retired G1 app-link must never publish a LastWindowClosed as G2.
+  if (connectedLink !== session || linkDead !== undefined) return;
   dispatchObservedLifecycle("last-window-closed");
 }
 function onHostQuitRequested(session: LifecycleLink): void {
@@ -361,7 +366,7 @@ function failReadyWaiters(err: Error): void {
 }
 
 function ignoreIfUnawaited(promise: Promise<unknown>): void {
-  void promise.catch(() => {});
+  void stateApply(trustedWindowPromiseThen, promise, [undefined, () => {}]);
 }
 
 function ensureLink(): Promise<LifecycleLink> {
@@ -429,11 +434,20 @@ function sendQuit(): Promise<void> {
     hostReady && connectedLink
       ? connectedLink.quit()
       : ensureLink().then((link) => link.quit());
-  const done = requested.finally(() => {
+  const finish = (): void => {
     // The Quit closed the link, which suppresses onLinkDead: a whenReady
     // still waiting can never see Ready, so it rejects with the close.
     if (!hostReady && linkDead === undefined) failReadyWaiters(closedByQuit());
-  });
+  };
+  // Promise.finally consults the receiver's application-mutable then.
+  // Observe only the genuine link settlement and preserve its exact error.
+  const done = stateApply(trustedWindowPromiseThen, requested, [
+    finish,
+    (error: unknown): never => {
+      finish();
+      throw error;
+    },
+  ]) as Promise<void>;
   ignoreIfUnawaited(done);
   return done;
 }
@@ -487,6 +501,7 @@ export function getWindowSnapshots(): readonly WindowSnapshot[] {
 /** Package-private, read-only scope for the root-approved original single-window handoff. */
 export interface OriginalWindowQuitScope {
   readonly window: Readonly<WindowRef>;
+  ownsCurrentGeneration(): boolean;
   isCurrentPending(window: WindowRef, closeSeq: bigint): boolean;
   dispatchedPendingClose(): bigint | null;
   requestClose(): Promise<WindowResponse>;
@@ -560,6 +575,22 @@ export function captureOriginalWindowQuitScope(
   const source = session.windowSource;
   if (!source) return undefined;
   const ref = Object.freeze({ id: window.id, incarnation: window.incarnation });
+  let selected: WindowSnapshot | undefined;
+  try {
+    selected = source.get(ref);
+  } catch {
+    return undefined;
+  }
+  if (
+    !selected ||
+    selected.host_destroyed ||
+    !selected.document?.current ||
+    !selected.document.finished
+  )
+    return undefined;
+  // Document recovery can reuse the physical WindowRef in this same app-link.
+  // A later native close for its successor cannot inherit this Quit attempt.
+  const originalDocumentGeneration = selected.document.generation;
   const current = (): WindowSnapshot | undefined => {
     if (
       connectedLink !== session ||
@@ -572,7 +603,8 @@ export function captureOriginalWindowQuitScope(
       return snapshot &&
         !snapshot.host_destroyed &&
         snapshot.document?.current &&
-        snapshot.document.finished
+        snapshot.document.finished &&
+        snapshot.document.generation === originalDocumentGeneration
         ? snapshot
         : undefined;
     } catch {
@@ -586,6 +618,28 @@ export function captureOriginalWindowQuitScope(
     current()?.pending_close === closeSeq;
   return {
     window: ref,
+    ownsCurrentGeneration(): boolean {
+      // A retired G1 close must never suppress the successor's lifecycle.
+      // The current document may change while the native window survives.
+      if (
+        currentOriginalWindowSession() !== session ||
+        session.windowSource !== source
+      )
+        return false;
+      try {
+        const snapshot = source.get(ref);
+        // The Host's Destroyed fact can remove the tombstone after dispatch.
+        // The caller also revokes this scope when any mismatched document fact
+        // is observed before that removal.
+        return (
+          snapshot === undefined ||
+          (snapshot.document?.generation === originalDocumentGeneration &&
+            (snapshot.host_destroyed || snapshot.document.current))
+        );
+      } catch {
+        return false;
+      }
+    },
     isCurrentPending,
     dispatchedPendingClose(): bigint | null {
       // Mirror application alone is insufficient: this existing owner records
@@ -651,7 +705,7 @@ export function getDesktopSnapshot(): DesktopSnapshot {
 export function flushAppliedLastWindowClosedAfterDestroy(): void {
   const session = connectedLink;
   if (!session) return;
-  if (session.consumeAppliedLastWindowClosed()) onLastWindowClosed();
+  if (session.consumeAppliedLastWindowClosed()) onLastWindowClosed(session);
 }
 
 /** Observe window facts only after their state was applied by the one WorkerLink. */
@@ -670,6 +724,35 @@ export function onWindowFactApplied(
   };
 }
 
+// This Host-owned module captures native Promise settlement before application
+// code may replace Promise.prototype.then. Only genuine transport outcomes
+// may retire Create reservations.
+const trustedWindowPromiseThen = Promise.prototype.then;
+
+// Supplemental role-local negative evidence, not a Host window census. A
+// Create/WithPreload may be admitted while Opening has no published Source
+// fact, and a failed transient Create may return the Source to zero. Neither
+// case gives the Electron facade permission to use forceful lifecycle Quit.
+let windowCreateAttemptEpoch = 0n;
+let pendingWindowCreateCalls = 0;
+
+/** @internal Only the Host may positively authorize terminal Quit. */
+export function observeWindowCreateActivity(): Readonly<{
+  epoch: bigint;
+  pending: number;
+}> {
+  return {
+    epoch: windowCreateAttemptEpoch,
+    pending: pendingWindowCreateCalls,
+  };
+}
+
+function isWindowCreate(request: WindowRequest): boolean {
+  return (
+    request.variant === "Create" || request.variant === "CreateWithPreload"
+  );
+}
+
 /** Host-minted synchronous Create / Destroy, unavailable until the full Ready barrier. */
 export function invokeWindowBlocking(request: WindowRequest): WindowResponse {
   if (!hostReady || !connectedLink?.windowSource) {
@@ -679,24 +762,26 @@ export function invokeWindowBlocking(request: WindowRequest): WindowResponse {
     );
   }
   const session = connectedLink;
-  const frozenRequest = snapshotHostCloseVerdict(request);
+  const frozenRequest = snapshotWindowRequest(request);
+  if (isWindowCreate(frozenRequest)) windowCreateAttemptEpoch += 1n;
   const response = session.callWindowBlocking(frozenRequest);
   acceptHostCloseReply(frozenRequest, response, session);
   return response;
 }
 
-/** Copy the exact pair/sequence/verdict sent before a mutable caller can act. */
-function snapshotHostCloseVerdict(request: WindowRequest): WindowRequest {
-  if (request.variant !== "CloseReply") return request;
-  const { id, incarnation } = request.window;
-  const close_seq = request.close_seq;
-  const verdict = request.verdict;
-  return Object.freeze({
-    variant: "CloseReply" as const,
-    window: Object.freeze({ id, incarnation }),
-    close_seq,
-    verdict,
-  });
+/**
+ * Decode the one canonical encoded request before deciding whether it creates
+ * a window. Call admission and the Host-bound encoder must see the same stable
+ * discriminant, even if a caller supplied a getter/proxy that changes variant
+ * between reads. This also copies the exact CloseReply identity and verdict.
+ * The actual window operation still runs through the existing app link/Guard.
+ */
+function snapshotWindowRequest(request: WindowRequest): WindowRequest {
+  const canonical = decodeWindowRequest(encodeWindowRequest(request));
+  if ("window" in canonical) stateFreeze(canonical.window);
+  if (canonical.variant === "CreateWithPreload")
+    stateFreeze(canonical.additional_arguments);
+  return stateFreeze(canonical);
 }
 
 /** Host reply, not a locally requested verdict, is the only clearing oracle. */
@@ -730,11 +815,39 @@ export function invokeWindow(request: WindowRequest): Promise<WindowResponse> {
     );
   }
   const session = connectedLink;
-  const frozenRequest = snapshotHostCloseVerdict(request);
-  return session.callWindow(frozenRequest).then((response) => {
-    acceptHostCloseReply(frozenRequest, response, session);
-    return response;
-  });
+  const frozenRequest = snapshotWindowRequest(request);
+  const tracked = isWindowCreate(frozenRequest);
+  if (tracked) {
+    windowCreateAttemptEpoch += 1n;
+    pendingWindowCreateCalls += 1;
+  }
+  // A Create reservation must end once, and only on an actual call result.
+  let released = false;
+  const releaseCreate = (): void => {
+    if (!tracked || released) return;
+    released = true;
+    pendingWindowCreateCalls -= 1;
+  };
+  let result: Promise<WindowResponse>;
+  try {
+    result = session.callWindow(frozenRequest);
+  } catch (error) {
+    releaseCreate();
+    throw error;
+  }
+  // Do not call result.then: applications can replace Promise.prototype.then
+  // after preload and impersonate the Host's completion while Create is Opening.
+  return stateApply(trustedWindowPromiseThen, result, [
+    (response: WindowResponse) => {
+      releaseCreate();
+      acceptHostCloseReply(frozenRequest, response, session);
+      return response;
+    },
+    (error: unknown): never => {
+      releaseCreate();
+      throw error;
+    },
+  ]) as Promise<WindowResponse>;
 }
 
 /** Package-private FS invocation; public exports expose only typed read/write. */

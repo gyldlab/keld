@@ -35,7 +35,12 @@ import {
   stateWeakMapGet,
   stateWeakMapSet,
 } from "@keld/kipc";
-import { emitNativeAppEvent, joinOriginalQuitBeforeClose } from "./app.ts";
+import {
+  emitNativeAppEvent,
+  joinOriginalQuitBeforeClose,
+  noteOriginalQuitVetoApplied,
+  noteOriginalQuitWindowDestroyed,
+} from "./app.ts";
 import { encodeEndpointArguments } from "@keld/kipc/endpoint-value-codec";
 
 /** Known draw.io preferences; other fields are reported, never made authoritative. */
@@ -921,6 +926,7 @@ export class BrowserWindow extends EventEmitter {
       if (fromDestroy) {
         queueMicrotask(() => releaseContentsAfterHostDestroyed(this.#contents));
       }
+      noteOriginalQuitWindowDestroyed(this.#ref);
     }
   }
 
@@ -985,6 +991,7 @@ export class BrowserWindow extends EventEmitter {
             "KELD-CORE-054",
             "original close Veto was not applied to its exact request",
           );
+        noteOriginalQuitVetoApplied(this.#ref, close_seq);
       });
       this.#lastVetoApplied = { closeSeq: close_seq, applied };
       void applied.catch((error: unknown) => {
