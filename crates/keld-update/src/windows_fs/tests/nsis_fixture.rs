@@ -4,6 +4,8 @@ use super::super::{
     DeletePurpose, EntryKind, create_directory_relative, create_file_relative_with_profile,
     entry_kind, open_for_delete, qualify_volume,
 };
+mod diagnostic_owner;
+
 use super::support::retained_directory;
 use cap_fs_ext::MetadataExt as _;
 use std::fs::{self, File, OpenOptions};
