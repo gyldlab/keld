@@ -32,6 +32,8 @@ separate. GH563 owns the menu adapter.
 - [W7 terminal review candidate](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/engineering/gh451-terminal-commit-review-w7.md).
 - [GH-523 draft AC-7 and shared terminal owner](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/specs/gh523-host-authorized-app-exit.md#L98-L126).
 - [User-delegated GH-451 design selection](https://github.com/gyldlab/keld/issues/451#issuecomment-7182471840).
+- [KEL-96 conditional lifecycle amendment draft #1603](https://github.com/gyldlab/keld/blob/960cc7e778e9c493976100b1797d68f2032d89e5/docs/specs/kel96-gh451-quit-order-amendment.md).
+- [Exact IPC negotiation and receipt-consumption proposal](https://github.com/gyldlab/keld/blob/1472d83b882b22e7cce95f5242123f8e1b34b2dc/docs/engineering/gh451-conditional-quit-ipc-amendment.md).
 
 Verified baseline: Current main app.quit returns a Promise and refuses live windows with KELD-COMPAT-012. It does not implement
 this full transaction. The public D2 comment approves a narrower local preflight; it is not proof of full native, multiwindow or
@@ -417,7 +419,8 @@ terminal reserve. KEL-96 must adopt the corresponding owner amendment. The nativ
 ### Q-3: Lifecycle payload and role-loss disposition
 Selected on the GH-451 side: one unresolved exact effect, ordered same-link Status, explicit receipt-consumption proof,
 bounded fail-closed retention and API/facade convergence in section 4.3. IPC owners approve negotiation, single lifecycle
-allocation and exact confirmation/retirement mechanism. No fallback on unknown; preserve existing legacy wire.
+allocation and exact confirmation/retirement mechanism. The linked IPC proposal describes the concrete candidate for review;
+no allocation or adoption is inferred. No fallback on unknown; preserve existing legacy wire.
 
 ### Q-4: Terminal/Create fence and late-created windows
 Selected on the GH-451 side: Host Prepare linearization, not JS callback-start emptiness; permanent Create invalidation.
