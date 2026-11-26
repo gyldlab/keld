@@ -60,13 +60,12 @@ cannot substitute for the matching Host receipt. Test later valid receipt and ex
 ### AC-2: Prepare and Create share the existing owner
 
 - **Given:** Physical release and an empty authoritative registry at Prepare.
-- **When:** A successful Create, preload or adoption follows Prepare.
-- **Then:** That token cannot commit, even after a failed build returns the
-  census to zero. Known invalidation suppresses will-quit. An unobserved
-  invalidation still prevents Commit.
+- **When:** The owner admits Create, CreateWithPreload or adoption after Prepare.
+- **Then:** Admission permanently invalidates the token, even if the operation later fails and the census returns to zero.
+  Known invalidation suppresses will-quit. An unobserved invalidation still prevents Commit.
 - **Negative control:**
   - **Single fault:** Derive token validity from the final zero census alone.
-  - **At-risk precondition:** An admitted Create fails before Commit.
+  - **At-risk precondition:** An admitted Create, CreateWithPreload or adoption fails before Commit.
   - **Expected RED:** The invalidated token reserves terminal shutdown.
 
 ### AC-3: Owed filesystem replies precede reservation
@@ -155,7 +154,8 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    authenticated current Ready and subscribed original and its registry under its
    existing admission order. Opening and Closing count as live.
    Prepare grants reversible authority only. The existing owner mints the token.
-   Any subsequent admitted Create permanently invalidates the token.
+   Admission of a later Create, CreateWithPreload or adoption permanently invalidates the token.
+   A later failure does not restore the token.
 3. Cancel revokes the exact preparation without terminal reservation.
    Commit pauses further reader dispatch. Drain all admitted FS terminal
    replies and leases while Running. Do not hold required locks during drain.
@@ -269,7 +269,7 @@ a prerequisite for the reversible design decision.
 | Criteria | Planned witness |
 |---|---|
 | AC-1 | Exact facade attempt and ordered registry facts with veto and Save retry |
-| AC-2 | Existing registry Create, preload and adoption orders, including failed build |
+| AC-2 | Admit Create, CreateWithPreload and adoption separately, then check invalidation even if the operation later fails |
 | AC-3 | Authenticated FS Reply and Err, held lease, pause and reserve counters |
 | AC-4 | Separate viable unresolved drain and actual failed-writer retirement; preserve exact error; successful Reply/Err controls |
 | AC-5 | Both eligible reservation orders, queued reader contender and one tail |
