@@ -586,9 +586,11 @@ describe("original preload runtime only", () => {
           released.push((event as CustomEvent<number>).detail);
         },
       );
+      let earlierEvents = 0;
+      let deniedEvents = 0;
       const earlier = f.call(
         "request",
-        { action: "watchFile", path, listener: () => {} },
+        { action: "watchFile", path, listener: () => earlierEvents++ },
         () => {},
         () => {},
       );
@@ -598,7 +600,7 @@ describe("original preload runtime only", () => {
       f.event("mainResp", [{ reqId: first.reqId, data: true }], 1);
       const denied = f.call(
         "request",
-        { action: "watchFile", path, listener: () => {} },
+        { action: "watchFile", path, listener: () => deniedEvents++ },
         () => {},
         () => {},
       );
@@ -608,6 +610,18 @@ describe("original preload runtime only", () => {
       f.event("mainResp", [{ reqId: replacement.reqId, error: "denied" }], 2);
       expect(released).toContain(denied.call as number);
       expect(released).not.toContain(earlier.call as number);
+      // An unacknowledged same-path replacement MUST NOT overwrite the
+      // callback of the last acknowledged watch. Test delivery before another
+      // successful registration can conceal the stale original map.
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path, curr: { size: 1 }, prev: { size: 0 } }],
+          3,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(earlierEvents).toBe(1);
+      expect(deniedEvents).toBe(0);
       let newestEvents = 0;
       f.call(
         "request",
@@ -618,15 +632,64 @@ describe("original preload runtime only", () => {
       const latest = decodeEndpointArguments(
         new Uint8Array(f.sends().at(-1)!.payload as number[]),
       )[0] as { reqId: number };
-      f.event("mainResp", [{ reqId: latest.reqId, data: true }], 3);
+      f.event("mainResp", [{ reqId: latest.reqId, data: true }], 4);
       expect(
         f.event(
           "fileChanged",
           [{ path, curr: { size: 1 }, prev: { size: 0 } }],
-          4,
+          5,
         ).disposition,
       ).toEqual({ status: "consumed" });
       expect(newestEvents).toBe(1);
+    } finally {
+      f.restore();
+    }
+  });
+  test("acknowledged watch replacement changes event owner despite a throwing response callback", () => {
+    const f = fixture();
+    try {
+      const path = "/test/throwing-replacement.xml";
+      let earlierEvents = 0;
+      let replacementEvents = 0;
+      f.call(
+        "request",
+        { action: "watchFile", path, listener: () => earlierEvents++ },
+        () => {},
+        () => {},
+      );
+      const first = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      expect(
+        f.event("mainResp", [{ reqId: first.reqId, data: true }], 1)
+          .disposition,
+      ).toEqual({ status: "consumed" });
+      f.call(
+        "request",
+        { action: "watchFile", path, listener: () => replacementEvents++ },
+        () => {
+          throw new Error("controlled original response callback failure");
+        },
+        () => {},
+      );
+      const second = decodeEndpointArguments(
+        new Uint8Array(f.sends().at(-1)!.payload as number[]),
+      )[0] as { reqId: number };
+      expect(
+        f.event("mainResp", [{ reqId: second.reqId, data: true }], 2)
+          .disposition,
+      ).toMatchObject({ status: "refused", code: "KELD-COMPAT-103" });
+      // The Host's successful registration is committed even when the page's
+      // response callback throws. The prior acknowledged callback is retired.
+      expect(
+        f.event(
+          "fileChanged",
+          [{ path, curr: { size: 2 }, prev: { size: 1 } }],
+          3,
+        ).disposition,
+      ).toEqual({ status: "consumed" });
+      expect(earlierEvents).toBe(0);
+      expect(replacementEvents).toBe(1);
     } finally {
       f.restore();
     }
