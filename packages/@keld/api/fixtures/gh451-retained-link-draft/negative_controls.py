@@ -7,7 +7,8 @@ import tempfile
 
 root = Path(__file__).resolve().parent
 bun = sys.argv[1]
-source = (root / "candidate.ts").read_text()
+sources = {name: (root / name).read_text()
+           for name in ("candidate.ts", "reservation.ts")}
 tests = (root / "candidate.test.ts").read_text()
 controls = [
     (
@@ -23,7 +24,7 @@ controls = [
         "Prepare Retained keeps same port",
     ),
     (
-        "permit new Prepare while original effect unresolved",
+        "drop original unknown-outcome latch",
         'if (this.#phase.kind === "unknown")\n      return { kind: "unknown", original: this.#phase.original };',
         'if (this.#phase.kind === "unknown") this.#phase = { kind: "idle" };',
         "prepare lost preserves original identity",
@@ -36,15 +37,9 @@ controls = [
     ),
     (
         "accept late direct Prepared from retired role",
-        'if (!this.#port.isCurrent() ||\n        (outcome?.kind !== "accepted" && !this.#port.isLive()))\n      return this.#unknown(original);',
-        'if (outcome?.kind !== "accepted" && !this.#port.isLive())\n      return this.#unknown(original);',
+        '(!this.#port.isCurrent() || !this.#port.isLive()))\n        return this.#unknown(original);',
+        '!this.#port.isLive())\n        return this.#unknown(original);',
         "late Prepared after role retirement",
-    ),
-    (
-        "accept Status correlation alias",
-        ' || receipt.correlation === original.correlation',
-        '',
-        "Status may not reuse unresolved effect correlation",
     ),
     (
         "convert generic failure to Retained",
@@ -52,13 +47,75 @@ controls = [
         '// MUTANT: infer no effect.\n  return { kind: "retained" };',
         "prepare generic-error preserves original identity",
     ),
+    (
+        "accept structural receipt clone",
+        'receipt !== this.#receipt',
+        '!this.#receipt',
+        "one active attempt survives Prepared receipt release",
+    ),
+    (
+        "erase known acceptance on local fence failure",
+        'this.#fenceError = error;',
+        'throw error;',
+        "known Accepted survives local fence failure, recovery=false",
+    ),
+    (
+        "evict timed-out Status without no-late evidence",
+        'this.#ledger.consume(statusLease);',
+        'this.#ledger.consume(statusLease);\n      this.#ledger.proveNoLate(statusLease);',
+        "lost Status occupies its separate bounded slot",
+    ),
 ]
-for name, old, new, expected in controls:
+ledger_controls = [
+    (
+        "reuse original correlation for Status",
+        'const lease = this.#allocate("status");',
+        'const lease = original;',
+        "Status may not reuse unresolved effect correlation",
+    ),
+    (
+        "send without reserving original correlation",
+        'const lease = this.#allocate("effect");',
+        'const lease = Object.freeze({ correlation: this.#next, kind: "effect" as const });',
+        "Prepare Retained keeps same port",
+    ),
+    (
+        "drop active attempt exclusivity",
+        'if (this.#active) return undefined;',
+        '',
+        "one active attempt survives Prepared receipt release",
+    ),
+    (
+        "release without consumption",
+        'if (!entry.consumed || !entry.noLate) return false;',
+        'if (!entry.noLate) return false;',
+        "no-late proof alone cannot retire",
+    ),
+    (
+        "release without no-late proof",
+        'if (!entry.consumed || !entry.noLate) return false;',
+        'if (!entry.consumed) return false;',
+        "wrap and capacity preserve unresolved original",
+    ),
+    (
+        "accept stale lease for reused numeric identity",
+        'return entry?.lease === lease ? entry : undefined;',
+        'return entry;',
+        "wrap and capacity preserve unresolved original",
+    ),
+]
+cases = [("candidate.ts", *control) for control in controls]
+cases += [("reservation.ts", *control) for control in ledger_controls]
+for filename, name, old, new, expected in cases:
+    source = sources[filename]
     if old not in source:
         raise SystemExit(f"missing mutation preimage: {name}")
     with tempfile.TemporaryDirectory(prefix=".negative-", dir=root) as tmp:
         folder = Path(tmp)
-        (folder / "candidate.ts").write_text(source.replace(old, new, 1))
+        for name_in_tree, contents in sources.items():
+            (folder / name_in_tree).write_text(
+                source.replace(old, new, 1) if name_in_tree == filename else contents
+            )
         (folder / "candidate.test.ts").write_text(tests)
         run = subprocess.run(
             [bun, "test", str(folder / "candidate.test.ts"), "-t", expected],
@@ -70,4 +127,4 @@ for name, old, new, expected in controls:
             print(output)
             raise SystemExit(f"control did not falsify expected test: {name}")
         print(f"RED {name}: {expected} (exit {run.returncode})")
-print(f"{len(controls)}/{len(controls)} negative controls detected")
+print(f"{len(cases)}/{len(cases)} negative controls detected")
