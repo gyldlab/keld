@@ -20,9 +20,11 @@ type Failure<T> =
   | { kind: "unknown"; original?: Original<T>; error?: unknown }
   | { kind: "refused" | "retained" | "invalidated" | "competing"; error?: unknown };
 export type CloseResult =
-  | { kind: "requested" | "merged"; sequence: bigint }
+  | { kind: "requested"; sequence: bigint }
+  | { kind: "merged"; sequence: bigint }
   | { kind: "already-closing" }
-  | { kind: "refused" | "unknown"; error?: unknown };
+  | { kind: "refused"; error?: unknown }
+  | { kind: "unknown"; error?: unknown };
 export type PrepareResult<T> = { kind: "prepared"; token: T } | Failure<T>;
 export type Disposition<T> =
   | PrepareResult<T>

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   DraftCorrelationLedger, RetainedLinkDraft,
-  type CorrelationLease, type Request, type RetainedPort,
+  type CorrelationLease, type Disposition, type Original, type Request, type RetainedPort,
 } from "./candidate.ts";
 
 // A scripted, independent observation of writes, correlations and local
@@ -154,7 +154,7 @@ for (const effect of ["prepare", "cancel", "commit"] as const) {
       else if (failure === "malformed") port.reply(null);
       else if (failure === "wrong-operation") port.reply({ kind: effect === "commit" ? "cancelled" : "accepted" });
       else port.reply({ kind: "error", code: "generic" });
-      const original = { operation: effect, correlation: effect === "prepare" ? 41 : 42,
+      const original: Original = { operation: effect, correlation: effect === "prepare" ? 41 : 42,
         token: effect === "prepare" ? undefined : "host-1" };
       expect(await api[effect]()).toEqual({ kind: "unknown", original });
       const prior = port.ops();
@@ -163,7 +163,7 @@ for (const effect of ["prepare", "cancel", "commit"] as const) {
       expect(await api.commit()).toEqual({ kind: "unknown", original });
       expect(port.ops()).toEqual(prior);
       expect(port.fenceCount).toBe(0);
-      const resolved = effect === "prepare"
+      const resolved: Disposition = effect === "prepare"
         ? { kind: "prepared", token: "host-recovered" }
         : effect === "cancel" ? { kind: "cancelled" } : { kind: "accepted" };
       port.recorded(resolved, original);
@@ -199,7 +199,7 @@ test("Status mismatch, indeterminate, lost and wrong-operation results remain un
   await api.prepare();
   ack(api);
   port.lose();
-  const original = { operation: "commit", correlation: 42, token: "host-1" };
+  const original: Original = { operation: "commit", correlation: 42, token: "host-1" };
   expect(await api.commit()).toEqual({ kind: "unknown", original });
   for (const wrong of [
     { ...original, correlation: 99 },
@@ -250,7 +250,7 @@ test("concurrent Status cannot start a second Status or effect", async () => {
   const api = new RetainedLinkDraft(port);
   port.lose();
   await api.prepare();
-  const original = { operation: "prepare", correlation: 41, token: undefined };
+  const original: Original = { operation: "prepare", correlation: 41, token: undefined };
   let resolve!: (value: unknown) => void;
   port.script.push(() => new Promise(r => { resolve = r; }));
   const pending = api.reconcile();
@@ -264,7 +264,7 @@ test("concurrent Status cannot start a second Status or effect", async () => {
 test("synchronous send failure retains reserved original identity for Status", async () => {
   const port = new Port(); // no scripted receipt
   const api = new RetainedLinkDraft(port);
-  const original = { operation: "prepare", correlation: 41, token: undefined };
+  const original: Original = { operation: "prepare", correlation: 41, token: undefined };
   expect(await api.prepare()).toEqual({ kind: "unknown", original });
   expect(await api.prepare()).toEqual({ kind: "unknown", original });
   port.recorded({ kind: "retained" }, original);
@@ -292,7 +292,7 @@ test("late Prepared after role retirement cannot authorize will-quit", async () 
   for (const status of [false, true]) {
     const port = new Port();
     const api = new RetainedLinkDraft(port);
-    const original = { operation: "prepare", correlation: 41, token: undefined };
+    const original: Original = { operation: "prepare", correlation: 41, token: undefined };
     if (status) {
       port.lose();
       await api.prepare();
@@ -354,7 +354,7 @@ test("wrap and capacity preserve unresolved original until both consumption and 
   const port = new Port(2, 2);
   const api = new RetainedLinkDraft(port);
   port.lose();
-  const original = { operation: "prepare", correlation: 2, token: undefined };
+  const original: Original = { operation: "prepare", correlation: 2, token: undefined };
   expect(await api.prepare()).toEqual({ kind: "unknown", original });
   const lease = port.leases[0]!;
   const ordinary = port.ledger.reserveOrdinary()!;

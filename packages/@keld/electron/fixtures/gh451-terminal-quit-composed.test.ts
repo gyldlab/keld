@@ -103,7 +103,12 @@ function fixture(initial: readonly WindowIdentity[] = [], negotiated = true) {
       dispatch(7n);
       return Promise.resolve({ kind: "requested", sequence: 7n });
     },
-    async prepare() { return map(await api.prepare(), "effect"); },
+    async prepare() {
+      const result = map(await api.prepare(), "effect");
+      if (result.kind === "accepted" || result.kind === "canceled")
+        throw new Error("invalid disposition for Prepare");
+      return result;
+    },
     async cancel(t) {
       if (t !== token || token === undefined) return { kind: "unknown" };
       return map(await api.cancel(), "effect");
