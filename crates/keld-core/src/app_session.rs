@@ -7951,6 +7951,19 @@ impl PrimaryRouterHandle {
         let _ = quit_frame;
         drop(current_guard);
         drop(transition);
+        self.finish_reserved_lifecycle_quit(attempt, correlation, reply, reader)
+    }
+
+    /// Complete an already-reserved lifecycle Quit using the existing owner
+    /// receipt, correlated reply, and ordered shutdown tail. The caller owns
+    /// the reservation and has released the transition and generation locks.
+    fn finish_reserved_lifecycle_quit(
+        &self,
+        attempt: u32,
+        correlation: CorrelationId,
+        reply: &[u8],
+        reader: &mut BootstrapStream,
+    ) -> Result<(), HostAppError> {
         // Ends the tail on every return below, so a main thread awaiting it after a
         // handover never waits past this claimant's failure.
         let _tail = self.shutdown.tail_run();
