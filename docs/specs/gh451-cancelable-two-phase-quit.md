@@ -33,7 +33,7 @@ separate. GH563 owns the menu adapter.
 - [GH-523 draft AC-7 and shared terminal owner](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/specs/gh523-host-authorized-app-exit.md#L98-L126).
 - [User-delegated GH-451 design selection](https://github.com/gyldlab/keld/issues/451#issuecomment-7182471840).
 - [KEL-96 conditional lifecycle amendment draft #1603](https://github.com/gyldlab/keld/blob/86df4dac4de98b71d8dd4367f66957b8f83d0931/docs/specs/kel96-gh451-quit-order-amendment.md).
-- [Exact IPC negotiation and receipt-consumption proposal](https://github.com/gyldlab/keld/blob/6c60172885113af9a34a8da2837b1ac26d3131dc/docs/engineering/gh451-conditional-quit-ipc-amendment.md).
+- [Exact IPC negotiation and receipt-consumption proposal](https://github.com/gyldlab/keld/blob/1955bb7edcc5f16902825ef94f1a6d80da01e743/docs/engineering/gh451-conditional-quit-ipc-amendment.md).
 
 Verified baseline: Current main app.quit returns a Promise and refuses live windows with KELD-COMPAT-012. It does not implement
 this full transaction. The public D2 comment approves a narrower local preflight; it is not proof of full native, multiwindow or
@@ -88,12 +88,17 @@ boundary; selected GH-451 semantics do not authorize joint contract, schema or p
 ### AC-5: Will-quit veto and fresh retry
 
 - **Given:** zero windows, a will-quit veto, and no independently committed terminal operation
-- **When:** quit is requested again later
-- **Then:** the host is still alive and before-quit/will-quit re-run without invented close events.
+- **When:** the current live owner confirms exact cancellation or noncommit and the receipt/no-late barrier completes
+- **Then:** a fresh explicit retry may start on that same eligible role. Before-quit and will-quit re-run without invented close
+  events. Local veto settlement alone does not authorize another effect. A held, unknown or failed cancellation cannot release
+  the queued retry. An actual failed writer retires that generation; no successor replay or forceful fallback.
 - **Negative control:** Leave the application permanently in Quitting after a will-quit veto.
   - **Single fault:** Leave the application permanently in Quitting after a will-quit veto.
-  - **At-risk precondition:** zero windows and a will-quit veto; quit is requested again later.
-  - **Expected RED:** The host terminates or a later attempt lacks before-quit and will-quit.
+  - **At-risk precondition:** zero windows and a will-quit veto; exact cancellation and receipt release are confirmed.
+  - **Expected RED:** The host terminates or a later explicit attempt lacks before-quit and will-quit.
+
+Hold the Cancel reply and its independent no-late witness separately. Local public cancellation may fulfill, but a queued retry
+cannot emit a new before-quit or Prepare until both owner proofs permit it. Inject actual writer failure; reject the queued retry.
 
 ### AC-6: Native Dock Quit uses the veto owner
 
@@ -343,13 +348,15 @@ scoped D2 behavior until the joint contract is approved.
 - [ ] Implement one facade-to-host quit transaction together with the GH531 per-window sweep and zero-window will-quit branch;
 include every veto negative control. Include closed-listener replacement, Opening and same-turn zero-window Quit/Create controls
 against the current registry. Implement only the approved existing-owner transaction, retained-link/status reconciliation,
-shared terminal decision and FS drain. Verify the API/facade attempt convergence and old-peer controls before wiring.
+shared terminal decision and FS drain. Implement conditional exact-generation retirement, failed-writer custody and independent
+receipt/control reclamation here, not in the native task. Preserve known terminal outcomes and unknown errors across retirement.
+Verify API/facade convergence, held Commit/Cancel and failed FS writer controls, no successor replay and old-peer refusal before wiring.
 
-### T-3: Wire qualified non-menu native Quit and role retirement
+### T-3: Wire qualified non-menu native Quit and OS reply custody
 - **Blocked by:** T-2, Q-3, Q-7, Q-8
 
-- [ ] Wire the qualified non-menu native quit adapter and retirement handling into the same coordinator; reject bypasses and stale
-intent.
+- [ ] Wire the qualified non-menu native Quit adapter into the same coordinator. Qualify exact native intent and reply custody.
+Reuse the conditional role-retirement contract from T-2. Reject bypasses and stale native intent.
 
 ### T-4: Run real macOS original-app conformance
 - **Blocked by:** T-2, T-3
