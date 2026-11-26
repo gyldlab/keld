@@ -176,27 +176,32 @@ describe("app.whenReady on link death", () => {
 });
 
 describe("window-all-closed Electron default quit", () => {
-  test("LastWindowClosed default-quits with zero listeners, after last removeListener, and not while a listener remains", async () => {
-    child = Bun.spawn({
-      cmd: ["bun", "./window_all_closed_default.ts"],
-      cwd: fixtures,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: {
-        ...process.env,
-        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
-      },
-    });
-    const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
-    expect(stdout).toContain("KEL72_DEFAULT_QUIT");
-    expect(stdout).toContain("KEL72_WINDOW_ALL_CLOSED_SECOND");
-    expect(stdout).toContain("KEL72_DEFAULT_QUIT_AFTER_REMOVE");
-    expect(stdout).toContain("KEL72_REMAINING");
-    expect(stdout).not.toContain("KEL72_DROPPED_FIRED");
-    expect(stdout).toContain("KEL72_QUIT_CALLS=2");
-  }, 10_000);
+  for (const scenario of ["immediate", "after-remove"] as const) {
+    test(`LastWindowClosed uses exactly one terminal Quit per fresh session: ${scenario}`, async () => {
+      child = Bun.spawn({
+        cmd: ["bun", "./window_all_closed_default.ts", scenario],
+        cwd: fixtures,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, KELD_APP_LINK: `1#${"ab".repeat(32)}` },
+      });
+      const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      if (scenario === "immediate") {
+        expect(stdout).toContain("KEL72_DEFAULT_QUIT");
+        expect(stdout).toContain("KEL72_ACCEPTED_QUIT_NOT_REPEATED");
+      } else {
+        expect(stdout).toContain("KEL72_DEFAULT_QUIT_AFTER_REMOVE");
+        expect(stdout).not.toContain("KEL72_DEFAULT_QUIT\n");
+      }
+      expect(stdout).toContain("KEL72_WINDOW_ALL_CLOSED_SECOND");
+      expect(stdout).toContain("KEL72_REMAINING");
+      expect(stdout).not.toContain("KEL72_DROPPED_FIRED");
+      expect(stdout).toContain("KEL72_QUIT_CALLS=1");
+      expect(stdout).toContain("KEL72_QUIT_EVENTS=1");
+    }, 10_000);
+  }
 });
 
 describe("GH451 D2 local before-quit preflight", () => {
@@ -232,6 +237,26 @@ describe("GH451 D2 local before-quit preflight", () => {
       expect(JSON.parse(stdout)).toMatchObject({ scenario, status: "PASS" });
     });
   }
+});
+
+test("GH451 accepted legacy Quit notifies once under reentrant and later calls", async () => {
+  child = Bun.spawn({
+    cmd: [
+      process.execPath,
+      "./native_quit_requested.ts",
+      "zero-duplicate-legacy",
+    ],
+    cwd: fixtures,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "0" },
+  });
+  const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+  expect(code).toBe(0);
+  expect(stderr).toBe("");
+  expect(stdout).toContain(
+    "PASS native-quit-requested-source zero-duplicate-legacy",
+  );
 });
 
 test("GH451 accepted native Quit notifies once under reentrant and later calls", async () => {

@@ -54,9 +54,13 @@ const session = {
     });
   },
   quit() {
+    if (mode?.startsWith("zero-duplicate") && terminalAccepted)
+      return terminalAccepted;
     terminals++;
     admitted = false;
-    return Promise.resolve();
+    const result = Promise.resolve();
+    if (mode?.startsWith("zero-duplicate")) terminalAccepted = result;
+    return result;
   },
   close() {
     admitted = false;
@@ -88,13 +92,14 @@ let quitArgs: unknown[] | undefined;
 const sequence: string[] = [];
 let nested: Promise<void> | undefined;
 let reentrantAccepted: Promise<void> | undefined;
+let terminalAccepted: Promise<void> | undefined;
 app.on("before-quit", (event: unknown) => {
   before++;
   sequence.push("before-quit");
   nested = app.quit();
   if (mode === "veto") (event as { preventDefault(): void }).preventDefault();
 });
-if (mode?.startsWith("zero-will") || mode === "zero-duplicate") {
+if (mode?.startsWith("zero-will") || mode?.startsWith("zero-duplicate")) {
   app.on("will-quit", (event: unknown) => {
     willQuit++;
     sequence.push("will-quit");
@@ -106,7 +111,7 @@ if (mode?.startsWith("zero-will") || mode === "zero-duplicate") {
       throw new Error("controlled will-quit listener failure");
     if (
       mode === "zero-will-veto" ||
-      (willQuit === 1 && mode !== "zero-duplicate")
+      (willQuit === 1 && !mode?.startsWith("zero-duplicate"))
     )
       (event as { preventDefault(): void }).preventDefault();
   });
@@ -116,7 +121,7 @@ if (mode?.startsWith("zero-will") || mode === "zero-duplicate") {
   app.on("quit", (...args: unknown[]) => {
     quitEvents++;
     sequence.push("quit");
-    if (mode === "zero-duplicate") reentrantAccepted = app.quit();
+    if (mode?.startsWith("zero-duplicate")) reentrantAccepted = app.quit();
     // Listener exceptions are intentionally isolated. Check arguments
     // outside the callback so a regression cannot swallow the assertion.
     quitArgs = args;
@@ -246,8 +251,9 @@ if (mode?.startsWith("scope-")) {
         ? ["before-quit", "will-quit", "before-quit", "will-quit"]
         : ["before-quit", "will-quit", "before-quit", "will-quit", "quit"],
     );
-  } else if (mode === "zero-duplicate") {
-    await nested;
+  } else if (mode?.startsWith("zero-duplicate")) {
+    if (mode === "zero-duplicate-legacy") await app.quit();
+    else await nested;
     await reentrantAccepted;
     await app.quit();
     assert.equal(terminals, 1, "one accepted terminal request");

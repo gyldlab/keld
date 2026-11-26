@@ -244,8 +244,7 @@ function requestQuitAfterBeforeEvent(
 }
 
 function quit(): Promise<void> {
-  if (nativeFacadeBootSelected && terminalQuitAccepted)
-    return Promise.resolve();
+  if (terminalQuitAccepted) return Promise.resolve();
   return requestQuitAfterBeforeEvent((attempt) => {
     // GH451's full cancelable before-quit/window-close/will-quit choreography
     // has not passed its independent spec gate. Never translate Electron
@@ -326,10 +325,8 @@ function quit(): Promise<void> {
     return apiApp.quit().then(() => {
       // A terminal Host reply can be replayed by later facade calls. Record
       // acceptance before callbacks so reentrant listeners cannot notify twice.
-      if (nativeFacadeBootSelected) {
-        if (terminalQuitAccepted) return;
-        terminalQuitAccepted = true;
-      }
+      if (terminalQuitAccepted) return;
+      terminalQuitAccepted = true;
       // Normal app.quit() has no exit-code argument; 0 describes this
       // graceful path, not an observed OS process exit. The Event is delivered
       // after terminal acceptance, so preventDefault cannot reverse it.
