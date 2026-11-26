@@ -92,7 +92,7 @@ powershell.exe -NoProfile -NonInteractive -File .\tools\windows_v2_nsis_build_te
 ```
 
 The explicit switch calls the standalone runner at `tools/windows_v2_nsis_owned_fixture_test.ps1`.
-It requires seven named checks, including partial-copy rollback, rewrite, move, bounded read-only child, and retirement of owned test files.
+It requires exactly ten named checks: seven ordinary lifecycle checks (including partial-copy rollback, rewrite, move, bounded read-only child, and owned retirement) and three additional native custody and generation-record checks.
 Require exit code 0 and `KEL270_NSIS_ORDINARY_FIXTURE_LIFECYCLE_PASS`.
 This command does not run the default negative suite, sign any artifact, or build or install NSIS output.
 It does not qualify the default suite cleanup or replace native installation and release acceptance.

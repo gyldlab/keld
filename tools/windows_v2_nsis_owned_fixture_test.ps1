@@ -1,4 +1,4 @@
-# Standalone ordinary fixture lifecycle checks. No installer, signing, SDK
+# Standalone owned fixture lifecycle and custody checks. No installer, signing, SDK
 # fixtures or legacy negative suite. The Rust test owns fixture retirement.
 [CmdletBinding()]
 param()
@@ -10,15 +10,18 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'Ordinary NSIS fixture lifecycle tests require Windows'
 }
 
-$prefix = 'windows_fs::tests::nsis_fixture::nsis_fixture_ordinary_'
+$prefix = 'windows_fs::tests::nsis_fixture::nsis_fixture_'
 $expected = @(
-    ($prefix + 'cleanup_after_powershell_payload_refusal')
-    ($prefix + 'cleanup_after_powershell_smoke')
-    ($prefix + 'cleanup_retains_independent_extra_file')
-    ($prefix + 'cleanup_uses_only_owned_handles')
-    ($prefix + 'lifecycle_exclusive_creation_and_in_place_rewrite')
-    ($prefix + 'lifecycle_move_then_retire_child_before_parent')
-    ($prefix + 'staging_cleans_partial_population')
+    ($prefix + 'ordinary_cleanup_after_powershell_payload_refusal')
+    ($prefix + 'ordinary_cleanup_after_powershell_smoke')
+    ($prefix + 'ordinary_cleanup_retains_independent_extra_file')
+    ($prefix + 'ordinary_cleanup_uses_only_owned_handles')
+    ($prefix + 'ordinary_lifecycle_exclusive_creation_and_in_place_rewrite')
+    ($prefix + 'ordinary_lifecycle_move_then_retire_child_before_parent')
+    ($prefix + 'ordinary_staging_cleans_partial_population')
+    ($prefix + 'separate_generation_record_preserves_ordinary_members')
+    ($prefix + 'cleanup_refuses_same_name_foreign_identity')
+    ($prefix + 'cleanup_refuses_live_reparse_object')
 )
 $expectedRegistrations = @($expected | ForEach-Object { $_ + ': test' })
 $expectedResults = @($expected | ForEach-Object { 'test ' + $_ + ' ... ok' })
@@ -29,7 +32,7 @@ $cargoPath = (Get-Command cargo.exe -CommandType Application -ErrorAction Stop |
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     # Cargo can exit zero when a filter matches nothing. Refuse any change to
-    # this exact ordinary subset before a test executes.
+    # this exact owned fixture suite before a test executes.
     $listing = @(& $cargoPath test --locked --color never -p keld-update --lib $prefix -- --list)
     $discoveryExit = $LASTEXITCODE
     if ($discoveryExit -ne 0) {
@@ -38,7 +41,7 @@ try {
     $registered = @($listing | Where-Object { $_ -cmatch ': (test|benchmark)$' })
     if ($registered.Count -ne $expectedRegistrations.Count -or
         @($expectedRegistrations | Where-Object { $_ -cnotin $registered }).Count -ne 0) {
-        throw 'Ordinary NSIS fixture discovery did not match the exact seven expected tests'
+        throw 'Ordinary NSIS fixture discovery did not match the exact ten expected tests'
     }
 
     $results = @(& $cargoPath test --locked --color never -p keld-update --lib $prefix -- --test-threads=1)
@@ -51,8 +54,8 @@ try {
     if ($caseResults.Count -ne $expectedResults.Count -or
         @($expectedResults | Where-Object { $_ -cnotin $caseResults }).Count -ne 0 -or
         $summaries.Count -ne 1 -or
-        $summaries[0] -cnotmatch '^test result: ok\. 7 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out;') {
-        throw 'Ordinary NSIS fixture lifecycle did not pass all seven exact tests'
+        $summaries[0] -cnotmatch '^test result: ok\. 10 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out;') {
+        throw 'Ordinary NSIS fixture lifecycle did not pass all ten exact tests'
     }
 } finally {
     Pop-Location
@@ -64,4 +67,4 @@ $summaries | Write-Output
 
 # Includes the Rust cases' explicit retirement/absence assertions. It is not
 # a verdict for the legacy default suite, installer or release.
-Write-Output 'KEL270_NSIS_ORDINARY_FIXTURE_LIFECYCLE_PASS count=7 owned_retirement=VERIFIED installer=NOT_RUN'
+Write-Output 'KEL270_NSIS_ORDINARY_FIXTURE_LIFECYCLE_PASS count=10 owned_retirement=VERIFIED installer=NOT_RUN'
