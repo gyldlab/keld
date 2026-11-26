@@ -260,7 +260,16 @@ impl TerminalQuit {
             State::Unknown => return Outcome::Unknown,
             State::Idle { .. } | State::Pending(_) => {}
         }
-        if !facts.running || !reserve() {
+        if !facts.running {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
+        }
+        // Either terminal contender must honor the same already-admitted
+        // FS reply and lease obligations before the single final reserve.
+        if !facts.fs_terminal_drained {
+            return Outcome::AwaitingDrain;
+        }
+        if !reserve() {
             self.state = State::Unknown;
             return Outcome::Unknown;
         }
@@ -697,6 +706,168 @@ mod tests {
             Outcome::Committed
         );
         assert_eq!(quit.state, State::Committed(TerminalWinner::Quit(token)));
+    }
+
+    // Model witness only: the fixture records reply delivery and lease
+    // retirement separately. The real FS owner must supply both facts.
+    #[derive(Default)]
+    struct OwedFs {
+        reply_written: Cell<bool>,
+        lease_retired: Cell<bool>,
+        reserves: Cell<u32>,
+    }
+
+    impl OwedFs {
+        fn facts(&self) -> HostFacts {
+            HostFacts {
+                fs_terminal_drained: self.reply_written.get() && self.lease_retired.get(),
+                ..ready(1)
+            }
+        }
+
+        fn reserve(&self) -> bool {
+            // The invocation count, rather than a simulated successful
+            // outcome, is the independent observable of premature reserve.
+            self.reserves.set(self.reserves.get() + 1);
+            true
+        }
+    }
+
+    fn exit_request(request: u64, code: i32) -> ValidatedExit {
+        ValidatedExit {
+            generation: generation(1),
+            request: NonZeroU64::new(request).expect("fixture request"),
+            code,
+        }
+    }
+
+    #[test]
+    fn shared_exit_final_cut_waits_for_owed_reply_and_lease() {
+        for draining in [false, true] {
+            let fs = OwedFs::default();
+            let mut quit = TerminalQuit::new();
+            let token = prepared(&mut quit, fs.facts());
+            if draining {
+                assert_eq!(quit.begin_commit(token, fs.facts()), Outcome::DrainRequired);
+            }
+            let pending = quit.state;
+            let exit = exit_request(42, 7);
+            // Exercise the final reservation seam directly, not a caller that
+            // silently pre-filters the undrained input. This is a deliberately
+            // stronger model oracle for the jointly selected Q6 precondition.
+            for reply_written in [false, true] {
+                fs.reply_written.set(reply_written);
+                let outcome = quit.admit_validated_exit(exit, fs.facts(), || fs.reserve());
+                assert_eq!(
+                    fs.reserves.get(),
+                    0,
+                    "Exit reserved before both FS obligations settled; draining={draining}, reply_written={reply_written}"
+                );
+                assert_eq!(outcome, Outcome::AwaitingDrain);
+                assert_eq!(
+                    quit.state, pending,
+                    "waiting must preserve the reversible attempt"
+                );
+            }
+            fs.lease_retired.set(true);
+            assert_eq!(
+                quit.admit_validated_exit(exit, fs.facts(), || fs.reserve()),
+                Outcome::Committed
+            );
+            assert_eq!(quit.state, State::Committed(TerminalWinner::Exit(exit)));
+            let terminal = HostFacts {
+                running: false,
+                ..fs.facts()
+            };
+            assert_eq!(
+                quit.finish_commit(token, terminal, || fs.reserve()),
+                Outcome::Refused
+            );
+            assert_eq!(fs.reserves.get(), 1);
+        }
+    }
+
+    #[test]
+    fn shared_quit_final_cut_waits_for_owed_reply_and_lease() {
+        let fs = OwedFs::default();
+        let mut quit = TerminalQuit::new();
+        let token = prepared(&mut quit, fs.facts());
+        assert_eq!(quit.begin_commit(token, fs.facts()), Outcome::DrainRequired);
+        let pending = quit.state;
+        for reply_written in [false, true] {
+            fs.reply_written.set(reply_written);
+            assert_eq!(
+                quit.finish_commit(token, fs.facts(), || fs.reserve()),
+                Outcome::AwaitingDrain
+            );
+            assert_eq!(fs.reserves.get(), 0);
+            assert_eq!(quit.state, pending);
+        }
+        fs.lease_retired.set(true);
+        assert_eq!(
+            quit.finish_commit(token, fs.facts(), || fs.reserve()),
+            Outcome::Committed
+        );
+        let expected = State::Committed(TerminalWinner::Quit(token));
+        quit.retire_generation(token.generation);
+        let terminal = HostFacts {
+            running: false,
+            ..fs.facts()
+        };
+        assert_eq!(
+            quit.admit_validated_exit(exit_request(42, 7), terminal, || fs.reserve()),
+            Outcome::Refused
+        );
+        assert_eq!(
+            quit.finish_commit(token, terminal, || fs.reserve()),
+            Outcome::AlreadyTerminal
+        );
+        assert_eq!(quit.state, expected);
+        assert_eq!(fs.reserves.get(), 1);
+        assert!(!quit.admit_create());
+    }
+
+    #[test]
+    fn shared_exit_winner_cannot_change_code_identity_or_retirement() {
+        let facts = ready(1);
+        let mut quit = TerminalQuit::new();
+        let token = prepared(&mut quit, facts);
+        let exit = exit_request(42, 7);
+        let reserves = Cell::new(0);
+        let reserve = || {
+            reserves.set(reserves.get() + 1);
+            true
+        };
+        assert_eq!(
+            quit.admit_validated_exit(exit, facts, reserve),
+            Outcome::Committed
+        );
+        let expected = State::Committed(TerminalWinner::Exit(exit));
+        quit.retire_generation(token.generation);
+        let terminal = HostFacts {
+            running: false,
+            ..facts
+        };
+        // Keep identity and code as separate discriminants: changing either
+        // must not obtain the winner's exact receipt or another reserve.
+        for contender in [exit_request(42, 8), exit_request(43, 7)] {
+            assert_eq!(
+                quit.admit_validated_exit(contender, terminal, reserve),
+                Outcome::Refused
+            );
+            assert_eq!(quit.state, expected);
+        }
+        assert_eq!(
+            quit.admit_validated_exit(exit, terminal, reserve),
+            Outcome::AlreadyTerminal
+        );
+        assert_eq!(
+            quit.finish_commit(token, terminal, reserve),
+            Outcome::Refused
+        );
+        assert_eq!(quit.state, expected);
+        assert_eq!(reserves.get(), 1);
+        assert!(!quit.admit_create());
     }
 
     #[test]
