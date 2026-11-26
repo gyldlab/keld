@@ -1017,22 +1017,13 @@ impl WkWebViewEngine {
                         }
                     }
                     Event::UserEvent(WkUserEvent::NativeQuitRequested) => {
-                        match native_quit.request_renderer_close(
-                            ready_trigger,
-                            navigation_finished(&startup_in_loop),
-                            &views,
-                            &closing,
-                        ) {
-                            Ok(true) => {}
-                            Ok(false) => eprintln!(
-                                "KELD-WV-004: native Quit retained; this window composition has no admitted renderer close route"
-                            ),
-                            Err(error) => {
-                                main_owner_failure.get_or_insert(error);
-                                fatal_in_loop.store(true, Ordering::Release);
-                                terminal_requested = true;
-                            }
-                        }
+                        // An AppKit CloseRequested does not include the renderer's
+                        // close/preventDefault decision for legacy windows. Never
+                        // turn a native Quit into an unvetoable view destruction.
+                        native_quit.retain_unqualified_quit();
+                        eprintln!(
+                            "KELD-WV-004: native Quit retained; renderer-owned veto is not qualified for this window composition"
+                        );
                     }
                     Event::WindowEvent {
                         window_id,

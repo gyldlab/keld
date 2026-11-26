@@ -42,6 +42,8 @@ type Handlers = {
   onLinkDead: (err: Error) => void;
 };
 
+const restoreAfterRemove = process.argv[2] === "after-remove";
+let quitEvents = 0;
 let quitCalls = 0;
 let lastHandlers: Handlers | undefined;
 
@@ -56,6 +58,10 @@ LifecycleLink.connect = (async (_link: string, handlers: Handlers) => {
 }) as typeof LifecycleLink.connect;
 
 const { app } = await import("../src/app.ts");
+
+app.on("quit", () => {
+  quitEvents++;
+});
 
 const ready = app.whenReady();
 await new Promise<void>((resolve) => {
@@ -76,14 +82,21 @@ function flush(): Promise<void> {
   });
 }
 
-// Phase 1: no window-all-closed listener → Electron default app.quit().
-lastHandlers.onLastWindowClosed();
-await flush();
-if (quitCalls !== 1) {
-  writeSync(2, `KEL72_DEFAULT_QUIT_MISSING calls=${quitCalls}\n`);
-  process.exit(1);
+// Fresh sessions independently exercise initial default Quit and restoration
+// after removing all listeners. A successful terminal Quit is irreversible:
+// a second default notification in the same session must not send another Quit.
+if (!restoreAfterRemove) {
+  lastHandlers.onLastWindowClosed();
+  await flush();
+  if (quitCalls !== 1 || quitEvents !== 1) {
+    writeSync(
+      2,
+      `KEL72_DEFAULT_QUIT_MISSING calls=${quitCalls} events=${quitEvents}\n`,
+    );
+    process.exit(1);
+  }
+  marker("KEL72_DEFAULT_QUIT");
 }
-marker("KEL72_DEFAULT_QUIT");
 
 // Phase 2: a subscriber owns quit. Isolation: a throw must not skip the
 // later listener or increment the auto-quit count.
@@ -97,7 +110,7 @@ app.on("window-all-closed", thrower);
 app.on("window-all-closed", second);
 lastHandlers.onLastWindowClosed();
 await flush();
-if (quitCalls !== 1) {
+if (quitCalls !== (restoreAfterRemove ? 0 : 1)) {
   writeSync(2, `KEL72_AUTOQUIT_WITH_LISTENER calls=${quitCalls}\n`);
   process.exit(1);
 }
@@ -107,11 +120,18 @@ app.removeListener("window-all-closed", thrower);
 app.removeListener("window-all-closed", second);
 lastHandlers.onLastWindowClosed();
 await flush();
-if (quitCalls !== 2) {
-  writeSync(2, `KEL72_DEFAULT_QUIT_AFTER_REMOVE_MISSING calls=${quitCalls}\n`);
+if (quitCalls !== 1 || quitEvents !== 1) {
+  writeSync(
+    2,
+    `KEL72_DEFAULT_QUIT_AFTER_REMOVE_MISSING calls=${quitCalls} events=${quitEvents}\n`,
+  );
   process.exit(1);
 }
-marker("KEL72_DEFAULT_QUIT_AFTER_REMOVE");
+marker(
+  restoreAfterRemove
+    ? "KEL72_DEFAULT_QUIT_AFTER_REMOVE"
+    : "KEL72_ACCEPTED_QUIT_NOT_REPEATED",
+);
 
 // Phase 4: off() one of two subscribers → remaining emits, no auto-quit.
 const dropped = (): void => {
@@ -126,10 +146,14 @@ app.on("window-all-closed", remaining);
 app.off("window-all-closed", dropped);
 lastHandlers.onLastWindowClosed();
 await flush();
-if (quitCalls !== 2) {
-  writeSync(2, `KEL72_AUTOQUIT_WITH_REMAINING calls=${quitCalls}\n`);
+if (quitCalls !== 1 || quitEvents !== 1) {
+  writeSync(
+    2,
+    `KEL72_AUTOQUIT_WITH_REMAINING calls=${quitCalls} events=${quitEvents}\n`,
+  );
   process.exit(1);
 }
 
 marker(`KEL72_QUIT_CALLS=${quitCalls}`);
+marker(`KEL72_QUIT_EVENTS=${quitEvents}`);
 process.exit(0);
