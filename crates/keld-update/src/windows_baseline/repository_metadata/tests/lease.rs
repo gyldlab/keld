@@ -111,10 +111,9 @@ fn existing_repository_lease_is_one_real_file_handle_and_never_creates() {
     drop(lease);
     RepositoryWriterLease::open_existing(&retained, &identity)
         .expect("closing the original owner releases the native lease");
-    assert!(
-        fs::read(lock_path)
-            .expect("test-owned lock stays present")
-            .is_empty()
+    assert_eq!(
+        fs::read(lock_path).expect("test-owned lock stays present"),
+        [] as [u8; 0]
     );
 }
 

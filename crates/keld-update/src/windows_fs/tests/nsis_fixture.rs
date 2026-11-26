@@ -265,7 +265,7 @@ fn nsis_fixture_ordinary_cleanup_after_powershell_payload_refusal() {
     assert!(
         error
             .get_ref()
-            .is_some_and(|cause| cause.is::<OwnedFixturePayloadRefused>()),
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<OwnedFixturePayloadRefused>),
         "{error}"
     );
 }
@@ -412,6 +412,24 @@ fn read_fixture_through_runner(root: &Path) -> io::Result<()> {
     classify_owned_fixture_smoke(output.status.code(), &output.stdout, &output.stderr)
 }
 
+fn receive_owned_smoke_output(
+    item: &mut Option<Vec<u8>>,
+    recv: &std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+) -> io::Result<()> {
+    use std::sync::mpsc::TryRecvError;
+
+    if item.is_none() {
+        match recv.try_recv() {
+            Ok(result) => *item = Some(result?),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                return Err(io::Error::other("owned smoke output reader disconnected"));
+            }
+        }
+    }
+    Ok(())
+}
+
 // Only the ordinary smoke child, which does not start descendants or write the
 // fixture, is sent through this runner. The budget starts after process spawn;
 // on failure we allow a separate, bounded grace for direct-child reaping.
@@ -421,7 +439,7 @@ fn run_owned_smoke_child(
 ) -> io::Result<std::process::Output> {
     use std::io::Read as _;
     use std::process::{Output, Stdio};
-    use std::sync::mpsc::{self, Receiver, TryRecvError};
+    use std::sync::mpsc::{self, Receiver};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -448,19 +466,6 @@ fn run_owned_smoke_child(
         })?;
         Ok(recv)
     }
-    fn receive(item: &mut Option<Vec<u8>>, recv: &Receiver<io::Result<Vec<u8>>>) -> io::Result<()> {
-        if item.is_none() {
-            match recv.try_recv() {
-                Ok(result) => *item = Some(result?),
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    return Err(io::Error::other("owned smoke output reader disconnected"));
-                }
-            }
-        }
-        Ok(())
-    }
-
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -488,38 +493,39 @@ fn run_owned_smoke_child(
                     "owned smoke child exceeded its completion budget",
                 ));
             }
-            receive(&mut out, &stdout)?;
-            receive(&mut err, &stderr)?;
-            if let Some(status) = child.try_wait()? {
-                if out.is_some() && err.is_some() {
-                    return Ok(Output {
-                        status,
-                        stdout: out.take().unwrap_or_default(),
-                        stderr: err.take().unwrap_or_default(),
-                    });
-                }
+            receive_owned_smoke_output(&mut out, &stdout)?;
+            receive_owned_smoke_output(&mut err, &stderr)?;
+            if let Some(status) = child.try_wait()?
+                && out.is_some()
+                && err.is_some()
+            {
+                return Ok(Output {
+                    status,
+                    stdout: out.take().unwrap_or_default(),
+                    stderr: err.take().unwrap_or_default(),
+                });
             }
             thread::sleep(POLL.min(timeout.saturating_sub(start.elapsed())));
         }
     })();
 
-    if let Err(cause) = &result {
-        if !matches!(child.try_wait(), Ok(Some(_))) {
-            // The handle belongs only to the child we just spawned. A kill can
-            // race a normal exit; a successful try_wait is the reaping proof.
-            let killed = child.kill();
-            let reap_start = Instant::now();
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) if reap_start.elapsed() < Duration::from_secs(2) => {
-                        thread::sleep(POLL);
-                    }
-                    outcome => {
-                        return Err(io::Error::other(format!(
-                            "could not reap owned smoke child after {cause}: kill={killed:?}, wait={outcome:?}"
-                        )));
-                    }
+    if let Err(cause) = &result
+        && !matches!(child.try_wait(), Ok(Some(_)))
+    {
+        // The handle belongs only to the child we just spawned. A kill can
+        // race a normal exit; a successful try_wait is the reaping proof.
+        let killed = child.kill();
+        let reap_start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if reap_start.elapsed() < Duration::from_secs(2) => {
+                    thread::sleep(POLL);
+                }
+                outcome => {
+                    return Err(io::Error::other(format!(
+                        "could not reap owned smoke child after {cause}: kill={killed:?}, wait={outcome:?}"
+                    )));
                 }
             }
         }
@@ -601,7 +607,7 @@ fn owned_fixture_smoke_classifier_requires_exact_exit_and_single_marker() {
         classify_owned_fixture_smoke(exit, stdout, stderr)
             .expect_err("input must not be accepted")
             .get_ref()
-            .is_some_and(|cause| cause.is::<OwnedFixturePayloadRefused>())
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<OwnedFixturePayloadRefused>)
     };
     assert!(is_refusal(Some(4), b"", refused));
     assert!(!is_refusal(Some(0), b"", refused));
@@ -837,10 +843,10 @@ fn nsis_fixture_ordinary_staging_cleans_partial_population() {
             name,
             keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
         )?;
-        let owner = OwnedFixtureEntry::capture(&writer, &fixture.path.join(name), EntryKind::File)?;
+        let entry = OwnedFixtureEntry::capture(&writer, &fixture.path.join(name), EntryKind::File)?;
         // Capture from creation before a copy can fail after emitting some bytes.
         // A name collision or failed identity capture never grants cleanup authority.
-        owned.push((name, owner));
+        owned.push((name, entry));
         io::copy(source, &mut writer)?;
         writer.sync_all()
     }
