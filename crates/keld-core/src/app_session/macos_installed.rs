@@ -5,6 +5,8 @@
 //! retained no-follow handles and repeated handoff checks detect substitution.
 //! An ad-hoc outer signature is not a publisher identity or a durable store.
 
+mod macho;
+
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
 use std::io;
@@ -321,11 +323,14 @@ impl ValidatedMacLocalBundle {
             .map_err(|error| admission_error("current local code signature", error))?;
         verify_running_bundle_location(&signing)?;
         let bundle = open_absolute_directory(&signing.bundle_path)?;
+        reject_ambient_node_modules(&bundle)?;
         require_directory_mode(&bundle, "bundle root")?;
         let contents = open_directory(&bundle, OsStr::new("Contents"), "Contents")?;
+        reject_ambient_node_modules(&contents)?;
         let macos = open_directory(&contents, OsStr::new("MacOS"), "MacOS")?;
         let helpers = open_directory(&contents, OsStr::new("Helpers"), "Helpers")?;
         let resources = open_directory(&contents, OsStr::new("Resources"), "Resources")?;
+        reject_ambient_node_modules(&resources)?;
         let app = open_directory(&resources, OsStr::new("app"), "app resources")?;
         let host = open_file(&macos, Path::new(MACOS_HOST_EXECUTABLE), "Host executable")?;
         let bun = open_file(&helpers, Path::new("bun"), "bundled Bun")?;
@@ -334,6 +339,7 @@ impl ValidatedMacLocalBundle {
         }
         let (info, metadata) =
             read_sealed_local_metadata(&contents, &resources, &bun, &signing.signing_identifier)?;
+        macho::admit_bundle_architectures(&host, &bun, &metadata)?;
         let (boot, boot_bytes, parsed, policy, entry) =
             read_installed_local_boot_files(&app, &metadata)?;
         let original_graph_entry = parsed
@@ -930,6 +936,32 @@ impl MacLocalGuardianFacts {
     }
 }
 
+/// Refuse a resolver root which Bun could consult outside the admitted app.
+///
+/// Bun's --no-install prevents fetching packages but still loads packages from
+/// ancestor `node_modules`. The installed graph owns the app-root `node_modules`;
+/// every parent, including one inside the bundle, must be physically absent.
+/// This is checked again when Core/Guardian revalidate a new Bun generation.
+/// An external same-user writer can still create a parent directory after
+/// inspection; this check is not filesystem containment or full AC-11 proof.
+fn reject_ambient_node_modules(directory: &File) -> Result<(), HostAppError> {
+    match nix::sys::stat::fstatat(
+        directory,
+        OsStr::new("node_modules"),
+        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+    ) {
+        Err(nix::errno::Errno::ENOENT) => Ok(()),
+        Ok(_) => Err(admission_error(
+            "installed module resolution",
+            "an ancestor node_modules exists outside the sealed application graph; if it is inside the sealed .app, rebuild and reinstall the intact app; if it is outside the bundle, relocate the app to a parent without ambient packages",
+        )),
+        Err(error) => Err(admission_error(
+            "installed module resolution",
+            format!("cannot verify that ancestor node_modules is absent: {error}"),
+        )),
+    }
+}
+
 fn open_absolute_directory(path: &Path) -> Result<File, HostAppError> {
     if !path.is_absolute() {
         return Err(admission_error(
@@ -950,6 +982,7 @@ fn open_absolute_directory(path: &Path) -> Result<File, HostAppError> {
             Component::Normal(name) => {
                 // Every ancestor is opened relative to the previously retained
                 // directory, so a parent symlink never silently redirects us.
+                reject_ambient_node_modules(&current)?;
                 let fd = openat(
                     current.as_fd(),
                     name,
@@ -1296,5 +1329,77 @@ mod tests {
         symlink(&real, canonical.join("alias")).expect("symlink");
         assert!(open_absolute_directory(&real).is_ok());
         assert!(open_absolute_directory(&canonical.join("alias")).is_err());
+    }
+
+    #[test]
+    fn installed_app_root_refuses_ambient_ancestor_node_modules() {
+        // A real Bun 1.4.4 launch with --no-install still imports an absent
+        // dependency from a parent node_modules, so this check must run
+        // before Guardian is permitted to create a new installed generation.
+        let temp = tempfile::tempdir().expect("isolated installed root fixture");
+        let outer = temp.path().canonicalize().expect("canonical fixture");
+        let app_root = outer.join("Example.app/Contents/Resources/app");
+        fs::create_dir_all(&app_root).expect("installed layout");
+        assert!(
+            open_absolute_directory(&app_root).is_ok(),
+            "an installation without parent packages must remain admissible"
+        );
+
+        let parent_packages = outer.join("node_modules");
+        fs::create_dir(&parent_packages).expect("unqualified ancestor packages");
+        let denied = open_absolute_directory(&app_root)
+            .expect_err("a parent node_modules must block the installed root");
+        assert!(
+            denied.to_string().contains("ancestor node_modules"),
+            "refusal must name the executable module boundary: {denied}"
+        );
+        fs::remove_dir(&parent_packages).expect("restore original parent");
+
+        let nested_packages = outer.join("Example.app/Contents/node_modules");
+        fs::create_dir(&nested_packages).expect("unqualified bundle ancestor packages");
+        assert!(
+            open_absolute_directory(&app_root).is_err(),
+            "a bundle-internal ancestor must also refuse"
+        );
+        fs::remove_dir(&nested_packages).expect("restore bundle parent");
+
+        symlink(outer.join("missing"), &parent_packages).expect("hostile package alias");
+        assert!(
+            open_absolute_directory(&app_root).is_err(),
+            "even a dangling node_modules alias is an unqualified resolver root"
+        );
+        fs::remove_file(&parent_packages).expect("remove alias");
+
+        fs::write(&parent_packages, b"unexpected package path")
+            .expect("non-directory ancestor entry");
+        assert!(
+            open_absolute_directory(&app_root).is_err(),
+            "any ambient node_modules entry is unsafe, regardless of its file type"
+        );
+        fs::remove_file(&parent_packages).expect("restore missing parent");
+
+        let case_alias = outer.join("NODE_MODULES");
+        fs::create_dir(&case_alias).expect("case-equivalent package root");
+        if parent_packages.exists() {
+            // A case-insensitive macOS volume resolves this alternate spelling
+            // through the real filesystem, and the no-follow check must refuse.
+            assert!(
+                open_absolute_directory(&app_root).is_err(),
+                "case-equivalent ancestor packages must refuse on this volume"
+            );
+        } else {
+            assert!(
+                open_absolute_directory(&app_root).is_ok(),
+                "a case-sensitive volume must preserve its distinct spelling"
+            );
+        }
+        fs::remove_dir(&case_alias).expect("restore case alias");
+
+        fs::create_dir(app_root.join("node_modules"))
+            .expect("app-owned package tree is left to the existing graph owner");
+        assert!(
+            open_absolute_directory(&app_root).is_ok(),
+            "the sealed app-root node_modules remains available to its graph owner"
+        );
     }
 }

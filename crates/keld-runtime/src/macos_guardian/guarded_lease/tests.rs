@@ -5,7 +5,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,11 +15,12 @@ use nix::unistd::{Pid, getpgid, getpgrp};
 
 use super::super::process_group::{LocalGroupWitness, observe_group_identity};
 use super::super::{
-    CONTROL_REGISTERED, CONTROL_SPAWNED, GenerationControlPeer, GenerationControlReader,
-    GenerationControlRecord, GenerationLease, RevocationCause, read_generation_control,
-    write_generation_control,
+    CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED, CONTROL_REGISTERED, CONTROL_REVOKE,
+    CONTROL_REVOKED, CONTROL_SPAWNED, ChildPreparer, GenerationControlPeer,
+    GenerationControlReader, GenerationControlRecord, GenerationLease, GuardianPhase,
+    GuardianPhaseLedger, RevocationCause, read_generation_control, write_generation_control,
 };
-use super::GuardedPrimaryLease;
+use super::{GuardedPrimaryLease, GuardedPrimaryPreparer};
 
 const ROLE: &str = "KELD_GUARDED_ACK_TEST_ROLE";
 const ROOT: &str = "KELD_GUARDED_ACK_TEST_ROOT";
@@ -411,4 +412,96 @@ fn local_guardian_revocation_cannot_kill_foreign_group_after_birth_change() {
         leader_alive && descendant_alive,
         "refused Guardian revocation signaled an unrelated live process group"
     );
+}
+
+#[test]
+fn malformed_nonempty_prepared_reply_does_not_advance_decoded_diagnostic_stage() {
+    for malformed in [true, false] {
+        let (guardian, mut host) = UnixStream::pair().expect("private native KGC1 pair");
+        for peer in [&guardian, &host] {
+            peer.set_read_timeout(Some(BOUND))
+                .expect("bounded KGC1 read");
+            peer.set_write_timeout(Some(BOUND))
+                .expect("bounded KGC1 write");
+        }
+        let payload = if malformed {
+            vec![0xff, 0xfe]
+        } else {
+            b"synthetic-valid-private-app-link".to_vec()
+        };
+        let host_thread = thread::spawn(move || {
+            let prepare = read_generation_control(&mut host).expect("actual PREPARE request");
+            assert_eq!((prepare.kind, prepare.attempt), (CONTROL_PREPARE, 1));
+            assert_eq!(prepare.payload, [] as [u8; 0]);
+            write_generation_control(
+                &mut host,
+                &GenerationControlRecord::new(CONTROL_PREPARED, 1).with_payload(payload),
+            )
+            .expect("complete nonempty PREPARED frame");
+            let revoke = read_generation_control(&mut host).expect("actual failure REVOKE");
+            assert_eq!((revoke.kind, revoke.attempt), (CONTROL_REVOKE, 1));
+            write_generation_control(&mut host, &GenerationControlRecord::new(CONTROL_REVOKED, 1))
+                .expect("real REVOKED response");
+            let clear = read_generation_control(&mut host).expect("actual failure CLEAR");
+            assert_eq!(
+                (clear.kind, clear.attempt),
+                (super::super::CONTROL_CLEAR, 1)
+            );
+            write_generation_control(&mut host, &GenerationControlRecord::new(CONTROL_CLEARED, 1))
+                .expect("real CLEARED response");
+        });
+        let phase_ledger = Arc::new(GuardianPhaseLedger::new());
+        phase_ledger.record(GuardianPhase::Kgr1Authenticated);
+        let initial_prepared = Arc::new(AtomicBool::new(false));
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let factory_for_closure = Arc::clone(&factory_calls);
+        let mut preparer = GuardedPrimaryPreparer {
+            command_factory: move |_app_link: &str| {
+                factory_for_closure.fetch_add(1, Ordering::SeqCst);
+                Err(super::super::lifecycle_error(
+                    "test factory denial",
+                    io::Error::other("deliberate factory refusal, no Bun command"),
+                ))
+            },
+            control: Arc::new(Mutex::new(GenerationControlPeer {
+                stream: guardian,
+                reader: GenerationControlReader::new(),
+            })),
+            phase_ledger: Arc::clone(&phase_ledger),
+            host_unavailable: Arc::new(AtomicBool::new(false)),
+            preparation_cancelled: Arc::new(AtomicBool::new(false)),
+            initial_prepared: Arc::clone(&initial_prepared),
+            refused_registration_retired: Arc::new(AtomicBool::new(false)),
+        };
+        let error = preparer
+            .prepare(1)
+            .err()
+            .expect("both arms deny before Bun");
+        host_thread.join().expect("native KGC1 peer joins");
+        assert!(
+            initial_prepared.load(Ordering::Acquire),
+            "real PREPARED wire receipt must retain its original shutdown guard"
+        );
+        assert_eq!(
+            phase_ledger.first_unproven(false, false),
+            if malformed {
+                super::super::startup_phase::NextAuthBoundary::Kgc1Prepared
+            } else {
+                super::super::startup_phase::NextAuthBoundary::BunFactory
+            },
+            "the diagnostic must distinguish decoded from malformed PREPARED"
+        );
+        assert_eq!(
+            factory_calls.load(Ordering::SeqCst),
+            usize::from(!malformed)
+        );
+        assert!(
+            error.to_string().contains(if malformed {
+                "macOS guardian generation preparation"
+            } else {
+                "test factory denial"
+            }),
+            "preserve the real original error: {error}"
+        );
+    }
 }

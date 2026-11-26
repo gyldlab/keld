@@ -110,13 +110,26 @@ fn require_graph_pairing(
     }
 }
 
-fn parse_args(args: &[String]) -> Result<(), BuildError> {
-    match args {
-        [flag, target] if flag == "--target" && target == "macos-arm64" => Ok(()),
-        [arg] if arg == "--target=macos-arm64" => Ok(()),
-        _ => Err(BuildError::invocation(
-            "the initial build supports only --target macos-arm64",
-        )),
+const LOCAL_BUILD_TARGET: &str = "macos-arm64";
+
+fn parse_args(args: &[String]) -> Result<&str, BuildError> {
+    let target = match args {
+        [flag, target] if flag == "--target" => target.as_str(),
+        [arg] => arg
+            .strip_prefix("--target=")
+            .ok_or_else(|| BuildError::invocation("expected exactly --target <macos-arm64>"))?,
+        _ => {
+            return Err(BuildError::invocation(
+                "expected exactly --target <macos-arm64>",
+            ));
+        }
+    };
+    if target == LOCAL_BUILD_TARGET {
+        Ok(target)
+    } else {
+        Err(BuildError::invocation(
+            "unsupported macOS architecture target",
+        ))
     }
 }
 
@@ -130,21 +143,21 @@ fn parse_args(args: &[String]) -> Result<(), BuildError> {
 /// missing input pins, invalid permissions and native tool failures. Independent
 /// source/runtime qualification remains the caller's separate evidence obligation.
 pub fn run_build(args: &[String]) -> Result<(), BuildError> {
-    parse_args(args)?;
+    let target = parse_args(args)?;
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(BuildError::invocation(
-            "macos-arm64 requires native Apple Silicon macOS; no cross-host signing",
+            "native macOS tooling on arm64 is required to assemble and sign the requested target",
         ));
     }
     #[cfg(target_os = "macos")]
     {
-        run_macos_native()
+        run_macos_native(target)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(BuildError::invocation(
-            "macos-arm64 packaging is available only on macOS",
-        ))
+        Err(BuildError::invocation(format!(
+            "{target} packaging is available only on macOS"
+        )))
     }
 }
 
@@ -304,7 +317,7 @@ fn installed_generated_sources(
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos_native() -> Result<(), BuildError> {
+fn run_macos_native(requested_target: &str) -> Result<(), BuildError> {
     let root = env::current_dir()
         .and_then(|path| path.canonicalize())
         .map_err(|error| BuildError::input("project directory", error))?;
@@ -315,6 +328,12 @@ fn run_macos_native() -> Result<(), BuildError> {
     let build_source = read_authoring(&root, "keld.build.ts")?;
     let app = config::parse_app(&app_source)?;
     let build = config::parse_build(&build_source)?;
+    if build.target != requested_target {
+        return Err(BuildError::input(
+            "closed target selection",
+            "command target and keld.build.ts target must be identical",
+        ));
+    }
     require_graph_pairing(&app, &build)?;
     let permissions = boot::capture_required_packaging_permissions(&root)
         .map_err(|error| BuildError::input("keld.permissions.jsonc", error))?;
@@ -328,6 +347,7 @@ fn run_macos_native() -> Result<(), BuildError> {
     let graph_capture = select_installed_graph_capture(&app, &build)?;
     let boot = compile_local_boot_bytes(graph_capture.is_some(), &app_source, &app, &permissions)?;
     let metadata = MacosBundleMetadata {
+        target: build.target,
         app_id: app.id,
         name: app.name,
         version: app.version,
@@ -496,13 +516,18 @@ mod tests {
     }
 
     #[test]
-    fn only_one_concrete_mac_target_is_accepted() {
+    fn only_approved_arm64_target_is_accepted() {
         assert!(parse_args(&["--target".into(), "macos-arm64".into()]).is_ok());
         assert!(parse_args(&["--target=macos-arm64".into()]).is_ok());
         for args in [
             vec![],
             vec!["macos-arm64".into()],
             vec!["--target".into(), "macos-x64".into()],
+            vec!["--target=macos-x64".into()],
+            vec!["--target".into(), "macos-universal".into()],
+            vec!["--target=macos-universal".into()],
+            vec!["--target".into(), "macos-arm".into()],
+            vec!["--target".into(), "macos-universal2".into()],
             vec!["--target".into(), "windows-x64".into()],
             vec!["--target".into(), "macos-arm64".into(), "--sign".into()],
             vec!["--sign".into(), "adhoc-local".into()],
@@ -519,6 +544,6 @@ mod tests {
         let error =
             run_build(&["--target".into(), "macos-arm64".into()]).expect_err("foreign platform");
         assert_eq!(error.exit_code(), 2);
-        assert!(error.to_string().contains("Apple Silicon"));
+        assert!(error.to_string().contains("native macOS tooling"));
     }
 }

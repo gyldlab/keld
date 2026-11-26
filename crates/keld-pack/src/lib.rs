@@ -32,8 +32,9 @@ pub use host_identity::{embed_host_identity, read_host_identity_bytes};
 #[cfg(target_os = "macos")]
 pub use macos::{
     MacosCopiedMember, MacosCopiedMemberKind, MacosExecutableInput, MacosGeneratedFile,
-    MacosGraphCompiled, MacosPackError, MacosPackageInput, ProducedMacosLocal, produce_macos_local,
-    produce_macos_local_with_graph, validate_macos_executable_metadata,
+    MacosGraphCompiled, MacosMachoError, MacosPackError, MacosPackageInput, ProducedMacosLocal,
+    produce_macos_local, produce_macos_local_with_graph, read_macos_macho_architectures,
+    validate_macos_executable_metadata, validate_macos_macho_target,
 };
 #[cfg(target_os = "macos")]
 pub use macos_metadata::{

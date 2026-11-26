@@ -14,7 +14,7 @@ const REQUIRED_CASES: [&str; 16] = [
     "package, lock and preload content bind to exact candidate SHA-256 bytes",
     "commented capture-root decoys cannot satisfy effective resource selection",
     "Pack's declared capture roots retain root graph inputs and future provider install",
-    "real Pack graph transaction copies root inputs before intentional pre-sign refusal",
+    "real Pack graph transaction copies root inputs on arm64 and refuses unsupported hosts before capture",
     "every pending executable/provider pin is unambiguously invalid",
     "comment-only stale sentinel text cannot hide an active valid digest",
     "the installed graph has exactly one trusted offline window policy",

@@ -8,9 +8,14 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-use super::{compile_fixture, fixture, run_tool};
+use super::{
+    HOST_SCOPE_ERROR, assert_no_publication, assert_scope_error, compile_fixture, fixture, run_tool,
+};
 use crate::macos::capture::{Capture, digest_file};
-use crate::{MacosGeneratedFile, MacosGraphCompiled, produce_macos_local_with_graph};
+use crate::{
+    MACOS_LOCAL_TARGET, MacosGeneratedFile, MacosGraphCompiled, MacosPackageInput,
+    produce_macos_local_with_graph,
+};
 
 const GRAPH: &[u8] = b"{\"schema\":\"pack-transaction-test-only\"}\n";
 const BOOT: &[u8] = b"{\"schema\":6,\"test_only\":true}\n";
@@ -20,6 +25,22 @@ fn compiled() -> MacosGraphCompiled {
         graph: GRAPH.to_vec(),
         boot: BOOT.to_vec(),
     }
+}
+
+fn refuses_unsupported_graph_host(input: &MacosPackageInput) -> bool {
+    if cfg!(target_arch = "aarch64") {
+        return false;
+    }
+    let calls = Cell::new(0);
+    let error = produce_macos_local_with_graph(input, |_, _, _| {
+        calls.set(calls.get() + 1);
+        Err::<MacosGraphCompiled, _>("unexpected finalizer")
+    })
+    .expect_err("unsupported host must refuse graph producer");
+    assert_scope_error(&error, HOST_SCOPE_ERROR);
+    assert_eq!(calls.get(), 0);
+    assert_no_publication(&input.project_root);
+    true
 }
 
 #[test]
@@ -53,6 +74,9 @@ fn graph_compiler_failure_is_once_and_never_publishes_or_writes_a_placeholder() 
     let temporary = TempDir::new().expect("owned graph fixture");
     let mut input = fixture(temporary.path());
     input.boot.clear();
+    if refuses_unsupported_graph_host(&input) {
+        return;
+    }
     let calls = Cell::new(0);
     let error = produce_macos_local_with_graph(&input, |path, root, members| {
         calls.set(calls.get() + 1);
@@ -96,6 +120,9 @@ fn graph_transaction_refuses_byte_identical_leaf_swap_extra_missing_and_mode_cha
         let temporary = TempDir::new().expect("owned graph mutation fixture");
         let mut input = fixture(temporary.path());
         input.boot.clear();
+        if refuses_unsupported_graph_host(&input) {
+            continue;
+        }
         let called = Cell::new(false);
         let error = produce_macos_local_with_graph(&input, |path, _, _| {
             called.set(true);
@@ -136,6 +163,9 @@ fn graph_transaction_refuses_copied_root_replacement_even_with_equal_contents() 
     let temporary = TempDir::new().expect("owned graph root fixture");
     let mut input = fixture(temporary.path());
     input.boot.clear();
+    if refuses_unsupported_graph_host(&input) {
+        return;
+    }
     let error = produce_macos_local_with_graph(&input, |path, root, _| {
         let original = path.with_file_name("old-app-object");
         fs::rename(path, &original).expect("move original root");
@@ -165,6 +195,9 @@ fn graph_transaction_refuses_empty_oversized_and_native_compiled_leaves() {
         let temporary = TempDir::new().expect("owned graph bound fixture");
         let mut input = fixture(temporary.path());
         input.boot.clear();
+        if refuses_unsupported_graph_host(&input) {
+            continue;
+        }
         let error = produce_macos_local_with_graph(&input, |_, _, _| {
             let mut result = compiled();
             match case {
@@ -196,6 +229,9 @@ fn native_graph_transaction_signs_and_copy_verifies_only_the_compiled_fixed_leav
     let temporary = TempDir::new().expect("owned native graph fixture");
     let mut input = fixture(temporary.path());
     input.boot.clear();
+    if refuses_unsupported_graph_host(&input) {
+        return;
+    }
     input.generated.push(MacosGeneratedFile {
         path: "generated/bootstrap.mjs".into(),
         bytes: b"export const bootstrap = true;\n".to_vec(),
@@ -243,6 +279,11 @@ fn native_graph_transaction_signs_and_copy_verifies_only_the_compiled_fixed_leav
     );
     let receipt: serde_json::Value =
         serde_json::from_slice(&fs::read(&output.receipt).expect("receipt")).expect("receipt JSON");
+    assert_eq!(receipt["target"], MACOS_LOCAL_TARGET);
+    assert_eq!(
+        receipt["installedWorkflowQualification"],
+        "required separately; assembly and copy checks do not establish application behavior"
+    );
     for name in ["keld.boot.json", "keld.stage-graph.json"] {
         assert!(
             receipt["capturedApplicationFiles"]

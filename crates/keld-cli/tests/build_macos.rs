@@ -54,6 +54,49 @@ fn build(root: &Path) -> Output {
         .expect("run native CLI")
 }
 
+#[test]
+fn closed_cli_target_and_inert_authoring_target_must_match_before_any_runtime_io() {
+    let mismatch = tempfile::tempdir().expect("isolated mismatched-target project");
+    write_inputs(mismatch.path());
+    fs::write(
+        mismatch.path().join("keld.build.ts"),
+        build_source().replace("target:'macos-arm64'", "target:'macos-x64'"),
+    )
+    .expect("write mismatched authoring target");
+    let result = Command::new(env!("CARGO_BIN_EXE_keld"))
+        .args(["build", "--target", "macos-arm64"])
+        .current_dir(mismatch.path())
+        .output()
+        .expect("native build CLI");
+    assert_eq!(result.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("command target and keld.build.ts target"),
+        "target disagreement must refuse: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!mismatch.path().join("output").exists());
+    assert!(!mismatch.path().join(".keld/dev").exists());
+}
+
+#[test]
+fn unsupported_architecture_targets_refuse_before_reading_authoring_or_writing_output() {
+    let isolated = tempfile::tempdir().expect("isolated unsupported-target project");
+    for target in ["macos-x64", "macos-universal"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_keld"))
+            .args(["build", "--target", target])
+            .current_dir(isolated.path())
+            .output()
+            .expect("run unsupported native build CLI");
+        assert_eq!(result.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("unsupported macOS architecture target")
+        );
+        assert!(!isolated.path().join("output").exists());
+        assert!(!isolated.path().join(".keld/dev").exists());
+    }
+}
+
 fn refused_without_output(root: &Path, expected: &str) {
     let result = build(root);
     assert_eq!(

@@ -1,9 +1,10 @@
 //! Source-only B-3 capture probe against the actual keld-pack graph transaction.
 //!
-//! The callback checks the copied tree before any Host/Bun image is opened,
+//! On native arm64, the callback checks the copied tree before any Host/Bun image is opened,
 //! signed or published. It intentionally refuses graph compilation. The caller
 //! creates an EMPTY node_modules directory solely to test directory capture;
-//! this file never selects or installs any provider.
+//! this file never selects or installs any provider. Unsupported hosts must
+//! refuse before the callback and report a distinct scope-only result.
 
 use std::cell::Cell;
 use std::env;
@@ -41,6 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input = MacosPackageInput {
         project_root: project_root.clone(),
         metadata: MacosBundleMetadata {
+            target: "macos-arm64".into(),
             app_id: "dev.keld.gh1404.minimal".into(),
             name: "Keld GH1404 Minimal".into(),
             version: "0.0.1".into(),
@@ -97,6 +99,28 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err::<MacosGraphCompiled, _>("GH1404_B3_EXPECTED_PRE_SIGN_REFUSAL")
     })
     .expect_err("capture probe must intentionally refuse before signing");
+    if !cfg!(target_arch = "aarch64") {
+        assert_eq!(
+            called.get(),
+            0,
+            "unsupported host must not reach capture callback"
+        );
+        assert_eq!(error.code(), "KELD-PACK-014");
+        assert_eq!(
+            error.to_string(),
+            "KELD-PACK-014: macOS local packaging failed during local target: native arm64 macOS host is required"
+        );
+        assert!(!project_root.join("dist").exists());
+        assert!(fs::read_dir(&project_root)?.all(|entry| {
+            !entry
+                .expect("project entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".keld-macos-build-")
+        }));
+        println!("GH1404_B3_PACK_CAPTURE_REFUSED_UNSUPPORTED_HOST");
+        return Ok(());
+    }
     assert_eq!(
         called.get(),
         1,

@@ -13,6 +13,7 @@ use sha2::Digest as _;
 
 use crate::{
     MACOS_APP_RELATIVE_PATH, MACOS_BUN_RELATIVE_PATH, MACOS_HOST_EXECUTABLE, MACOS_LOCAL_TARGET,
+    MacosBundleMetadata, validate_macos_macho_target,
 };
 
 use super::capture::{
@@ -67,6 +68,24 @@ where
     )
 }
 
+fn require_approved_local_target(metadata: &MacosBundleMetadata) -> Result<(), MacosPackError> {
+    // The shared producer owns the approved local cell, regardless of caller.
+    // Broader metadata and scanner support is preparatory, not admission.
+    if !cfg!(target_arch = "aarch64") {
+        return Err(MacosPackError::new(
+            "local target",
+            "native arm64 macOS host is required",
+        ));
+    }
+    if metadata.target != MACOS_LOCAL_TARGET {
+        return Err(MacosPackError::new(
+            "local target",
+            "target must be exactly macos-arm64",
+        ));
+    }
+    Ok(())
+}
+
 fn produce_transaction<F>(
     input: &MacosPackageInput,
     finalize: Option<F>,
@@ -74,6 +93,7 @@ fn produce_transaction<F>(
 where
     F: FnOnce(&Path, &File, &[FileReceipt]) -> Result<MacosGraphCompiled, MacosPackError>,
 {
+    require_approved_local_target(&input.metadata)?;
     input
         .metadata
         .validate()
@@ -224,11 +244,11 @@ where
     let mut tools = BTreeMap::new();
     tools.insert(
         "host-build-commands",
-        verify_macho(&host_path, &input.metadata.minimum_system_version)?,
+        verify_macho(&host_path, &input.metadata)?,
     );
     tools.insert(
         "bun-build-commands",
-        verify_macho(&bun_path, &input.metadata.minimum_system_version)?,
+        verify_macho(&bun_path, &input.metadata)?,
     );
     let plist = input
         .metadata
@@ -271,6 +291,18 @@ where
             "outer signing changed the independently pinned Bun bytes",
         ));
     }
+    // Validate final signed bytes independently of the pre-sign input:
+    // Apple may update the outer Host signature during signing. Both
+    // executables still must have the exact sealed architecture set and
+    // deployment floor; the pinned Bun bytes and input signature stay intact.
+    tools.insert(
+        "post-sign-host-build-commands",
+        verify_macho(&host_path, &input.metadata)?,
+    );
+    tools.insert(
+        "post-sign-bun-build-commands",
+        verify_macho(&bun_path, &input.metadata)?,
+    );
     Ok(AppAssembly {
         input_host,
         input_bun,
@@ -411,7 +443,7 @@ fn write_receipt(
     let receipt = serde_json::json!({
         "schema": 1,
         "artifactClass": "local-adhoc",
-        "target": MACOS_LOCAL_TARGET,
+        "target": input.metadata.target,
         "application": { "id": input.metadata.app_id, "name": input.metadata.name, "declaredVersion": input.metadata.version, "declaredBundleVersion": input.metadata.bundle_version, "declaredMinimumSystemVersion": input.metadata.minimum_system_version },
         "inputHost": { "declaredVersion": input.host.version, "file": assembly.input_host },
         "inputBun": { "declaredVersion": input.bun.version, "file": assembly.input_bun },
@@ -497,47 +529,143 @@ fn version_tuple(value: &str) -> Result<[u32; 3], MacosPackError> {
     Ok(tuple)
 }
 
-fn verify_macho(path: &Path, configured_minimum: &str) -> Result<ToolOutput, MacosPackError> {
-    let architectures = run(
-        command("/usr/bin/xcrun").args(["lipo", "-archs"]).arg(path),
-        "input architecture",
-    )?;
-    if architectures.stdout.trim() != "arm64" {
+fn require_target_architectures(
+    observed: &str,
+    metadata: &MacosBundleMetadata,
+) -> Result<&'static [&'static str], MacosPackError> {
+    let required = metadata
+        .target_architectures()
+        .map_err(|error| MacosPackError::new("input architecture", error))?;
+    let actual: Vec<_> = observed.split_whitespace().collect();
+    if actual.len() != required.len()
+        || actual.iter().any(|arch| !required.contains(arch))
+        || required.iter().any(|arch| !actual.contains(arch))
+    {
         return Err(MacosPackError::new(
             "input architecture",
-            "first native cell accepts exactly arm64 Mach-O inputs",
+            "Host and Bun must contain exactly the selected architecture slices",
         ));
     }
-    let build = run(
-        command("/usr/bin/xcrun")
-            .args(["vtool", "-show-build"])
-            .arg(path),
-        "input deployment floor",
-    )?;
+    Ok(required)
+}
+
+/// The Intel Host may carry the old, macOS-specific `LC_VERSION_MIN_MACOSX`;
+/// modern Bun and ARM64 Host carry `LC_BUILD_VERSION`. One exact version command
+/// per selected slice is required before the configured deployment floor is admitted.
+fn verify_slice_deployment_floor(
+    output: &str,
+    arch: &str,
+    configured_minimum: &str,
+) -> Result<(), MacosPackError> {
+    let mut build_commands = 0;
+    let mut legacy_commands = 0;
     let mut platforms = Vec::new();
     let mut minimums = Vec::new();
-    for line in build.stdout.lines() {
+    let mut legacy_versions = Vec::new();
+    for line in output.lines() {
         let words: Vec<_> = line.split_whitespace().collect();
-        if let ["platform", platform] = words.as_slice() {
-            platforms.push(*platform);
-        }
-        if let ["minos", minimum] = words.as_slice() {
-            minimums.push(*minimum);
+        match words.as_slice() {
+            ["cmd", "LC_BUILD_VERSION"] => build_commands += 1,
+            ["cmd", "LC_VERSION_MIN_MACOSX"] => legacy_commands += 1,
+            ["platform", platform] => platforms.push(*platform),
+            ["minos", minimum] => minimums.push(*minimum),
+            ["version", version] => legacy_versions.push(*version),
+            _ => {}
         }
     }
-    if platforms.as_slice() != ["MACOS"] || minimums.len() != 1 {
-        return Err(MacosPackError::new(
-            "input deployment floor",
-            "input must declare one macOS LC_BUILD_VERSION floor",
-        ));
-    }
-    if version_tuple(configured_minimum)? < version_tuple(minimums[0])? {
+    let floor = match (build_commands, legacy_commands) {
+        (1, 0) if platforms.as_slice() == ["MACOS"] && minimums.len() == 1 => minimums[0],
+        (0, 1)
+            if arch == "x86_64"
+                && platforms.is_empty()
+                && minimums.is_empty()
+                && legacy_versions.len() == 1 =>
+        {
+            legacy_versions[0]
+        }
+        _ => {
+            return Err(MacosPackError::new(
+                "input deployment floor",
+                "each selected slice must declare one macOS deployment command",
+            ));
+        }
+    };
+    if version_tuple(configured_minimum)? < version_tuple(floor)? {
         return Err(MacosPackError::new(
             "input deployment floor",
             "minimumSystemVersion understates a pinned executable requirement",
         ));
     }
-    Ok(build)
+    Ok(())
+}
+
+fn require_unchanged_macho_tool_source(
+    path: &Path,
+    retained: &File,
+    initial_identity: &Identity,
+    initial_sha256: &[u8; 32],
+) -> Result<(), MacosPackError> {
+    // Native tool output was collected by pathname. Verify the pathname still
+    // resolves through the existing no-follow owner to the exact retained
+    // object and bytes used by the authoritative Mach-O scanner.
+    let reopened = open_absolute(path, false)?;
+    let retained_metadata = retained
+        .metadata()
+        .map_err(|error| MacosPackError::new("Mach-O tool source identity", error))?;
+    let reopened_metadata = reopened
+        .metadata()
+        .map_err(|error| MacosPackError::new("Mach-O tool source identity", error))?;
+    if Identity::of(&retained_metadata) != *initial_identity
+        || Identity::of(&reopened_metadata) != *initial_identity
+        || digest_retained_file(retained)? != *initial_sha256
+        || digest_retained_file(&reopened)? != *initial_sha256
+    {
+        return Err(MacosPackError::new(
+            "Mach-O tool source identity",
+            "native tool path changed object, mode, metadata or bytes during validation",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_macho(path: &Path, metadata: &MacosBundleMetadata) -> Result<ToolOutput, MacosPackError> {
+    // Use the same bounded, retained-file architecture admission as the
+    // installed Core. lipo's printed names alone can admit one-slice FAT
+    // images and unknown subtypes that installed Core must refuse.
+    let retained = open_absolute(path, false)?;
+    let input_metadata = retained
+        .metadata()
+        .map_err(|error| MacosPackError::new("Mach-O input identity", error))?;
+    let input_identity = Identity::of(&input_metadata);
+    let input_sha256 = digest_retained_file(&retained)?;
+    validate_macos_macho_target(&retained, metadata)
+        .map_err(|error| MacosPackError::new("input architecture", error))?;
+    let architectures = run(
+        command("/usr/bin/xcrun").args(["lipo", "-archs"]).arg(path),
+        "input architecture",
+    )?;
+    let required = require_target_architectures(&architectures.stdout, metadata)?;
+    let mut result = ToolOutput {
+        stdout: format!(
+            "target={} architecture={}\n",
+            metadata.target,
+            architectures.stdout.trim()
+        ),
+        stderr: architectures.stderr,
+    };
+    for arch in required {
+        let build = run(
+            command("/usr/bin/xcrun")
+                .args(["vtool", "-arch", arch, "-show-build"])
+                .arg(path),
+            "input deployment floor",
+        )?;
+        verify_slice_deployment_floor(&build.stdout, arch, &metadata.minimum_system_version)?;
+        result.stdout.push_str(&build.stdout);
+        result.stderr.push_str(&build.stderr);
+    }
+    require_unchanged_macho_tool_source(path, &retained, &input_identity, &input_sha256)?;
+    Ok(result)
 }
 
 fn verify_app(app: &Path) -> Result<ToolOutput, MacosPackError> {
@@ -1144,9 +1272,291 @@ fn verify_mounted_app(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
     use serde_json::json;
 
-    use super::{ToolOutput, attached_device, valid_disk_device, verify_signature_facts};
+    use super::{
+        Identity, ToolOutput, attached_device, digest_retained_file, open_absolute,
+        require_target_architectures, require_unchanged_macho_tool_source, valid_disk_device,
+        verify_signature_facts, verify_slice_deployment_floor,
+    };
+    use crate::MacosBundleMetadata;
+
+    fn target_metadata(target: &str) -> MacosBundleMetadata {
+        MacosBundleMetadata {
+            target: target.to_owned(),
+            app_id: "org.example.keld.test".into(),
+            name: "Keld Fixture".into(),
+            version: "1.2.3".into(),
+            bundle_version: "4".into(),
+            minimum_system_version: "14.0".into(),
+            icon: false,
+            bun_sha256: [0; 32],
+        }
+    }
+
+    fn compile_native_fixture(root: &Path, arch: &str) -> PathBuf {
+        let source = root.join("main.c");
+        fs::write(&source, "int main(void) { return 0; }\n")
+            .expect("small independent native source");
+        let output = root.join(format!("native-{arch}"));
+        let result = Command::new("/usr/bin/xcrun")
+            .args(["clang", "-arch", arch, "-mmacosx-version-min=13.0"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .output()
+            .expect("native Clang exists");
+        assert!(
+            result.status.success(),
+            "compile native {arch}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        output
+    }
+
+    #[test]
+    fn selected_target_refuses_missing_extra_and_repeated_slices() {
+        let arm = target_metadata("macos-arm64");
+        let intel = target_metadata("macos-x64");
+        let universal = target_metadata("macos-universal");
+        assert_eq!(
+            require_target_architectures("arm64\n", &arm).unwrap(),
+            ["arm64"]
+        );
+        assert_eq!(
+            require_target_architectures("x86_64\n", &intel).unwrap(),
+            ["x86_64"]
+        );
+        assert_eq!(
+            require_target_architectures("x86_64 arm64\n", &universal).unwrap(),
+            ["arm64", "x86_64"]
+        );
+        for (observed, selected) in [
+            ("arm64", &intel),
+            ("x86_64", &arm),
+            ("arm64", &universal),
+            ("x86_64", &universal),
+            ("arm64 x86_64", &arm),
+            ("arm64 arm64", &universal),
+            ("x86_64 x86_64", &universal),
+            ("x86_64 arm64 arm64", &universal),
+            ("arm64 ppc", &universal),
+        ] {
+            assert!(
+                require_target_architectures(observed, selected).is_err(),
+                "bad Host or Bun slice set admitted: {} / {}",
+                selected.target,
+                observed
+            );
+        }
+    }
+
+    #[test]
+    fn producer_refuses_single_slice_fat_even_when_lipo_reports_valid_x64() {
+        // This case reaches the old producer's lipo + vtool success path:
+        // lipo reports "x86_64" for a FAT image containing just one slice.
+        // Installed Core rejects the one-slice FAT encoding at admission.
+        let root = tempfile::tempdir().expect("isolated test artifacts");
+        // /var on macOS is an OS symlink. Pack intentionally rejects symlink
+        // ancestors, so fixture paths must use their physical /private root.
+        let physical = root.path().canonicalize().expect("physical test root");
+        let thin = physical.join("thin-x64");
+        let fat = physical.join("fat-one-x64");
+        let result = Command::new("/usr/bin/xcrun")
+            .args(["lipo", "-thin", "x86_64", "/usr/bin/true", "-output"])
+            .arg(&thin)
+            .output()
+            .expect("xcrun lipo available");
+        assert!(
+            result.status.success(),
+            "extract x64 signed system executable: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let body = fs::read(&thin).expect("system x64 Mach-O slice");
+        let mut image = vec![0_u8; 4096];
+        image[..4].copy_from_slice(&[0xca, 0xfe, 0xba, 0xbe]);
+        image[4..8].copy_from_slice(&1_u32.to_be_bytes());
+        image[8..12].copy_from_slice(&0x0100_0007_u32.to_be_bytes());
+        image[12..16].copy_from_slice(&3_u32.to_be_bytes());
+        image[16..20].copy_from_slice(&4096_u32.to_be_bytes());
+        image[20..24].copy_from_slice(
+            &u32::try_from(body.len())
+                .expect("fixture slice length")
+                .to_be_bytes(),
+        );
+        image[24..28].copy_from_slice(&12_u32.to_be_bytes());
+        image.extend_from_slice(&body);
+        fs::write(&fat, image).expect("one-slice fat test fixture");
+
+        let archs = Command::new("/usr/bin/xcrun")
+            .args(["lipo", "-archs"])
+            .arg(&fat)
+            .output()
+            .expect("inspect actual native FAT shape");
+        assert!(archs.status.success());
+        assert_eq!(archs.stdout, b"x86_64\n");
+        let native_floor = Command::new("/usr/bin/xcrun")
+            .args(["vtool", "-arch", "x86_64", "-show-build"])
+            .arg(&fat)
+            .output()
+            .expect("native deployment inspection");
+        assert!(
+            native_floor.status.success(),
+            "the old producer would also accept native vtool: {}",
+            String::from_utf8_lossy(&native_floor.stderr)
+        );
+        let mut metadata = target_metadata("macos-x64");
+        metadata.minimum_system_version = "99.0".into();
+        let thin_result = super::verify_macho(&thin, &metadata);
+        assert!(
+            thin_result.is_ok(),
+            "ordinary x64 thin executable must remain eligible: {thin_result:?}"
+        );
+        assert!(
+            super::verify_macho(&fat, &metadata).is_err(),
+            "one-arch FAT must be refused before packaging or signing"
+        );
+    }
+
+    #[test]
+    fn producer_refuses_unsupported_arm64_capability_despite_lipo_and_vtool_success() {
+        let root = tempfile::tempdir().expect("isolated subtype mismatch fixture");
+        let physical = root.path().canonicalize().expect("physical test root");
+        let valid = compile_native_fixture(&physical, "arm64");
+        let mut bad = fs::read(&valid).expect("native ARM64 bytes");
+        // CPU subtype capabilities that are not the declared LIB64 bit are
+        // rejected by installed Core even when lipo still prints "arm64".
+        bad[8..12].copy_from_slice(&0x1000_0000_u32.to_le_bytes());
+        let corrupted = physical.join("invalid-arm64-capability");
+        fs::write(&corrupted, bad).expect("mutate only Mach-O CPU capability");
+        let lipo = Command::new("/usr/bin/xcrun")
+            .args(["lipo", "-archs"])
+            .arg(&corrupted)
+            .output()
+            .expect("native lipo");
+        assert!(lipo.status.success());
+        assert_eq!(lipo.stdout, b"arm64\n");
+        let vtool = Command::new("/usr/bin/xcrun")
+            .args(["vtool", "-arch", "arm64", "-show-build"])
+            .arg(&corrupted)
+            .output()
+            .expect("native vtool");
+        assert!(
+            vtool.status.success(),
+            "the old Pack route would accept vtool"
+        );
+        let mut metadata = target_metadata("macos-arm64");
+        metadata.minimum_system_version = "99.0".into();
+        let positive = super::verify_macho(&valid, &metadata);
+        assert!(positive.is_ok(), "valid ARM64 compiler input: {positive:?}");
+        assert!(
+            super::verify_macho(&corrupted, &metadata).is_err(),
+            "unsupported CPU subtype must refuse before signing"
+        );
+    }
+
+    #[test]
+    fn producer_and_installed_reader_admit_exact_native_thin_and_universal_shapes() {
+        let root = tempfile::tempdir().expect("isolated cross-architecture source");
+        let physical = root.path().canonicalize().expect("physical test root");
+        let arm = compile_native_fixture(&physical, "arm64");
+        let intel = compile_native_fixture(&physical, "x86_64");
+        let universal = physical.join("universal");
+        let merged = Command::new("/usr/bin/xcrun")
+            .args(["lipo", "-create"])
+            .arg(&intel)
+            .arg(&arm)
+            .arg("-output")
+            .arg(&universal)
+            .output()
+            .expect("native lipo merge");
+        assert!(
+            merged.status.success(),
+            "native Universal fixture: {}",
+            String::from_utf8_lossy(&merged.stderr)
+        );
+        for (file, target) in [
+            (&arm, "macos-arm64"),
+            (&intel, "macos-x64"),
+            (&universal, "macos-universal"),
+        ] {
+            let mut metadata = target_metadata(target);
+            metadata.minimum_system_version = "99.0".into();
+            let result = super::verify_macho(file, &metadata);
+            assert!(
+                result.is_ok(),
+                "native {target} must satisfy both Pack and installed Core target requirements: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_macho_tool_recheck_refuses_tamper_and_byte_identical_path_replacement() {
+        let root = tempfile::tempdir().expect("isolated native tools fixture");
+        let physical = root.path().canonicalize().expect("physical path");
+        let first = compile_native_fixture(&physical, "arm64");
+        let retained = open_absolute(&first, false).expect("retained no-follow native input");
+        let identity = Identity::of(&retained.metadata().expect("original input identity"));
+        let sha = digest_retained_file(&retained).expect("original input digest");
+        assert!(require_unchanged_macho_tool_source(&first, &retained, &identity, &sha).is_ok());
+        let mut bytes = fs::read(&first).expect("native input bytes");
+        bytes[40] ^= 1;
+        fs::write(&first, bytes).expect("mutate same-inode executable bytes");
+        assert!(
+            require_unchanged_macho_tool_source(&first, &retained, &identity, &sha).is_err(),
+            "native-tool source cannot silently change after retained shape validation"
+        );
+
+        let second = compile_native_fixture(&physical, "x86_64");
+        let retained = open_absolute(&second, false).expect("retained original inode");
+        let identity = Identity::of(&retained.metadata().expect("original inode metadata"));
+        let sha = digest_retained_file(&retained).expect("original inode bytes");
+        let replacement = physical.join("replacement");
+        fs::copy(&second, &replacement).expect("byte-identical replacement inode");
+        fs::rename(&replacement, &second).expect("atomically swap test-owned path");
+        assert!(
+            require_unchanged_macho_tool_source(&second, &retained, &identity, &sha).is_err(),
+            "path replacement must be rejected even when the new file has identical bytes"
+        );
+    }
+
+    #[test]
+    fn each_slice_requires_exact_supported_macos_deployment_floor() {
+        let modern =
+            "Load command 12\n cmd LC_BUILD_VERSION\n platform MACOS\n minos 13.0\n sdk 26.5\n";
+        let intel_legacy =
+            "Load command 9\n cmd LC_VERSION_MIN_MACOSX\n version 10.12\n sdk 26.2\n";
+        assert!(verify_slice_deployment_floor(modern, "arm64", "13.0").is_ok());
+        assert!(verify_slice_deployment_floor(modern, "x86_64", "14.0").is_ok());
+        assert!(verify_slice_deployment_floor(intel_legacy, "x86_64", "13.0").is_ok());
+        assert!(verify_slice_deployment_floor(modern, "arm64", "12.0").is_err());
+        assert!(verify_slice_deployment_floor(intel_legacy, "x86_64", "10.11").is_err());
+        assert!(verify_slice_deployment_floor(intel_legacy, "arm64", "14.0").is_err());
+        assert!(
+            verify_slice_deployment_floor(&modern.replace("MACOS", "IOS"), "arm64", "14.0")
+                .is_err()
+        );
+        assert!(
+            verify_slice_deployment_floor(
+                &format!("{modern}\n cmd LC_BUILD_VERSION\n platform MACOS\n minos 13.0"),
+                "arm64",
+                "14.0"
+            )
+            .is_err()
+        );
+        assert!(
+            verify_slice_deployment_floor(
+                &format!("{intel_legacy}\n cmd LC_BUILD_VERSION"),
+                "x86_64",
+                "14.0"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn attached_image_detach_identity_is_observed_and_does_not_accept_commands() {
