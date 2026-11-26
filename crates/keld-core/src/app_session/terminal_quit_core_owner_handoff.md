@@ -40,6 +40,9 @@ Runner regression checks:
 `python3 -B crates/keld-core/src/app_session/test_terminal_quit_core_owner_probe.py`
 The disposable projection has a 30-second run bound and a 60-second compile
 bound. A timeout fails the probe, retains diagnostics and reaps its owned child.
+The runner keeps the leader unreaped until a process-group census confirms no
+live descendant remains. An unexpected survivor fails the run and is killed
+before the group leader is reaped. The regression has a separate outer watchdog.
 
 macOS rustc 1.99.1. The standalone probe projects the exact production
 registry and shutdown method bodies, original prototype and this fixture;

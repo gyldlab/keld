@@ -753,8 +753,15 @@ export class DraftQuitCoordinator<T> {
     this.publish(a, outcome);
     // Terminal history and cleanup do not depend on receipt reclamation.
     // Only report an acknowledgement result when a terminal adapter supplies one.
-    const consumed =
-      consume && this.host.consumeDisposition ? consume() : undefined;
+    let consumed: Consumption | undefined;
+    if (consume) {
+      try {
+        consumed = this.host.consumeDisposition ? consume() : undefined;
+      } catch (lookupError) {
+        // A throwing adapter getter must not strand a known terminal result.
+        consumed = { ready: false, error: lookupError };
+      }
+    }
     if (consumed && !consumed.ready) {
       // An accepted reservation and completed local fence do not depend on
       // reclaiming a nonterminal correlation. Retain its custody; report

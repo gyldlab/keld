@@ -55,3 +55,25 @@ test("AC11: known terminal acceptance does not require consumption callback", as
   expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);
   expect(x.late).toEqual([]);
 });
+
+test("AC11: a throwing terminal acknowledgement accessor cannot strand settlement", async () => {
+  const x = fixture();
+  const publicQuit = x.coordinator.quit();
+  await x.prepared(0);
+  const error = Error("terminal acknowledgement lookup failed");
+  let lookups = 0;
+  Object.defineProperty(x.host, "consumeDisposition", {
+    get() {
+      lookups++;
+      throw error;
+    },
+  });
+  x.commits[0]!.reply.resolve("accepted");
+  await turn();
+  expect(x.coordinator.disposition).toBe("committed");
+  expect(x.late.map((item) => item.error)).toEqual([error]);
+  expect(lookups).toBe(1);
+  expect(await publicQuit).toBeUndefined();
+  expect(x.coordinator.quit()).toBe(publicQuit);
+  expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);
+});

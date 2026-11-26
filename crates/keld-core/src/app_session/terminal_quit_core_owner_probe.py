@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 
 ROOT = Path(__file__).resolve().parent
 SOURCE_HASHES = {}
@@ -20,23 +21,64 @@ COMPILE_TIMEOUT_SECONDS = 60
 PROJECTION_TIMEOUT_SECONDS = 30
 
 
+def live_group_members(group):
+    """Inspect live members while the unreaped leader pins the group identity."""
+    census = subprocess.run(
+        ["/bin/ps", "-axo", "pid=,pgid=,stat="],
+        check=True, text=True, capture_output=True, timeout=5,
+    )
+    members = []
+    for line in census.stdout.splitlines():
+        pid, pgid, state = line.split(maxsplit=2)
+        if int(pgid) == group and int(pid) != group and not state.startswith("Z"):
+            members.append(int(pid))
+    return members
+
+
 def run_bounded(command, label, timeout, *, check=False):
-    """Bound one owned process group and preserve its combined diagnostics."""
+    """Bound the owned process family and retain diagnostics on every failure."""
     with tempfile.TemporaryFile() as diagnostics:
-        with subprocess.Popen(command, stdout=diagnostics, stderr=subprocess.STDOUT,
-                              start_new_session=True) as child:
+        child = subprocess.Popen(
+            command, stdout=diagnostics, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        observed = threading.Event()
+        failures = []
+
+        def observe_exit():
             try:
-                child.wait(timeout=timeout)
-            except subprocess.TimeoutExpired as error:
-                # The leader has not been reaped, so its group identity is owned.
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                child.wait()
-                diagnostics.seek(0)
-                output = diagnostics.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"{label}: timed out after {timeout}s\n{output}") from error
+                # WNOWAIT keeps the group leader unreaped. Its PID and PGID
+                # cannot be reused while we inspect and, if needed, kill it.
+                os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+            except OSError as error:
+                failures.append(error)
+            finally:
+                observed.set()
+
+        threading.Thread(target=observe_exit, daemon=True).start()
+        try:
+            if not observed.wait(timeout):
+                raise TimeoutError(f"timed out after {timeout}s")
+            if failures:
+                raise RuntimeError(f"could not observe child exit: {failures[0]}")
+            survivors = live_group_members(child.pid)
+            if survivors:
+                raise RuntimeError(f"leader exited with live group members: {survivors}")
+        except BaseException as error:
+            # The leader is still an owned, unreaped child here. The PGID
+            # cannot identify an unrelated process group until we reap it.
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            observed.wait(5)
+            child.wait()
+            diagnostics.seek(0)
+            output = diagnostics.read().decode("utf-8", errors="replace")
+            if isinstance(error, Exception):
+                raise RuntimeError(f"{label}: {error}\n{output}") from error
+            raise
+        child.wait()
         diagnostics.seek(0)
         output = diagnostics.read().decode("utf-8", errors="replace")
     result = subprocess.CompletedProcess(command, child.returncode, stdout=output)
