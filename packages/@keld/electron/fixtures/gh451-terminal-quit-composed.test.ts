@@ -1,15 +1,22 @@
-// GH451 review-only composition of the two isolated TypeScript candidates.
-// The scripted port and close facts are fixtures, not authenticated IPC or OS evidence.
+// GH451 review-only composition of the isolated API and facade candidates.
+// Independent scripted receipt/no-late witnesses, not real IPC or OS proof.
 import { expect, test } from "bun:test";
 import {
+  DraftCorrelationLedger,
   RetainedLinkDraft,
+  type CorrelationLease,
+  type Original,
+  type Outcome as LinkOutcome,
   type Request,
+  type ResolvedReceipt,
   type RetainedPort,
   type Token,
 } from "../../api/fixtures/gh451-retained-link-draft/candidate";
 import {
   DraftQuitCoordinator,
+  type Disposition,
   type DraftHost,
+  type ErrorCustody,
   type WindowIdentity,
 } from "./gh451-terminal-quit-draft";
 
@@ -19,61 +26,120 @@ const window = { id: 1, incarnation: 11n, document: 101n };
 function fixture(initial: readonly WindowIdentity[] = [], negotiated = true) {
   const trace: string[] = [];
   const sent: Request[] = [];
-  const replies: Array<() => Promise<unknown>> = [];
-  let correlation = 0;
+  const leases: CorrelationLease[] = [];
+  const replies: Array<{ run: () => Promise<unknown>; noLate: boolean }> = [];
+  const late: Array<{ error: unknown; custody: ErrorCustody<Token> }> = [];
+  const ledger = new DraftCorrelationLedger();
   let live = true;
   let fenceCount = 0;
   let token: Token | undefined;
   let windows = [...initial];
   let veto = false;
+  let fenceError: Error | undefined;
+  let invalidated = false;
   const port: RetainedPort = {
     negotiated,
     selected: true,
+    ledger,
     isCurrent: () => true,
     isLive: () => live,
-    start(request) {
+    send(lease, request) {
+      expect(ledger.isReserved(lease)).toBe(true);
+      expect(request.operation === "status" ? ledger.status : ledger.original).toBe(lease);
       trace.push(request.operation);
       sent.push(request);
+      leases.push(lease);
       const reply = replies.shift();
       if (!reply) throw new Error("unexpected draft request");
-      return { correlation: ++correlation, reply: reply() };
+      return reply.run().then(value => {
+        // Explicit fixture input; a Status result alone does NOT prove
+        // quiescence of the earlier effect's transport identity.
+        if (reply.noLate) ledger.proveNoLate(lease);
+        return value;
+      });
     },
     fenceAccepted() {
       trace.push("fence");
       fenceCount++;
+      if (fenceError) throw fenceError;
       live = false;
     },
   };
   const api = new RetainedLinkDraft(port);
+  const deliveries = new WeakMap<object, {
+    receipt: ResolvedReceipt;
+    lease: CorrelationLease;
+    attempted: boolean;
+  }>();
+  function map(result: LinkOutcome, source: "effect" | "status"): Disposition<Token> {
+    if (result.kind === "unknown") return {
+      kind: "unknown", original: result.original,
+      error: (source === "status" ? api.statusError : api.effectError)
+        ?? new Error("draft effect unknown"),
+    };
+    if (result.kind === "refused") return {
+      kind: "refused", error: new Error("draft refusal: " + result.reason),
+    };
+    const d: Disposition<Token> = result.kind === "cancelled" ? { kind: "canceled" }
+      : result.kind === "competing-terminal" ? { kind: "competing" }
+      : result.kind === "accepted" ? { kind: "accepted", error: api.fenceError }
+      : { ...result };
+    const receipt = api.pendingReceipt;
+    const lease = ledger.original;
+    if (!receipt || !lease || receipt.disposition !== result)
+      throw new Error("missing exact mapped receipt");
+    deliveries.set(d, { receipt, lease, attempted: false });
+    if (d.kind === "prepared") token = d.token;
+    return d;
+  }
+  function sameOriginal(a: Original, b: Original) {
+    return a.operation === b.operation && a.correlation === b.correlation && a.token === b.token;
+  }
   const host: DraftHost<Token> = {
+    conditionalEligible: api.conditionalAvailable,
     census: () => ({ generation, ready: true, selected: true, windows }),
     requestClose(w, dispatch) {
       trace.push("close:" + w.id);
       dispatch(7n);
       return Promise.resolve({ kind: "requested", sequence: 7n });
     },
-    async prepare() {
-      const result = await api.prepare();
-      if (result.kind === "prepared") {
-        token = result.token;
-        return result;
-      }
-      return result.kind === "retained" ? result : { kind: "unknown" };
-    },
+    async prepare() { return map(await api.prepare(), "effect"); },
     async cancel(t) {
-      // Fixture adapter only: the approved API must bind the exact token itself.
-      if (t !== token || token === undefined) return "unknown";
-      const result = await api.cancel();
-      if (result.kind !== "cancelled") return "unknown";
-      token = undefined;
-      return "canceled";
+      if (t !== token || token === undefined) return { kind: "unknown" };
+      return map(await api.cancel(), "effect");
     },
     async commit(t) {
-      if (t !== token || token === undefined) return "unknown";
-      const result = await api.commit();
-      if (result.kind !== "accepted" && result.kind !== "retained") return "unknown";
-      token = undefined;
-      return result.kind;
+      if (t !== token || token === undefined) return { kind: "unknown" };
+      return map(await api.commit(), "effect");
+    },
+    async status(original) {
+      const result = await api.reconcile();
+      const actual = result.kind === "unknown" ? result.original : api.pendingReceipt?.original;
+      if (!actual || !sameOriginal(actual, original)) return {
+        original, disposition: { kind: "unknown", original, error: api.statusError },
+      };
+      return { original: actual, disposition: map(result, "status") };
+    },
+    observedInvalidation(t) { return invalidated && t === token; },
+    reportLateError(error, custody) { late.push({ error, custody }); },
+    consumeDisposition(delivery) {
+      const mapped = deliveries.get(delivery.disposition);
+      if (!mapped) return { ready: false, error: new Error("missing exact consumer receipt") };
+      if (mapped.receipt.original.operation !== delivery.operation ||
+          mapped.receipt.original.token !== delivery.token ||
+          (delivery.original && !sameOriginal(mapped.receipt.original, delivery.original))) {
+        return { ready: false, error: new Error("consumer receipt identity mismatch") };
+      }
+      if (!mapped.attempted) {
+        if (api.pendingReceipt !== mapped.receipt)
+          return { ready: false, error: new Error("receipt no longer exact") };
+        mapped.attempted = true;
+        api.consumeReceipt(mapped.receipt);
+      }
+      if (ledger.isReserved(mapped.lease) || ledger.status)
+        return { ready: false, error: new Error("independent no-late proof pending") };
+      if (delivery.disposition.kind !== "prepared") token = undefined;
+      return { ready: true };
     },
   };
   const coordinator = new DraftQuitCoordinator(host, {
@@ -82,10 +148,37 @@ function fixture(initial: readonly WindowIdentity[] = [], negotiated = true) {
     lastWindowClosed() { trace.push("last"); },
   }, generation);
   return {
-    api, coordinator, trace, sent,
-    reply(value: unknown) { replies.push(() => Promise.resolve(value)); },
-    lose() { replies.push(() => Promise.reject(new Error("missing terminal receipt"))); },
+    api, coordinator, trace, sent, leases, ledger, late,
+    reply(value: unknown, noLate = true) {
+      replies.push({ run: () => Promise.resolve(value), noLate });
+    },
+    lose(error = new Error("missing terminal receipt")) {
+      replies.push({ run: () => Promise.reject(error), noLate: false });
+      return error;
+    },
+    original() {
+      const lease = ledger.original;
+      if (!lease) throw new Error("no original reservation");
+      const request = sent[leases.indexOf(lease)];
+      if (!request || request.operation === "status")
+        throw new Error("missing original effect");
+      return { operation: request.operation, correlation: lease.correlation,
+        token: request.operation === "prepare" ? undefined : request.token };
+    },
+    recorded(disposition: unknown, original: Original) {
+      replies.push({
+        run: () => Promise.resolve({ kind: "recorded", original, disposition }),
+        noLate: true,
+      });
+    },
+    proveOriginalNoLate() {
+      const original = ledger.original;
+      if (!original) throw new Error("no original identity");
+      ledger.proveNoLate(original);
+    },
     veto(value: boolean) { veto = value; },
+    invalidate() { invalidated = true; },
+    failFence(error: Error) { fenceError = error; },
     destroy() {
       windows = [];
       coordinator.observeDestroyed(generation, window);
@@ -95,12 +188,14 @@ function fixture(initial: readonly WindowIdentity[] = [], negotiated = true) {
   };
 }
 
-test("composed: close acknowledgement alone never prepares; actual fact precedes accepted fence", async () => {
+test("composed: public handoff before physical receipt, accepted fence only after actual fact", async () => {
   const f = fixture([window]);
   f.reply({ kind: "prepared", token: "first" });
   f.reply({ kind: "accepted" });
+  const publicQuit = f.coordinator.quit();
   const attempt = f.coordinator.requestQuit();
-  await Promise.resolve();
+  await publicQuit;
+  expect(f.coordinator.quit()).toBe(publicQuit);
   expect(f.trace).toEqual(["before", "close:1"]);
   expect(f.sent).toEqual([]);
   f.destroy();
@@ -110,7 +205,7 @@ test("composed: close acknowledgement alone never prepares; actual fact precedes
   expect(f.fences).toBe(1);
 });
 
-test("composed: will veto cancels the exact token and retains the original link for retry", async () => {
+test("composed: will veto cancels exact token and retains the original link for retry", async () => {
   const f = fixture();
   f.veto(true);
   f.reply({ kind: "prepared", token: "old" });
@@ -146,7 +241,7 @@ test("composed: retained Commit is nonterminal and permits fresh preparation", a
   expect(f.fences).toBe(1);
 });
 
-test("composed: missing Commit receipt stops facade replay without fencing the link", async () => {
+test("composed: missing Commit receipt stops replay without fencing the link", async () => {
   const f = fixture();
   f.reply({ kind: "prepared", token: "unknown" });
   f.lose();
@@ -158,10 +253,130 @@ test("composed: missing Commit receipt stops facade replay without fencing the l
   expect(f.live).toBe(true);
 });
 
-test("composed: unnegotiated peer never receives an effect or fallback", async () => {
-  const f = fixture([], false);
-  expect(await f.coordinator.requestQuit()).toBe("unknown");
+test("composed: old peer with a live window has no conditional close/effect/fallback", async () => {
+  const f = fixture([window], false);
+  expect(await f.coordinator.requestQuit()).toBe("retained");
   expect(f.trace).toEqual(["before"]);
   expect(f.sent).toEqual([]);
   expect(f.fences).toBe(0);
+});
+
+test("composed: lost Prepare reconciles exact original then invokes will once", async () => {
+  const f = fixture();
+  const error = f.lose();
+  const publicQuit = f.coordinator.quit();
+  await expect(publicQuit).rejects.toBe(error);
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const original = f.original();
+  f.proveOriginalNoLate(); // independent transport witness
+  f.recorded({ kind: "prepared", token: "recovered" }, original);
+  f.reply({ kind: "accepted" });
+  expect(await f.coordinator.reconcile()).toBe("committed");
+  expect(f.trace).toEqual(["before", "prepare", "status", "will", "commit", "fence"]);
+  expect(f.sent[1]).toEqual({ operation: "status", original });
+  expect(f.leases[1]!.correlation).not.toBe(original.correlation);
+  expect(f.api.terminalDisposition).toBe("accepted");
+  expect(f.fences).toBe(1);
+  await expect(publicQuit).rejects.toBe(error);
+});
+
+test("composed: lost Cancel recovers cancellation and allows one fresh attempt", async () => {
+  const f = fixture();
+  f.veto(true);
+  f.reply({ kind: "prepared", token: "veto" });
+  f.lose();
+  await f.coordinator.quit(); // local veto settlement, not Cancel receipt
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const original = f.original();
+  f.proveOriginalNoLate();
+  f.recorded({ kind: "cancelled" }, original);
+  expect(await f.coordinator.reconcile()).toBe("vetoed");
+  expect(f.fences).toBe(0);
+  expect(f.live).toBe(true);
+  f.veto(false);
+  f.reply({ kind: "prepared", token: "fresh" });
+  f.reply({ kind: "accepted" });
+  expect(await f.coordinator.requestQuit()).toBe("committed");
+  expect(f.trace).toEqual(["before", "prepare", "will", "cancel", "status", "before", "prepare", "will", "commit", "fence"]);
+});
+
+test("composed: lost Commit reconciles retained without replay, then fresh attempt", async () => {
+  const f = fixture();
+  f.reply({ kind: "prepared", token: "old" });
+  f.lose();
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const original = f.original();
+  f.proveOriginalNoLate();
+  f.recorded({ kind: "retained" }, original);
+  expect(await f.coordinator.reconcile()).toBe("retained");
+  expect(f.live).toBe(true);
+  f.reply({ kind: "prepared", token: "new" });
+  f.reply({ kind: "accepted" });
+  expect(await f.coordinator.requestQuit()).toBe("committed");
+  expect(f.sent.map(x => x.operation)).toEqual(["prepare", "commit", "status", "prepare", "commit"]);
+  expect(f.fences).toBe(1);
+});
+
+test("composed: lost Commit reconciles accepted once with no duplicate effect", async () => {
+  const f = fixture();
+  f.reply({ kind: "prepared", token: "first" });
+  f.lose();
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const original = f.original();
+  f.proveOriginalNoLate();
+  f.recorded({ kind: "accepted" }, original);
+  expect(await f.coordinator.reconcile()).toBe("committed");
+  expect(await f.coordinator.reconcile()).toBe("committed");
+  expect(f.sent.map(x => x.operation)).toEqual(["prepare", "commit", "status"]);
+  expect(f.fences).toBe(1);
+});
+
+test("composed: stale original Status cannot authorize a new effect", async () => {
+  const f = fixture();
+  f.lose();
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const original = f.original();
+  f.recorded({ kind: "prepared", token: "wrong" }, { ...original, correlation: 99 });
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.trace).toEqual(["before", "prepare", "status"]);
+  expect(f.ledger.original?.correlation).toBe(original.correlation);
+  expect(f.fences).toBe(0);
+});
+
+test("composed: known Prepare held until independent no-late proof permits continuation", async () => {
+  const f = fixture();
+  f.reply({ kind: "prepared", token: "held" }, false);
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  expect(f.trace).toEqual(["before", "prepare"]);
+  expect(f.ledger.original).toBeDefined();
+  f.proveOriginalNoLate();
+  f.reply({ kind: "accepted" });
+  expect(await f.coordinator.reconcile()).toBe("committed");
+  expect(f.sent.map(x => x.operation)).toEqual(["prepare", "commit"]);
+  expect(f.fences).toBe(1);
+});
+
+test("composed: known Accepted survives exact local fence failure", async () => {
+  const f = fixture();
+  const failure = new Error("local fence failure");
+  f.failFence(failure);
+  f.reply({ kind: "prepared", token: "first" });
+  f.reply({ kind: "accepted" });
+  const publicQuit = f.coordinator.quit();
+  await expect(publicQuit).rejects.toBe(failure);
+  expect(await f.coordinator.requestQuit()).toBe("committed");
+  expect(f.api.terminalDisposition).toBe("accepted");
+  expect(f.api.fenceError).toBe(failure);
+  expect(f.fences).toBe(1);
+  expect(f.sent.map(x => x.operation)).toEqual(["prepare", "commit"]);
+});
+
+test("composed: competing terminal winner is never this attempt's acceptance", async () => {
+  const f = fixture();
+  f.reply({ kind: "prepared", token: "first" });
+  f.reply({ kind: "competing-terminal" });
+  expect(await f.coordinator.requestQuit()).toBe("competing");
+  expect(f.api.terminalDisposition).toBe("competing-terminal");
+  expect(f.fences).toBe(0);
+  expect(f.sent.map(x => x.operation)).toEqual(["prepare", "commit"]);
 });
