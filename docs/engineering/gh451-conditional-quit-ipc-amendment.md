@@ -129,9 +129,13 @@ for the GH451-side proposal; numeric values remain unallocated.
 
 RetainedReason: RegistryNotEmpty (Prepare only, authoritative live,
 Opening or Closing) and PreparationInvalidated (Commit only, exact
-permanently invalidated preparation). Retained requires proved
-noncommit, no surviving preparation, successful owed-work settlement,
-current usable link and no independent terminal winner. Choose the
+permanently invalidated preparation). Retained requires proved noncommit, no surviving preparation, a current
+usable link and no independent terminal winner. Prepare may refuse against
+a known nonempty registry without pausing or draining independent FS work.
+An invalidated Commit refused before entering Draining does not start an
+artificial drain. Once Draining starts, restore live admission only after
+successful settlement of all owed terminal replies and leases. Cancel of
+an exact reversible preparation also does not initiate terminal drain. Choose the
 narrow two-reason rule over treating generic nonadmission as Retained.
 If final-cut registry facts conflict without a proved exact invalidation,
 do not invent Retained. Keep a non-success/unknown disposition. The
@@ -142,6 +146,12 @@ pre-effect refusals only when the existing owner proves the exact
 new request never executed. They cannot erase a surviving preparation,
 overwrite an unresolved record, or by themselves authorize a retry.
 If the owner cannot prove the refusal, keep the new request unknown.
+NotAdmitted has no new ReceiptKey. Apply its validated exact rejection
+once to the rejected request's private custody. Retire only that request's
+correlation after independent no-late proof. Do not send Consume for a
+nonexistent record. Preserve every prior preparation, effect record and
+control reservation. A lost NotAdmitted with no authoritative matching
+record stays unknown, including after Status returns Indeterminate.
 The actual typed error mapping and response encoding require IPC/API
 owner adoption; do not assign error codes in this draft.
 
@@ -179,7 +189,8 @@ effect, including Cancel/Commit or queued fresh retry, requires the
 previous nonterminal receipt to be consumed and the independent
 Worker/main no-late barrier complete. The client sends no new effect
 while either slot remains occupied. A defensive Host rejection cannot
-release the prior slot or grant another token. Status
+release the prior slot or grant another token. An exact no-record
+NotAdmitted uses its own rejection retirement rule, not record Consume. Status
 can answer only after the original is decided, including invalidation
 since a historical Prepare or an independent terminal winner; absent
 or mismatched record is Indeterminate unless nonexecution is itself
@@ -219,6 +230,15 @@ or ordered control path. Main drains/applies/discards records through
 that watermark before clearing the original and control reservations.
 The Worker is the only owner of the pending map; main must not infer
 quiescence merely because its own Promise settled or disappeared.
+The existing ordinary abandoned-response and missing-waiter discard paths
+must not discard a verified reserved conditional response before private
+custody observes it. Route only exact reserved conditional identities
+through the bounded private outcome/ordered-watermark path, even after
+their public Promise rejects. Preserve ordinary abandon accounting and
+all frame/channel/kind/identity checks. Apply a late exact outcome once;
+never resettle a public waiter. A verified Accepted or CompetingTerminal
+remains historical evidence even if the old role subsequently retires.
+A response never observed or validated remains unknown.
 D2 public first qualified close handoff may already fulfill independently
 of private receipt consumption. Pending typed error rejects once;
 later error is reported through exact attempt custody. Will-veto local
@@ -233,11 +253,15 @@ separate ports. This is the smallest explicit retirement barrier;
 do not add a parallel transport queue. No general public caller can
 mint quiescence proof.
 
-Retire a resolved Status control identity independently of original
-receipt consumption. Require the exact terminal control response to be
-processed/discarded and its own no-late proof, or definitive old-link
-retirement. Otherwise Status would block the Consume that follows it.
-This control retirement never releases the original effect identity.
+Retire a resolved Bind, Status or Consume control identity independently
+of original receipt consumption. Require its exact operation-valid terminal
+response to be processed or authoritatively discarded and its own ordered
+no-late proof through the existing Worker/main boundary, or definitive
+old-link retirement. This applies to Bound/Unavailable, Recorded/Indeterminate,
+and Consumed/ConsumeUnconfirmed. Bound activates only after its independent
+control barrier. Otherwise Status would block the Consume that follows it.
+Control retirement alone never releases the original effect identity.
+ConsumeUnconfirmed never authorizes original release.
 If Status times out, keep its control identity until a real terminal
 frame is processed/discarded and no-late delivery is proven, or a
 qualified independent retirement witness exists. No fresh Status or
@@ -313,7 +337,13 @@ Unknown after retirement remains unknown (not noncommit). No replay.
 Negative controls: remove selector, reuse reserved original, release
 on timeout/receipt alone, accept stale key, bypass ordered writer or
 ring drain, allow a new effect while record unresolved, replay Commit,
-erase known terminal cause on fence failure. Each must fail its own
+erase known terminal cause on fence failure. Hold an ordinary FS reply
+while Prepare refuses a nonempty registry. Separately exercise invalidated
+Commit before and after entering Draining. Retire a no-record rejection
+without consuming or losing the prior record. Hold each control response
+until its independent no-late barrier. Deliver exact late effect/control
+responses after public timeout, including Accepted before EOF, and require
+private convergence without resettling the public Promise. Each must fail its own
 wire/Host/counter oracle. No full build or test run performed by this
 read-only design review.
 
