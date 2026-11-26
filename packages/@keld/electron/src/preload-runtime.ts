@@ -377,15 +377,61 @@ export function installApp(
       active: boolean;
       message: number;
       watchPath?: string;
+      watchListener?: Listener;
+      watchStopped?: boolean;
       unwatchPath?: string;
     }
   >();
   const watches = new Map<string, number>();
   const activeWatches = new Set<string>();
+  // The unchanged original preload overwrites fileChangedListeners[path]
+  // *before* the Host acknowledges watchFile. Store one stable dispatcher per
+  // path so a refused replacement cannot silently replace the last accepted
+  // page callback. Only an acknowledged request changes its current target.
+  const watchRoutes = new Map<
+    string,
+    { dispatch: Listener; accepted?: Listener }
+  >();
+  function routeWatch(path: string): Listener {
+    let route = watchRoutes.get(path);
+    if (!route) {
+      if (watchRoutes.size >= 64)
+        refuse("document watch dispatcher limit exhausted");
+      const created: { dispatch: Listener; accepted?: Listener } = {
+        dispatch: (...args: unknown[]) => {
+          if (!created.accepted)
+            refuse("file watch has no acknowledged callback");
+          apply(created.accepted, undefined, args);
+        },
+      };
+      watchRoutes.set(path, created);
+      route = created;
+    }
+    return route.dispatch;
+  }
+  // This releases the bridge's own route, not the original preload's private
+  // fileChangedListeners[path]. The unchanged original retains those entries
+  // until document teardown; whole-document retention is a separate native
+  // Source/memory acceptance obligation, not proven by this local map bound.
+  function retireIdleWatchRoute(path: string): void {
+    const route = watchRoutes.get(path);
+    if (
+      route?.accepted ||
+      [...requests.values()].some((req) => req.watchPath === path)
+    )
+      return;
+    watchRoutes.delete(path);
+  }
   let invoking:
-    | { call: number; bytes: number; watch: boolean; watchBytes: number }
+    | {
+        call: number;
+        bytes: number;
+        watch: boolean;
+        watchBytes: number;
+        watchListener?: Listener;
+      }
     | undefined;
-  function retireSupersededWatch(call: number): void {
+  function retireUnownedWatch(call: number): void {
     // The prior original listener no longer owns this path. A still-pending
     // response, however, must retain its own callbacks until it completes.
     if (
@@ -438,6 +484,7 @@ export function installApp(
             invoking.watch && typeof value.path === "string"
               ? value.path
               : undefined,
+          watchListener: invoking.watchListener,
           unwatchPath:
             value.action === "unwatchFile" && typeof value.path === "string"
               ? value.path
@@ -777,6 +824,7 @@ export function installApp(
       extra = 0,
       reserved = 0,
       entered = false;
+    let attemptedWatchPath: string | undefined;
     try {
       const ids = new Set<number>();
       let censusNodes = 0;
@@ -828,11 +876,29 @@ export function installApp(
       const state = { keys: 0, bytes: 0 };
       const args = call.args.map((value) => revive(value, 1, state));
       copyingCall = undefined;
+      let watchListener: Listener | undefined;
+      if (watch) {
+        const request = args[0] as {
+          path?: unknown;
+          listener?: unknown;
+        };
+        if (
+          typeof request?.path !== "string" ||
+          typeof request.listener !== "function"
+        )
+          refuse("original watch requires a path and callback");
+        watchListener = request.listener as Listener;
+        attemptedWatchPath = request.path;
+        // The original will store this dispatcher and delete msg.listener.
+        // The actual page proxy remains private until Host success commits it.
+        request.listener = routeWatch(request.path);
+      }
       invoking = {
         call: call.call,
         bytes: watch ? 1_024 : bytes,
         watch,
         watchBytes: bytes,
+        watchListener,
       };
       entered = true;
       if (local) localCharges.set(call.call, bytes);
@@ -856,6 +922,7 @@ export function installApp(
         charged -= reserved;
         localCharges.delete(call.call);
         watchCharges.delete(call.call);
+        if (attemptedWatchPath) retireIdleWatchRoute(attemptedWatchPath);
         // releaseCall removes only this call's unshared callback proxies and
         // signals the page to release its matching callback registration.
         releaseCall(call.call);
@@ -893,16 +960,62 @@ export function installApp(
       code?: string;
       message?: string;
     } = { status: "no-listener" };
+    let settleAcknowledgedStop: (() => void) | undefined;
     try {
       const topic = event.channel;
       const args = decodeEndpointArguments(new Uint8Array(event.payload));
       if (topic === "mainResp") {
-        const response = args[0] as { reqId?: unknown };
-        if (
-          typeof response?.reqId !== "number" ||
-          !requests.get(response.reqId)?.active
-        )
+        const response = args[0] as { reqId?: unknown; error?: unknown };
+        const id = response?.reqId;
+        const request = typeof id === "number" ? requests.get(id) : undefined;
+        if (typeof id !== "number" || !request?.active)
           refuse("response belongs to an absent or retired original request");
+        if (!response.error && request.watchPath && !request.watchStopped) {
+          // Host success is irreversible. Commit the acknowledged event owner
+          // before invoking the original response callback, which may throw.
+          // Its separate request callback remains held if the original does
+          // not finish, but it cannot keep the previous watch in charge.
+          activeWatches.add(request.watchPath);
+          const previous = watches.get(request.watchPath);
+          if (previous === undefined || previous < request.call) {
+            const route = watchRoutes.get(request.watchPath);
+            if (!route || !request.watchListener)
+              refuse("acknowledged watch is missing its original listener");
+            route.accepted = request.watchListener;
+            watches.set(request.watchPath, request.call);
+            if (previous !== undefined) retireUnownedWatch(previous);
+          }
+        }
+        const path = request.unwatchPath;
+        if (!response.error && path) {
+          // Capture the admitted Host acknowledgment before user callbacks can
+          // throw or mutate their arguments. They own delivery, not the stop.
+          settleAcknowledgedStop = () => {
+            if (requests.get(id) !== request) return;
+            requests.delete(id);
+            charged -= request.bytes;
+            const owner = watches.get(path);
+            if (owner === undefined || owner < request.call) {
+              activeWatches.delete(path);
+              if (owner !== undefined) {
+                watches.delete(path);
+                retireUnownedWatch(owner);
+              }
+              const route = watchRoutes.get(path);
+              if (route) {
+                route.accepted = undefined;
+                // A newer pending watch can still need the same dispatcher.
+                retireIdleWatchRoute(path);
+              }
+            }
+            // Keep earlier pending response callbacks until they settle,
+            // without letting them reacquire acknowledged event delivery.
+            for (const pending of requests.values())
+              if (pending.watchPath === path && pending.call < request.call)
+                pending.watchStopped = true;
+            releaseCall(request.call);
+          };
+        }
       }
       if (topic === "fileChanged") {
         const response = args[0] as { path?: unknown };
@@ -930,7 +1043,7 @@ export function installApp(
           }
         }
         disposition = { status: "consumed" };
-        if (topic === "mainResp") {
+        if (topic === "mainResp" && !settleAcknowledgedStop) {
           const response = args[0] as { reqId?: unknown; error?: unknown };
           const req =
             typeof response?.reqId === "number"
@@ -939,17 +1052,8 @@ export function installApp(
           if (req && typeof response.reqId === "number") {
             requests.delete(response.reqId);
             charged -= req.bytes;
-            if (!response.error && req.watchPath) {
-              activeWatches.add(req.watchPath);
-              const previous = watches.get(req.watchPath);
-              if (previous === undefined || previous < req.call) {
-                watches.set(req.watchPath, req.call);
-                if (previous !== undefined) retireSupersededWatch(previous);
-              }
-            }
-            if (!response.error && req.unwatchPath)
-              activeWatches.delete(req.unwatchPath);
-            if (req.watchPath) retireSupersededWatch(req.call);
+            if (req.watchPath) retireIdleWatchRoute(req.watchPath);
+            if (req.watchPath) retireUnownedWatch(req.call);
             else if (![...watches.values()].includes(req.call))
               releaseCall(req.call);
           }
@@ -964,6 +1068,8 @@ export function installApp(
             ? error.message.slice(0, 512)
             : "original handler threw",
       };
+    } finally {
+      settleAcknowledgedStop?.();
     }
     post({
       v: 2,

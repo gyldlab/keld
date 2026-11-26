@@ -239,9 +239,22 @@ export class LifecycleLink {
             })
             .catch((error: unknown) => {
               // Unconfirmed release never refunds Host capacity or retries.
+              // Preserve the first cause before local close makes onEnd skip
+              // link-death notification; a later close must not replace it.
+              if (session.#closed) return;
+              const failure =
+                error instanceof Error
+                  ? error
+                  : linkError("KELD-IPC-005", "compat release failed");
+              session.#dead = failure;
               session.close();
               try {
-                handlers.onCompatError?.(error);
+                handlers.onLinkDead(failure);
+              } catch {
+                /* an observer cannot replace the terminal cause */
+              }
+              try {
+                handlers.onCompatError?.(failure);
               } catch {
                 /* diagnostic only */
               }

@@ -164,3 +164,43 @@ test("compat payload decode never invokes mutated typed-array slice", () => {
     throw new Error("decoded wrong event");
   expect(decoded.payload).toEqual(Uint8Array.of(1, 2, 3));
 });
+
+test("compat byte ownership uses a module-captured allocator", async () => {
+  const source = await Bun.file(
+    new URL("./compat-control.generated.ts", import.meta.url),
+  ).text();
+  const copy = /function readBytes\([\s\S]*?\n}/.exec(source)?.[0];
+  expect(copy).toBeDefined();
+  const capture = source.indexOf("const OwnedPayloadBytes = Uint8Array;");
+  expect(capture).toBeGreaterThanOrEqual(0);
+  expect(capture).toBeLessThan(source.indexOf("function readBytes("));
+  expect(copy).toContain("const copied = new OwnedPayloadBytes(count);");
+  expect(copy).not.toMatch(/\.(?:slice|subarray)\(|new Uint8Array\(/);
+});
+
+test("compat byte ownership preserves a nonzero-offset wire window", () => {
+  const event: CompatControlEvent = {
+    variant: "RendererMessage",
+    webview: 1,
+    navigation: 2,
+    message: 3,
+    window_id: 7,
+    window_incarnation: 258n,
+    url: "x",
+    origin: "null",
+    topic: "copy",
+    payload: Uint8Array.of(0, 255, 42),
+  };
+  const encoded = encodeCompatControlEvent(event);
+  const backing = Uint8Array.of(99, ...encoded, 98);
+  const wire = backing.subarray(1, backing.length - 1);
+  const decoded = decodeCompatControlEvent(wire);
+  expect(decoded).toEqual(event);
+  if (decoded.variant !== "RendererMessage")
+    throw new Error("decoded wrong event");
+  expect(decoded.payload.constructor).toBe(Uint8Array);
+  wire[wire.length - 1] = 7;
+  expect(decoded.payload).toEqual(Uint8Array.of(0, 255, 42));
+  decoded.payload[0] = 8;
+  expect(wire[wire.length - 3]).toBe(0);
+});
