@@ -141,7 +141,7 @@ impl TerminalQuit {
                 };
                 Outcome::Cancelled
             }
-            State::Committed(_) => Outcome::AlreadyTerminal,
+            State::Committed(committed) if committed == token => Outcome::AlreadyTerminal,
             State::Unknown => Outcome::Unknown,
             _ => Outcome::Refused,
         }
@@ -155,7 +155,7 @@ impl TerminalQuit {
             return Outcome::Refused;
         }
         let State::Pending(mut pending) = self.state else {
-            return self.non_pending_outcome();
+            return self.non_pending_outcome(token);
         };
         if pending.token != token {
             return Outcome::Refused;
@@ -190,7 +190,7 @@ impl TerminalQuit {
             return Outcome::Refused;
         }
         let State::Pending(pending) = self.state else {
-            return self.non_pending_outcome();
+            return self.non_pending_outcome(token);
         };
         if pending.token != token || pending.phase != Phase::Draining {
             return Outcome::Refused;
@@ -214,9 +214,11 @@ impl TerminalQuit {
         Outcome::Committed
     }
 
-    fn non_pending_outcome(&self) -> Outcome {
+    fn non_pending_outcome(&self, token: Token) -> Outcome {
         match self.state {
-            State::Committed(_) => Outcome::AlreadyTerminal,
+            // This is a status for the exact committed attempt, not a
+            // successful receipt for an unrelated or retired token.
+            State::Committed(committed) if committed == token => Outcome::AlreadyTerminal,
             State::Unknown => Outcome::Unknown,
             _ => Outcome::Refused,
         }
@@ -475,6 +477,36 @@ mod tests {
         );
         assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
         assert_eq!(quit.begin_commit(token, facts), Outcome::Busy);
+    }
+
+    #[test]
+    fn retired_attempt_does_not_claim_newer_terminal_receipt() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let old = prepared(&mut quit, facts);
+        assert_eq!(quit.cancel(old, facts), Outcome::Cancelled);
+        let winner = prepared(&mut quit, facts);
+        assert_ne!(old, winner);
+        let reserves = Cell::new(0);
+        let reserve = || {
+            reserves.set(reserves.get() + 1);
+            true
+        };
+        assert_eq!(quit.begin_commit(winner, facts), Outcome::DrainRequired);
+        assert_eq!(
+            quit.finish_commit(winner, facts, reserve),
+            Outcome::Committed
+        );
+        assert_eq!(quit.begin_commit(old, facts), Outcome::Refused);
+        assert_eq!(quit.finish_commit(old, facts, reserve), Outcome::Refused);
+        assert_eq!(quit.cancel(old, facts), Outcome::Refused);
+        assert_eq!(quit.begin_commit(winner, facts), Outcome::AlreadyTerminal);
+        assert_eq!(
+            quit.finish_commit(winner, facts, reserve),
+            Outcome::AlreadyTerminal
+        );
+        assert_eq!(quit.cancel(winner, facts), Outcome::AlreadyTerminal);
+        assert_eq!(reserves.get(), 1);
     }
 
     #[test]
