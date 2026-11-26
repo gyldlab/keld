@@ -30,7 +30,7 @@ selection, deadline changes, Windows or Linux parity, signing or release.
   defines the receipt consumption and transport proof proposed for review.
 - FACT: #1432 `docs/specs/gh523-host-authorized-app-exit.md:100@c779aa2ac08270911b86cdbe3ebcb4e5f6dbcf2a`
   proposes one terminal winner and a shared filesystem drain.
-- FACT: GH-531 `docs/specs/gh531-window-registry-close-state-machine.md:389`
+- FACT: GH-531 `docs/specs/gh531-window-registry-close-state-machine.md:389@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`
   owns physical Destroyed, LastWindowClosed and the window registry.
 - FACT: `docs/architecture/06-runtime-and-tooling.md:27` retains Host lifecycle
   ownership. `docs/architecture/05-webview-and-native.md:302` retains registry ownership.
@@ -84,11 +84,14 @@ cannot substitute for the matching Host receipt. Test later valid receipt and ex
 
 - **Given:** A conditional drain still owes a terminal reply or lease, or its actual terminal writer fails.
 - **When:** The owner observes an indeterminate viable drain or an actual failed writer.
-- **Then:** Preserve the original error, attempt and owed-work custody. A viable indeterminate drain cannot reserve or
-  resume ordinary admission until current identity, proven noncommit, settled obligations and no terminal winner are
-  established. Status uses only the original ordered reader when available. An actual failed writer follows existing
-  exact-generation retirement. Do not require Status or Consume on the dead link. Neither case publishes false Accepted
-  or retryable Retained. A successfully delivered typed FS Err is a settled reply, not a failed write.
+- **Then:** Preserve the original error, attempt and owed-work custody. Do not reserve during a viable indeterminate drain.
+  Resume ordinary admission only if all these conditions hold:
+  - The owner confirms the current identity and proves noncommit.
+  - All owed replies and leases are settled.
+  - No terminal winner exists.
+  Status uses only the original ordered reader when available. An actual failed writer follows existing exact-generation
+  retirement. Do not require Status or Consume on the dead link. Neither case publishes false Accepted or retryable Retained.
+  A successfully delivered typed FS Err is a settled reply, not a failed write.
 - **Negative control:**
   - **Single fault:** Convert an indeterminate drain to retryable Retained.
   - **At-risk precondition:** An admitted reply or lease remains unresolved on the viable link, or the actual writer failed.
