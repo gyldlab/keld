@@ -73,9 +73,12 @@ Do not gate legacy public Ready or user entry on a new speculative
 handshake. Conditional choreography becomes available only after Bound.
 No old Host/new role (selector absent), new Host/old role (graph not
 selected), or unselected role sends Bind, conditional frames or starts
-the new conditional window-close choreography. Mismatch in a positively
-selected pair stays unavailable or follows the existing terminal
-protocol-error policy; no downgrade to forceful Quit.
+the new conditional window-close choreography. Mismatch in a positively selected pair stays unavailable or follows the
+existing terminal protocol-error policy. Bind uses the single control
+slot before any effect. Lost or mismatched Bind stays unavailable; do
+not blindly rebind, reconnect or downgrade to forceful Quit. A late
+exact Bound may activate only after qualified control-slot proof.
+A selected but unbound role refuses even a zero-window conditional Quit.
 Never use mutable env, package versions, process.versions, schema 8,
 Ready, Subscribe success alone or an unknown-tag probe to infer support.
 No new host event is required; preserve scoped QuitRequested exactly.
@@ -117,15 +120,41 @@ Response family:
   the exact disposition, not a nonexecution receipt).
 - Consumed { key: ReceiptKey } (exact Consume confirmation).
 - ConsumeUnconfirmed { key: ReceiptKey } (no release proof).
+- NotAdmitted { original: EffectIdentity, reason: AdmissionRefusal }
+  (definitive exact pre-effect rejection, no new record or token).
 Disposition is a closed sum: Prepared { token: nonzero u64 },
-Retained (reason from closed enum, e.g. live/opening or invalidated
-before Commit), Cancelled, Accepted, Invalidated, CompetingTerminal.
-Retained reason names/encoding are reviewed with Core; generic ERR,
-wrong identity, malformed/wrong-operation response are never mapped
-to Retained. Invalidated applies to Prepare's now-revoked authorization;
-CompetingTerminal is a distinct other-winner result, not acceptance
-of this attempt or a claim that the link remains live. Q5 owns exact
-other winner cause/code; preserve that evidence in the lifecycle owner.
+Retained { reason: RetainedReason }, Cancelled, Accepted, Invalidated,
+CompetingTerminal. Select the following closed semantic vocabulary
+for the GH451-side proposal; numeric values remain unallocated.
+
+RetainedReason: RegistryNotEmpty (Prepare only, authoritative live,
+Opening or Closing) and PreparationInvalidated (Commit only, exact
+permanently invalidated preparation). Retained requires proved
+noncommit, no surviving preparation, successful owed-work settlement,
+current usable link and no independent terminal winner. Choose the
+narrow two-reason rule over treating generic nonadmission as Retained.
+AdmissionRefusal: Unavailable, ReceiptPending, WrongPhase. These are
+pre-effect refusals only when the existing owner proves the exact
+new request never executed. They cannot erase a surviving preparation,
+overwrite an unresolved record, or by themselves authorize a retry.
+If the owner cannot prove the refusal, keep the new request unknown.
+The actual typed error mapping and response encoding require IPC/API
+owner adoption; do not assign error codes in this draft.
+
+| Request | Legal dispositions (for exact current identity) |
+| --- | --- |
+| Bind | Bound, Unavailable |
+| Prepare | Recorded Prepared or Retained RegistryNotEmpty; CompetingTerminal if separately committed; definitive NotAdmitted |
+| Cancel | Recorded Cancelled (including an invalidated token only with proved exact noncommit/no remaining preparation); CompetingTerminal; definitive NotAdmitted |
+| Commit | Recorded Accepted or Retained PreparationInvalidated; CompetingTerminal; definitive NotAdmitted |
+| Status | Recorded for the original operation, including Invalidated for a now-revoked Prepared; Indeterminate |
+| Consume | Consumed, ConsumeUnconfirmed for exact key |
+
+Generic ERR, stale identity, failed/indeterminate drain, role loss or
+wrong-operation/malformed response never maps to Retained. A missing
+record is not nonexecution. CompetingTerminal is not this attempt's
+acceptance or a live-link claim. GH451 Q5 owns exact other-winner
+cause/code; preserve that evidence in the lifecycle owner.
 No arbitrary string, length-prefixed list or caller-chosen authority.
 Proposed conditional body cap 64 bytes (closed postcard fields above);
 enforce on the decoded conditional envelope after existing bounded
@@ -140,7 +169,13 @@ Keep one active attempt plus one effect record on the existing current
 Host generation (including the last consumed tombstone until replacement
 or retirement). Serialize all conditional controls in the same reader.
 Record exact admitted operation and disposition under existing
-shutdown/current/registry ordering, before emitting the reply. Status
+shutdown/current/registry ordering, before emitting the reply. Never
+overwrite an unresolved record on a rejected later request. Every next
+effect, including Cancel/Commit or queued fresh retry, requires the
+previous nonterminal receipt to be consumed and the independent
+Worker/main no-late barrier complete. The client sends no new effect
+while either slot remains occupied. A defensive Host rejection cannot
+release the prior slot or grant another token. Status
 can answer only after the original is decided, including invalidation
 since a historical Prepare or an independent terminal winner; absent
 or mismatched record is Indeterminate unless nonexecution is itself
@@ -180,6 +215,13 @@ or ordered control path. Main drains/applies/discards records through
 that watermark before clearing the original and control reservations.
 The Worker is the only owner of the pending map; main must not infer
 quiescence merely because its own Promise settled or disappeared.
+D2 public first qualified close handoff may already fulfill independently
+of private receipt consumption. Pending typed error rejects once;
+later error is reported through exact attempt custody. Will-veto local
+settlement does not authorize a new effect. Launch the single queued
+explicit retry only after proved Cancel/nonexecution, consumed/no-late
+barrier, current live role and no terminal winner. Unknown rejects the
+queued request; subsequent recovery needs new explicit intent.
 Only release an identity once both API receipt consumption and that
 ordered independent Host/Worker/main proof hold. Existing control
 FIFO and ring ordering must be demonstrated, not assumed across
