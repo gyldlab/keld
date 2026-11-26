@@ -11,6 +11,31 @@ struct Token {
     serial: NonZeroU64,
 }
 
+// Review fixture for the joint GH-451/GH-523 terminal cut. This is an
+// already-validated owner input, not an Exit API or wire allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ValidatedExit {
+    generation: NonZeroU32,
+    request: NonZeroU64,
+    code: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalWinner {
+    Quit(Token),
+    Exit(ValidatedExit),
+}
+
+impl TerminalWinner {
+    fn fixture_code(self) -> i32 {
+        match self {
+            // A clean-exit fixture value, not an approved public quit event.
+            Self::Quit(_) => 0,
+            Self::Exit(exit) => exit.code,
+        }
+    }
+}
+
 /// Facts supplied by the existing Host owner, never by the calling app.
 #[derive(Clone, Copy)]
 struct HostFacts {
@@ -49,7 +74,7 @@ struct Pending {
 enum State {
     Idle { cancelled: Option<Token> },
     Pending(Pending),
-    Committed(Token),
+    Committed(TerminalWinner),
     Unknown,
 }
 
@@ -141,7 +166,9 @@ impl TerminalQuit {
                 };
                 Outcome::Cancelled
             }
-            State::Committed(committed) if committed == token => Outcome::AlreadyTerminal,
+            State::Committed(TerminalWinner::Quit(committed)) if committed == token => {
+                Outcome::AlreadyTerminal
+            }
             State::Unknown => Outcome::Unknown,
             _ => Outcome::Refused,
         }
@@ -210,7 +237,37 @@ impl TerminalQuit {
             self.state = State::Unknown;
             return Outcome::Unknown;
         }
-        self.state = State::Committed(token);
+        self.state = State::Committed(TerminalWinner::Quit(token));
+        Outcome::Committed
+    }
+
+    // Test seam for GH-523's separately qualified Exit owner. The caller
+    // must already satisfy that owner's admission and cleanup prerequisites.
+    fn admit_validated_exit(
+        &mut self,
+        exit: ValidatedExit,
+        facts: HostFacts,
+        reserve: impl FnOnce() -> bool,
+    ) -> Outcome {
+        if !facts.qualified || facts.generation != Some(exit.generation) {
+            return Outcome::Refused;
+        }
+        match self.state {
+            State::Committed(TerminalWinner::Exit(committed)) if committed == exit => {
+                return Outcome::AlreadyTerminal;
+            }
+            State::Committed(_) => return Outcome::Refused,
+            State::Unknown => return Outcome::Unknown,
+            State::Idle { .. } | State::Pending(_) => {}
+        }
+        if !facts.running || !reserve() {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
+        }
+        // The existing owner's successful irreversible reservation wins.
+        // Invalidate the reversible Quit and freeze the winning cause/code
+        // in the same serialized decision; no second reservation is made.
+        self.state = State::Committed(TerminalWinner::Exit(exit));
         Outcome::Committed
     }
 
@@ -218,7 +275,9 @@ impl TerminalQuit {
         match self.state {
             // This is a status for the exact committed attempt, not a
             // successful receipt for an unrelated or retired token.
-            State::Committed(committed) if committed == token => Outcome::AlreadyTerminal,
+            State::Committed(TerminalWinner::Quit(committed)) if committed == token => {
+                Outcome::AlreadyTerminal
+            }
             State::Unknown => Outcome::Unknown,
             _ => Outcome::Refused,
         }
@@ -507,6 +566,137 @@ mod tests {
         );
         assert_eq!(quit.cancel(winner, facts), Outcome::AlreadyTerminal);
         assert_eq!(reserves.get(), 1);
+    }
+
+    #[test]
+    fn shared_terminal_exit_first_revokes_prepared_quit_even_during_drain() {
+        for draining in [false, true] {
+            let mut quit = TerminalQuit::new();
+            let facts = ready(1);
+            let token = prepared(&mut quit, facts);
+            if draining {
+                assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+            }
+            let exit = ValidatedExit {
+                generation: generation(1),
+                request: NonZeroU64::new(42).expect("fixture request"),
+                code: 7,
+            };
+            let reserves = Cell::new(0);
+            let reserve = || {
+                reserves.set(reserves.get() + 1);
+                true
+            };
+            assert_eq!(
+                quit.admit_validated_exit(exit, facts, reserve),
+                Outcome::Committed
+            );
+            let State::Committed(winner) = quit.state else {
+                panic!("missing single terminal winner");
+            };
+            assert_eq!(winner, TerminalWinner::Exit(exit));
+            assert_eq!(winner.fixture_code(), 7);
+            assert_eq!(quit.begin_commit(token, facts), Outcome::Refused);
+            assert_eq!(quit.finish_commit(token, facts, reserve), Outcome::Refused);
+            assert_eq!(quit.cancel(token, facts), Outcome::Refused);
+            assert_eq!(
+                quit.admit_validated_exit(exit, facts, reserve),
+                Outcome::AlreadyTerminal
+            );
+            assert_eq!(reserves.get(), 1);
+            assert!(!quit.admit_create());
+        }
+    }
+
+    #[test]
+    fn shared_terminal_quit_first_preserves_winner_and_clean_fixture_code() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        let reserves = Cell::new(0);
+        let reserve = || {
+            reserves.set(reserves.get() + 1);
+            true
+        };
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert_eq!(
+            quit.finish_commit(token, facts, reserve),
+            Outcome::Committed
+        );
+        let exit = ValidatedExit {
+            generation: generation(1),
+            request: NonZeroU64::new(42).expect("fixture request"),
+            code: 7,
+        };
+        assert_eq!(
+            quit.admit_validated_exit(exit, facts, reserve),
+            Outcome::Refused
+        );
+        let State::Committed(winner) = quit.state else {
+            panic!("missing single terminal winner");
+        };
+        assert_eq!(winner, TerminalWinner::Quit(token));
+        assert_eq!(winner.fixture_code(), 0);
+        assert_eq!(reserves.get(), 1);
+    }
+
+    #[test]
+    fn shared_terminal_exit_reservation_unknown_never_reopens_quit() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        let exit = ValidatedExit {
+            generation: generation(1),
+            request: NonZeroU64::new(42).expect("fixture request"),
+            code: 7,
+        };
+        assert_eq!(
+            quit.admit_validated_exit(exit, facts, || false),
+            Outcome::Unknown
+        );
+        assert_eq!(quit.begin_commit(token, facts), Outcome::Unknown);
+        assert_eq!(
+            quit.finish_commit(token, facts, || panic!("second reserve")),
+            Outcome::Unknown
+        );
+        assert!(!quit.admit_create());
+    }
+
+    #[test]
+    fn unqualified_exit_cannot_invalidate_a_prepared_quit_or_change_winner() {
+        let mut quit = TerminalQuit::new();
+        let facts = ready(1);
+        let token = prepared(&mut quit, facts);
+        let stale = ValidatedExit {
+            generation: generation(2),
+            request: NonZeroU64::new(42).expect("fixture request"),
+            code: 7,
+        };
+        assert_eq!(
+            quit.admit_validated_exit(stale, facts, || panic!("stale reserve")),
+            Outcome::Refused
+        );
+        let current = ValidatedExit {
+            generation: generation(1),
+            ..stale
+        };
+        assert_eq!(
+            quit.admit_validated_exit(
+                current,
+                HostFacts {
+                    qualified: false,
+                    ..facts
+                },
+                || panic!("unqualified reserve"),
+            ),
+            Outcome::Refused
+        );
+        assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
+        assert_eq!(
+            quit.finish_commit(token, facts, || true),
+            Outcome::Committed
+        );
+        assert_eq!(quit.state, State::Committed(TerminalWinner::Quit(token)));
     }
 
     #[test]
