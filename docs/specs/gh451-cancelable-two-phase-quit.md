@@ -1,14 +1,15 @@
 # Spec: Cancelable two-phase application quit
 - Status: draft
 - Tracker: GH-451
-- Owner: @0monish (approval pending)
+- Owner: @0monish (delegated design choices recorded; joint approval pending)
 - Updated: 2026-11-26
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
-Original tracking note: GH-451 (#517); owner approval remains pending.
+Original tracking note: GH-451 (#517); joint implementation admission remains pending.
 Publication: grouped future implementation pack; docs only, do not merge.
-The 26 November independent technical council selected the conditional Host-owned design below for draft review.
-The exact revised contract, joint owner approvals, runtime and native acceptance remain pending.
+The 26 November technical council selected the conditional Host-owned design. The user delegated GH-451 design decisions
+to the council; the agent-authored decision record selects the GH-451-side semantics below. It is not a substitute for
+independent human approval, joint owner amendments, actual runtime implementation or native acceptance.
 
 ## 1. Goal & non-goals
 
@@ -30,13 +31,14 @@ separate. GH563 owns the menu adapter.
 - [Scoped D2 decision, preserved](https://github.com/gyldlab/keld/issues/451#issuecomment-6561125711).
 - [W7 terminal review candidate](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/engineering/gh451-terminal-commit-review-w7.md).
 - [GH-523 draft AC-7 and shared terminal owner](https://github.com/gyldlab/keld/blob/eb7a18b42ef7e8213a280ec9c76015bf78a0964f/docs/specs/gh523-host-authorized-app-exit.md#L98-L126).
+- [User-delegated GH-451 design selection](https://github.com/gyldlab/keld/issues/451#issuecomment-7182471840).
 
 Verified baseline: Current main app.quit returns a Promise and refuses live windows with KELD-COMPAT-012. It does not implement
 this full transaction. The public D2 comment approves a narrower local preflight; it is not proof of full native, multiwindow or
 Dock behavior.
 
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
-boundary and approves none of those changes.
+boundary; selected GH-451 semantics do not authorize joint contract, schema or permission changes.
 
 ## 3. Acceptance criteria
 
@@ -210,7 +212,8 @@ Exercise nonresponsive precommit and failed postcommit cleanup separately; both 
 Proposed phases are Idle, BeforeQuit, Closing, Prepared, WillQuit, Draining and Terminal. GH531 remains the sole window-close
 owner. Before-quit veto has no Host close effect. Before the selected sweep, establish one reversible generation-bound active
 quitting/suppression owner; this is not terminal reservation. Veto resets active quitting immediately while already selected
-entries still receive their requests. Bind each close to the existing exact GH531 window, document, generation and close sequence,
+entries still receive their requests. Facade owns public event suppression; Host retains actual GH531 release and
+LastWindowClosed facts. Bind each close to the existing exact GH531 window, document, generation and close sequence,
 including a Merged result from an earlier close; no older attempt's terminal authority transfers. An exhausted snapshot,
 CloseRequested, user-facing closed or Allow is not physical Destroyed. Use the existing bounded receipt owner.
 
@@ -229,8 +232,10 @@ GH-523 AC-7 and KEL-96 must share this single terminal decision. An independentl
 invalidates the reversible Quit and fixes cause/code; Quit winning first fixes its own cause/code. The losing operation cannot
 overwrite the winner, repeat terminal cleanup or claim its receipt. A competing committed terminal is a distinct disposition
 from Retained/nonexecution on a live link; if the losing caller cannot obtain authoritative status, its effect stays unknown.
-Both terminal paths must respect outstanding FS terminal replies/leases and one reader/cleanup owner. A competing Exit
-during Draining must use the same reversible pause/drain obligations or an independently approved non-success disposition;
+Both terminal paths must respect outstanding FS terminal replies/leases and one reader/cleanup owner. A same-reader Exit
+queued during Draining is not yet admitted. An independently eligible contender must satisfy the same outstanding drain
+obligations before the first successful final locked reservation. A failed drain is non-success/unknown; resume only on
+proved noncommit and settled obligations, otherwise retain exact failure custody under the existing owner;
 no early reserve or dropped reply is allowed to manufacture success. Joint owners must approve that ordering in GH-523 and
 KEL-96. This adds no Exit API or unilateral policy change to GH-451.
 Do not add a second lifecycle/registry owner, terminal timeout or permission grant.
@@ -247,8 +252,23 @@ Retain the approved scoped D2 nonblocking Promise<void> interface. Its public no
 active attempt / authoritative terminal outcome are separate. Preserve existing before-quit veto/throw and same-Promise
 coalescing, including reentry while the real attempt remains active after the public Promise settles. Do not await native
 close/Save from a callback that must itself finish. Matched Veto resets eligibility; already selected sweep requests finish.
-Preserve existing typed refusals, single-window handoff and zero-window admission behavior; review the exact new multiwindow
-settlement, late error and retry matrix before wiring. A void migration needs a separate joint public-API decision.
+Preserve existing typed refusals and single-window handoff. The selected multiwindow rule extends first qualified
+handoff, not all acknowledgements: settle the public Promise once at the first authenticated current dispatched close
+sequence or a valid correlated CloseRequested/Merged; AlreadyClosing requires an already bound genuine sequence.
+A bare send is not settlement. Complete the entire selected newest-first sweep despite settlement or veto, retaining
+each exact private receipt. Two council reviewers selected this rule; one preferred all ACKs. Test a held other ACK
+while a callback needs the public Promise, and late error custody. No void migration is selected.
+
+Before-quit veto/throw fulfills scoped cancellation with no Host effect by this attempt. A typed error before public
+settlement rejects once; after settlement report the original cause through the existing attempt error owner without
+resettling or clearing a successor. Existing scoped close-handoff failure retirement stays unchanged. Conditional
+unknown retains the original private reconciliation authority instead of blindly retiring the link.
+Zero-window success requires known Commit Accepted and local admission/fence completion, not Prepared. Retained or
+refusal follows the applicable typed error contract. Known acceptance survives local failure; reject if pending,
+otherwise report a late error. Will-quit veto/throw fulfills local cancellation if pending but private Cancel/Status
+must establish nonexecution or confirmed cancellation before another effect. One subsequent explicit retry may queue
+with its own Promise; coalesce further retry intents and launch fresh before-quit only on the same qualified current
+link after proven noncommit and no competing terminal. Unknown/retirement/winner rejects that queued request.
 
 Negotiate conditional support through the existing trusted link owner before starting new conditional choreography.
 Do not infer support from Ready, package version or a successful legacy Quit. Preserve existing legacy wire and behavior.
@@ -265,7 +285,15 @@ settle confirmed Cancel/Retained without repeating callbacks, or fence a known A
 is not this attempt's acceptance or Retained. Missing/mismatched/retired/indeterminate status remains unknown. Retirement
 revokes the old role's authority but never proves noncommit, erases a known committed cause, or permits replay on a successor.
 Keep unknown custody fenced until an authoritative outcome or an approved terminal/retirement disposition establishes what
-may proceed, without assuming nonexecution. A bounded record/retirement policy and real transport ordering need owner approval.
+may proceed, without assuming nonexecution.
+Use a bounded existing-owner record: at most one active conditional attempt and one unresolved original effect on
+the current authenticated link. Reserve its allocator identity before send, including against ordinary calls.
+Serialize Status with a distinct correlation. Select explicit exact receipt-consumption confirmation for reclamation;
+release only after ordered proof that the original cannot execute again and late delivery cannot alias. Missing or
+ambiguous confirmation retains the record and fences new conditional effects at capacity. Do not evict by time or
+pressure. Preserve a known committed winner separately in the lifecycle owner, including after link retirement.
+The IPC owners must choose and approve the exact schema, confirmation and retirement mechanism; no tags or deadlines
+are allocated here.
 
 ### 4.4 Native terminal boundary
 
@@ -316,7 +344,7 @@ against the current registry. Implement only the approved existing-owner transac
 shared terminal decision and FS drain. Verify the API/facade attempt convergence and old-peer controls before wiring.
 
 ### T-3: Wire qualified non-menu native Quit and role retirement
-- **Blocked by:** T-2, Q-2, Q-3, Q-7
+- **Blocked by:** T-2, Q-3, Q-7, Q-8
 
 - [ ] Wire the qualified non-menu native quit adapter and retirement handling into the same coordinator; reject bypasses and stale
 intent.
@@ -364,9 +392,10 @@ is identified separately; no full runtime or native acceptance is claimed from t
 Public API and wire protocol; lifecycle/KEL-96 owner amendment. Unsafe review only if the selected native adapter adds a
 sanctioned FFI call.
 
-Status remains draft. The council's technical architecture decision is not named owner approval. Implementation admission
-requires the exact owning decisions in section 10, independent review and approval of this revised contract. Publication alone
-cannot approve a wire allocation, architecture amendment, new native behavior or release.
+Status remains draft. The agent-authored user-delegated record selects GH-451-side design semantics, not joint owner
+approval or independent human sign-off. Implementation admission requires the remaining owning decisions in section 10
+and independent exact-content review. Publication cannot approve wire allocation, architecture amendment, native behavior
+or release. Isolated test candidates may verify the selected semantics without changing production.
 
 ## 9. Perf impact
 
@@ -377,36 +406,43 @@ No numerical product performance claim is made without a reproducible pinned wor
 
 ## 10. Open questions, blockers & unknowns
 
-### Q-1: API return and exception migration
-Approve the D2-compatible nonterminal/private-terminal settlement, exception and reentrant retry matrix. Any future void
-migration remains a separate decision.
+### Q-1: D2 settlement and exception contract
+Selected on the GH-451 side: first qualified handoff, exact private outcome and error custody, confirmed-cancellation retry
+and the matrix in section 4.3. Joint API review must approve exact error mapping; void migration stays separate.
 
-### Q-2: Native AppKit strategy and KEL-96 amendment
-Select a qualified AppKit terminate strategy using GH443; the delayed-reply candidate requires actual modal progress and
-pre-reply cleanup/post-reply exit proof. Approve the KEL-96 reversible active-quitting amendment.
+### Q-2: Reversible active-quitting amendment
+Selected on the GH-451 side: generation-scoped reversible suppression before sweep, reset on matched veto, distinct from
+terminal reserve. KEL-96 must adopt the corresponding owner amendment. The native mechanism is a separate later gate.
 
 ### Q-3: Lifecycle payload and role-loss disposition
-Approve the single lifecycle allocation, immutable capability negotiation, exact same-attempt Status and bounded identity
-retention/retirement. Require API/facade convergence and no fallback on unknown; preserve existing legacy wire.
+Selected on the GH-451 side: one unresolved exact effect, ordered same-link Status, explicit receipt-consumption proof,
+bounded fail-closed retention and API/facade convergence in section 4.3. IPC owners approve negotiation, single lifecycle
+allocation and exact confirmation/retirement mechanism. No fallback on unknown; preserve existing legacy wire.
 
 ### Q-4: Terminal/Create fence and late-created windows
-Reconcile late-created windows, exact GH531 merged sequences and physical Destroyed, and the shared terminal/Create fence with
-the pinned Electron oracle. Approve the Host Prepare linearization rather than assuming JS callback-start emptiness. If the
-stronger callback-start property is required, a separate proved synchronization contract is blocking. No stale snapshot or
-prior attempt authorizes terminal admission.
+Selected on the GH-451 side: Host Prepare linearization, not JS callback-start emptiness; permanent Create invalidation.
+Joint GH531 review must approve exact merged sequences and physical Destroyed integration against the pinned oracle.
+No stale snapshot or prior attempt authorizes terminal admission.
 
 ### Q-5: One shared terminal winner
-Joint GH-451/GH-523/KEL-96 owners must approve immutable cause, code, exact receipt and one existing cleanup tail across both
-admission orders; no unrelated Exit implementation is authorized here.
+Selected on the GH-451 side: first eligible committed terminal fixes immutable cause, code, receipt and one existing tail.
+Joint GH-523/KEL-96 owners must adopt the corresponding decision. No unrelated Exit implementation is authorized here.
 
 ### Q-6: Running-state FS drain
-Approve and prove reversible dispatch pause, actual FS terminal reply/lease completion, final serialized recheck and one
-reserve. Joint lifecycle/FS/Exit owners must resolve competing Exit during Draining without losing any owed reply or creating
-a second cleanup tail.
+Selected on the GH-451 side: reversible running-state pause and owed reply/lease drain for either terminal contender,
+then final serialized recheck and one reserve. Joint lifecycle/FS/Exit owners must adopt and qualify failure custody;
+no bypass or second cleanup tail.
 
 ### Q-7: Native cleanup failure and resource qualification
-Approve bounded non-success dispositions before/after irreversible commit; verify a disposable signed original and independent
-native process/cleanup witnesses. GH-1404 B-2, GH-1404 B-3, G0–G12 and applicable release/provenance gates remain separate.
+Selected principles: no false precommit success and no postcommit rollback. The exact bounded failure dispositions,
+custodian, clock and deadline still require native/lifecycle owner evidence; do not invent them. GH-1404 B-2, GH-1404 B-3,
+G0–G12 and applicable release/provenance gates remain separate.
+
+### Q-8: Qualified native mechanism
+Current Cancel is the scoped safe baseline. Delayed AppKit reply is selected only as an experiment candidate; no
+immediate terminal admission. GH443/KEL-96 must select a qualified mechanism after actual modal dispatch and pre-reply
+cleanup/post-reply exit proof. Use a separately qualified disposable experiment before native wiring, not a circular
+requirement for the reversible source design.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
