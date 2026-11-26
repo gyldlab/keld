@@ -87,7 +87,7 @@
     "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py": "2e27f7b616f14cf413ffc069b9267ead84a991955e5a156d8539a1f9630c4ebb",
     "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "d4ffb85035632fbd4a498dd1bf646f2a31603441bfb10092935f78695a32c207",
-    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py": "9ac3f00c1c2db790f3d98ab24d32ee74396438bcb17d3ca23b8a34a24721290a",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py": "40b97c4c5c474ccfda819090017eeb1783ec90e9e262b6fe2769d57dc932959b",
     "docs/specs/kel270-catalogue-admission-v2/identity.md": "1bd70dc1f7aeb245760174d323ca3f57815a8e62b33f1239d1336634d702085e",
     "docs/specs/kel270-catalogue-admission-v2/implementation.md": "ca733d442356c5174ee2f4b7c6dbe4f47eff9d3bf6bdc9deb8ad5548d48cddf9",
     "docs/specs/kel270-catalogue-admission-v2/index.md": "7ec2367b463f9d862d62255cb76c2997671dbe75c151c0add6d82918abc3d686",
