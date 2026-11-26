@@ -24,9 +24,9 @@ selection, deadline changes, Windows or Linux parity, signing or release.
 - FACT: [Approved KEL-96 section 4.5](https://github.com/gyldlab/keld/blob/2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a/docs/specs/kel96-no-flag-host-boot.md#L452-L480)
   owns the correlated reply, retirement and cleanup order. Its blob is
   `179353fa4a2fcbd8ec294d85ca6e804afe14db40`.
-- FACT: [GH-451 conditional contract at #1432](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/specs/gh451-cancelable-two-phase-quit.md)
+- FACT: [GH-451 conditional contract at historical #1432 revision](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/specs/gh451-cancelable-two-phase-quit.md)
   selects conditional behavior. GH-451 Q-2 and GH-451 Q-8 are separate gates.
-- FACT: [Exact proposed IPC contract](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/engineering/gh451-conditional-quit-ipc-amendment.md)
+- FACT: [Historical proposed IPC contract](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/engineering/gh451-conditional-quit-ipc-amendment.md)
   defines the receipt consumption and transport proof proposed for review.
 - FACT: #1432 `docs/specs/gh523-host-authorized-app-exit.md:100@c779aa2ac08270911b86cdbe3ebcb4e5f6dbcf2a`
   proposes one terminal winner and a shared filesystem drain.
@@ -44,7 +44,8 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
 ### AC-1: Reversible suppression and veto
 
 - **Given:** A qualified current original starts Quit and a window vetoes.
-- **When:** The existing facade settles that close sequence.
+- **When:** The existing facade applies the correlated ReplyApplied Veto for the exact current window, document,
+  generation and close sequence.
 - **Then:** Public last-window suppression resets. The Host retains ordered
   window facts. The selected sweep finishes without terminal reservation.
   A fresh qualified attempt can run after confirmed noncommit.
@@ -52,6 +53,9 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
   - **Single fault:** Keep suppression set after the matched veto.
   - **At-risk precondition:** Save finishes and the last window is destroyed.
   - **Expected RED:** The public last-window event or fresh Quit is missing.
+
+Hold or lose the exact Veto acknowledgement separately. An optimistic listener veto or public handoff settlement
+cannot substitute for the matching Host receipt. Test later valid receipt and exact-role retirement without stale reset.
 
 ### AC-2: Prepare and Create share the existing owner
 
@@ -78,16 +82,20 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
 
 ### AC-4: Drain failure retains exact custody
 
-- **Given:** The terminal writer fails during the reversible drain.
-- **When:** The lifecycle owner cannot prove all owed obligations settled.
-- **Then:** The owner retains the original error and attempt identity.
-  It does not publish Accepted or retryable Retained. A viable writer stays
-  fenced until an approved disposition proves what may proceed. An actual
-  failed writer follows existing exact-generation retirement, not live recovery.
+- **Given:** A conditional drain still owes a terminal reply or lease, or its actual terminal writer fails.
+- **When:** The owner observes an indeterminate viable drain or an actual failed writer.
+- **Then:** Preserve the original error, attempt and owed-work custody. A viable indeterminate drain cannot reserve or
+  resume ordinary admission until current identity, proven noncommit, settled obligations and no terminal winner are
+  established. Status uses only the original ordered reader when available. An actual failed writer follows existing
+  exact-generation retirement. Do not require Status or Consume on the dead link. Neither case publishes false Accepted
+  or retryable Retained. A successfully delivered typed FS Err is a settled reply, not a failed write.
 - **Negative control:**
   - **Single fault:** Convert an indeterminate drain to retryable Retained.
-  - **At-risk precondition:** An admitted reply or lease remains unresolved.
-  - **Expected RED:** New conditional work starts or the original error disappears.
+  - **At-risk precondition:** An admitted reply or lease remains unresolved on the viable link, or the actual writer failed.
+  - **Expected RED:** New work starts without proved settlement, failed writer remains live, or the original error disappears.
+
+Run distinct viable-held-drain and actual-failed-writer cases, plus successful Reply and successfully delivered typed Err
+controls. An in-flight count of zero alone cannot establish write success or a live role.
 
 ### AC-5: One committed terminal decision
 
@@ -260,7 +268,7 @@ a prerequisite for the reversible design decision.
 | AC-1 | Exact facade attempt and ordered registry facts with veto and Save retry |
 | AC-2 | Existing registry Create, preload and adoption orders, including failed build |
 | AC-3 | Authenticated FS Reply and Err, held lease, pause and reserve counters |
-| AC-4 | Actual writer failure and unresolved lease, exact retained error and no resume |
+| AC-4 | Separate viable unresolved drain and actual failed-writer retirement; preserve exact error; successful Reply/Err controls |
 | AC-5 | Both eligible reservation orders, queued reader contender and one tail |
 | AC-6 | Lost reply, held cleanup failure and committed decision readback |
 | AC-7 | Existing legacy Quit bytes, live-window behavior and old-peer refusal |
@@ -325,7 +333,9 @@ fixtures. Do not claim a faster shutdown from a model.
 Canonical adoption: publish this standalone amendment as
 `docs/specs/kel96-gh451-quit-order-amendment.md` on the owning draft PR.
 Link the exact approved amendment from the KEL-96 tracker and consuming GH-451
-contract. Record exact joint approval and precedence there before implementation.
+contract. Record exact joint approval, approved component blob identities and precedence together before implementation.
+Historical reciprocal links identify reviewed proposals, not approval of a later revision. Do not create a cyclic requirement
+for each commit to cite the other's future commit.
 Do not extend the sealed oversized KEL-96 document, change the ratchet, or
 create a parallel normative lifecycle spec. If architecture wording changes,
 review that change with the owning amendment. No approval is asserted here.
