@@ -11,6 +11,9 @@ use std::net::{TcpListener, TcpStream};
 
 const BOUND: Duration = Duration::from_secs(20);
 
+#[path = "conditional_quit_dispatch.rs"]
+mod conditional_quit_dispatch;
+
 /// Actual role coordinator owns every Bun child/restart/reap, including unwind.
 struct AcceptedRole {
     supervisor: PrimaryRoleSupervisor,
@@ -20,6 +23,10 @@ struct AcceptedRole {
 
 impl AcceptedRole {
     fn start(owner: RoleOwner) -> Self {
+        Self::start_with_mode(owner, None)
+    }
+
+    fn start_with_mode(owner: RoleOwner, mode: Option<&str>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("private fixture control");
         listener.set_nonblocking(true).expect("bounded accept poll");
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -28,17 +35,19 @@ impl AcceptedRole {
             RoleOwner::Primary => PrimaryRoleConfig::primary("bun"),
             RoleOwner::AppBound => PrimaryRoleConfig::app_bound("bun"),
         };
+        let config = config.arg(script).arg(
+            listener
+                .local_addr()
+                .expect("owned port")
+                .port()
+                .to_string(),
+        );
+        let config = match mode {
+            Some(mode) => config.arg(mode),
+            None => config,
+        };
         let supervisor = PrimaryRoleSupervisor::start_with_bound_generations(
-            config
-                .arg(script)
-                .arg(
-                    listener
-                        .local_addr()
-                        .expect("owned port")
-                        .port()
-                        .to_string(),
-                )
-                .env_remove("KELD_KIPC_TEST_HOOKS"),
+            config.env_remove("KELD_KIPC_TEST_HOOKS"),
         )
         .expect("existing authenticated coordinator");
         Self {

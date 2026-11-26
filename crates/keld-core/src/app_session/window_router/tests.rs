@@ -1346,6 +1346,25 @@ mod original_load;
 #[cfg(all(target_os = "macos", debug_assertions))]
 mod original_document_destroy;
 
+#[cfg(target_os = "macos")]
+impl WindowSession {
+    pub(in crate::app_session) fn fixture_terminal_observation(
+        &self,
+        owner: WindowOwner,
+        attempt: u32,
+    ) -> (bool, bool, u64) {
+        let (ready, empty, incarnation) = self.registry.fixture_terminal_observation();
+        (
+            ready
+                && self.original_menu_quit_selected(owner)
+                && self.native_quit_ready_attempt == attempt
+                && self.native_quit_source_attempt.load(Ordering::Acquire) == attempt,
+            empty,
+            incarnation,
+        )
+    }
+}
+
 #[cfg(all(target_os = "macos", debug_assertions))]
 impl WindowSession {
     pub(in crate::app_session) fn fixture_original_recovery_document(
