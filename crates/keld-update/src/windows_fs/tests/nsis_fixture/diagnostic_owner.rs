@@ -328,9 +328,9 @@ impl DiagnosticOwner {
 fn owned_diagnostic_inventory_retires_original_fixed_objects() {
     let tree = DiagnosticOwner::new();
     let root = tree.path().to_owned();
-    let moving = root.join(MOVING);
-    let moved = root.join("compiler-parent").join(MOVED_LEAF);
-    std::fs::rename(moving, moved).expect("ordinary diagnostic publication rename");
+    let parent = tree.parent(Some(tree.directory_index("compiler-parent")));
+    crate::windows_fs::publish_new(parent, "pre-publication", MOVED_LEAF)
+        .expect("native retained-parent diagnostic publication rename");
     tree.retire()
         .expect("retire exact owned diagnostic inventory");
     assert!(!root.exists(), "owned diagnostic root remains");
