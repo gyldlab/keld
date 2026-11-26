@@ -5,10 +5,7 @@ use super::{Fixture, OwnedFixtureEntry, entry_kind, metadata, retained_directory
 use crate::windows_fs::tests::support::{
     clear_mount_point_on_open_directory, set_mount_point_on_open_directory,
 };
-use crate::windows_fs::{
-    DeletePurpose, EntryKind, create_directory_relative, create_file_relative_with_profile,
-    open_for_delete,
-};
+use crate::windows_fs::{EntryKind, create_directory_relative, create_file_relative_with_profile};
 use cap_fs_ext::MetadataExt as _;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -58,9 +55,6 @@ const FILES: &[&str] = &[
     "compiler-parent/alias-target/keld-v2-peruserdirect-UNSIGNED.exe",
 ];
 
-const MOVING: &str = "compiler-parent/pre-publication";
-const MOVED_LEAF: &str = "published-output";
-
 struct OwnedDirectory {
     relative: &'static str,
     parent: Option<usize>,
@@ -74,9 +68,9 @@ struct OwnedFile {
     parent: Option<usize>,
     name: &'static str,
     owner: OwnedFixtureEntry,
-    // Pin ordinary files against deletion while the child writes existing
-    // slots. The deliberate publication rename needs delete sharing.
-    pin: Option<File>,
+    // Pin fixed ordinary files against deletion. No child write or directory
+    // move authority is conveyed by this test-only inventory.
+    pin: File,
 }
 
 struct DiagnosticOwner {
@@ -123,20 +117,12 @@ impl DiagnosticOwner {
             let path = tree.fixture.path.join(relative);
             let owner = OwnedFixtureEntry::capture(&created, &path, EntryKind::Directory)
                 .expect("pin diagnostic directory at creation");
-            let directory = if relative == MOVING {
-                let movable = retained_directory(&path);
-                owner.require_same(&movable).expect("pin movable directory");
-                drop(created);
-                movable
-            } else {
-                created
-            };
             tree.directories.push(OwnedDirectory {
                 relative,
                 parent,
                 name,
                 owner,
-                directory: Some(directory),
+                directory: Some(created),
                 junction: None,
             });
         }
@@ -153,18 +139,13 @@ impl DiagnosticOwner {
             let path = tree.fixture.path.join(relative);
             let owner = OwnedFixtureEntry::capture(&created, &path, EntryKind::File)
                 .expect("pin diagnostic file at creation");
-            let pin = if parent_name == Some(MOVING) {
-                None
-            } else {
-                let pin = OpenOptions::new()
-                    .read(true)
-                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                    .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-                    .open(&path)
-                    .expect("pin fixed diagnostic file without delete sharing");
-                owner.require_same(&pin).expect("same diagnostic file");
-                Some(pin)
-            };
+            let pin = OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&path)
+                .expect("pin fixed diagnostic file without delete sharing");
+            owner.require_same(&pin).expect("same diagnostic file");
             drop(created);
             tree.files.push(OwnedFile {
                 parent,
@@ -224,15 +205,7 @@ impl DiagnosticOwner {
                 .directories
                 .iter()
                 .filter(|directory| directory.parent == parent)
-                .map(|directory| {
-                    if directory.relative == MOVING && actual.iter().any(|name| name == MOVED_LEAF)
-                    {
-                        MOVED_LEAF
-                    } else {
-                        directory.name
-                    }
-                    .to_owned()
-                })
+                .map(|directory| directory.name.to_owned())
                 .chain(
                     self.files
                         .iter()
@@ -285,31 +258,10 @@ impl DiagnosticOwner {
 
         while let Some(directory) = self.directories.pop() {
             let parent = self.parent(directory.parent);
-            let name = if directory.relative == MOVING {
-                let original = open_for_delete(parent, directory.name, DeletePurpose::Remove);
-                let moved = open_for_delete(parent, MOVED_LEAF, DeletePurpose::Remove);
-                match (original, moved) {
-                    (Ok(entry), Err(error)) if error.kind() == io::ErrorKind::NotFound => {
-                        directory.owner.require_same(entry.file())?;
-                        directory.name
-                    }
-                    (Err(error), Ok(entry)) if error.kind() == io::ErrorKind::NotFound => {
-                        directory.owner.require_same(entry.file())?;
-                        MOVED_LEAF
-                    }
-                    _ => {
-                        return Err(io::Error::other(
-                            "ambiguous diagnostic publication directory; retain",
-                        ));
-                    }
-                }
-            } else {
-                directory.name
-            };
             drop(directory.directory);
-            directory.owner.remove(parent, name)?;
+            directory.owner.remove(parent, directory.name)?;
             drop(directory.owner);
-            super::assert_absent(parent, name);
+            super::assert_absent(parent, directory.name);
         }
 
         Ok(())
@@ -328,12 +280,59 @@ impl DiagnosticOwner {
 fn owned_diagnostic_inventory_retires_original_fixed_objects() {
     let tree = DiagnosticOwner::new();
     let root = tree.path().to_owned();
-    let parent = tree.parent(Some(tree.directory_index("compiler-parent")));
-    crate::windows_fs::publish_new(parent, "pre-publication", MOVED_LEAF)
-        .expect("native retained-parent diagnostic publication rename");
     tree.retire()
         .expect("retire exact owned diagnostic inventory");
     assert!(!root.exists(), "owned diagnostic root remains");
+}
+
+#[test]
+fn owned_diagnostic_publication_refuses_open_descendant() {
+    // The default diagnostic suite publishes a nonempty directory. NTFS
+    // refuses that move even with a metadata-only retained descendant that
+    // shares deletion. Do not drop that token and re-adopt an observed name.
+    let fixture = Fixture::new();
+    let name = "pre-publication";
+    let destination = "published-output";
+    let path = fixture.path.join(name);
+    let created = create_directory_relative(&fixture.root, name).expect("create publication slot");
+    let owner = OwnedFixtureEntry::capture(&created, &path, EntryKind::Directory)
+        .expect("retain original directory");
+    let directory = retained_directory(&path);
+    owner.require_same(&directory).expect("same directory");
+    drop(created);
+    let child = super::create_file(&directory, &path, "payload", b"original bytes");
+    let moved_path = fixture.path.join(destination);
+    let error = std::fs::rename(&path, &moved_path)
+        .expect_err("pathname move with retained descendant must refuse");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    let error = crate::windows_fs::publish_new(&fixture.root, name, destination)
+        .expect_err("native move with retained descendant must refuse");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    super::assert_absent(&fixture.root, destination);
+    owner
+        .require_same(&directory)
+        .expect("original directory retained");
+    assert_eq!(
+        std::fs::read(path.join("payload")).expect("preserved payload"),
+        b"original bytes"
+    );
+    child
+        .remove(&directory, "payload")
+        .expect("retire original child");
+    drop(child);
+    super::assert_absent(&directory, "payload");
+    drop(directory);
+    // Positive control: once the original child is retired, the same native
+    // move can publish the empty original directory with its own token live.
+    crate::windows_fs::publish_new(&fixture.root, name, destination)
+        .expect("publish original empty directory");
+    super::assert_absent(&fixture.root, name);
+    owner
+        .remove(&fixture.root, destination)
+        .expect("retire original moved directory");
+    drop(owner);
+    super::assert_absent(&fixture.root, destination);
+    fixture.finish();
 }
 
 #[test]
