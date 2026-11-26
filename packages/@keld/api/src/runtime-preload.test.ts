@@ -145,7 +145,7 @@ async function launch(
         : []),
       ...(installed?.bootstrap ? [] : ["--preload", wrapper]),
       ...(installed?.bootstrap
-        ? ["run", installed.bootstrap, installed.entry]
+        ? ["run", installed.bootstrap]
         : [
             installed?.entry ??
               join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
@@ -373,23 +373,17 @@ test("packed API captures and ACKs through the supported installed entry", async
     const text = readFileSync(wrapper, "utf8");
     expect(text).toContain('from "@keld/kipc"');
     expect(text).toContain('from "./app.js"');
-    // Bun 1.4.4 Windows does not share the app singleton between --preload
-    // and main. The signed Host selects this app-root bootstrap as Bun main,
-    // keeping the original and the API in one ESM graph. Keep the legacy
-    // wrapper-positive path on platforms where both phases share the cache.
+    // Bun 1.4.4 Windows does not share the API singleton between CLI
+    // --preload and main. Keep this test-owned single-graph bootstrap as
+    // Bun main on Windows; the signed true-main preload is macOS-only.
     const bootstrap =
       process.platform === "win32"
-        ? join(stage, "keld-installed-runtime-entry.mjs")
+        ? join(stage, "test-owned-single-graph-bootstrap.mjs")
         : undefined;
     if (bootstrap) {
-      const template = readFileSync(
-        join(import.meta.dir, "installed-runtime-entry.mjs"),
-        "utf8",
-      );
-      expect(template.split("__KELD_SELECTED_ENTRY__")).toHaveLength(3);
       writeFileSync(
         bootstrap,
-        template.replaceAll("__KELD_SELECTED_ENTRY__", "entry.mjs"),
+        'import { bootHostSelectedEntry } from "@keld/api/internal/app";\nawait bootHostSelectedEntry(() => import("./entry.mjs"));\n',
       );
     }
     const run = await launch(false, false, { wrapper, entry, bootstrap });

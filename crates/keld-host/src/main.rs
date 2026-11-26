@@ -615,51 +615,78 @@ fn local_guardian_bun_command(
     let runtime_preload = facts
         .runtime_preload_path()
         .map_err(|error| guardian_entry_error(error.to_string()))?;
-    configure_installed_runtime_preload(
+    let runtime_entry = facts
+        .runtime_entry_bootstrap_path()
+        .map_err(|error| guardian_entry_error(error.to_string()))?;
+    configure_installed_runtime_bootstrap(
         &mut command,
         facts.app_root(),
         facts.native_facade(),
         runtime_preload.as_deref(),
+        runtime_entry.as_deref(),
     )?;
+    append_installed_main(&mut command, facts.app_root(), facts.entry_relative());
     command
-        .arg("run")
-        .arg(facts.app_root().join(facts.entry_relative()))
         .current_dir(facts.app_root())
         .env("KELD_APP_LINK", app_link)
         .stdin(Stdio::null());
     Ok(command)
 }
 
-/// Adds only selectors obtained from the admitted local origin. The immutable
-/// facts preload is already first; the graph-owned API wrapper then captures and
-/// acknowledges runtime Init before evaluating any application dependency.
+/// The sealed preload finishes authenticated initialization before the
+/// original runs as Bun main. The selected original occupies argv[1] only;
+/// no app-private selector becomes an additional user argument.
+/// Non-graph installed callers retain their direct-entry behavior.
 #[cfg(target_os = "macos")]
-fn configure_installed_runtime_preload(
+fn append_installed_main(command: &mut Command, root: &Path, entry_relative: &Path) {
+    command.arg("run").arg(root.join(entry_relative));
+}
+
+/// Selects only admitted installed source roles. Immutable launch-facts preload
+/// is already first. An original graph must have both its independently
+/// verified provider wrapper AND the fixed Core-compiled app-root bootstrap.
+/// Bun executes the signed bootstrap as a pre-entry preload and the selected
+/// original as its actual main, after authenticated Init ACK/subscriptions.
+/// This Mac route requires a verified shared module instance across preload
+/// and main. The current Windows Bun cache split remains unsupported.
+#[cfg(target_os = "macos")]
+fn configure_installed_runtime_bootstrap(
     command: &mut Command,
     root: &Path,
     native_facade: bool,
     admitted_runtime_preload: Option<&Path>,
+    admitted_bootstrap: Option<&Path>,
 ) -> Result<(), keld_runtime::RuntimeError> {
-    if let Some(preload) = admitted_runtime_preload {
-        if !native_facade {
-            return Err(guardian_entry_error(
-                "an original runtime preload requires the admitted native facade",
-            ));
+    match (admitted_runtime_preload, admitted_bootstrap) {
+        (Some(_), Some(bootstrap)) => {
+            if !native_facade
+                || bootstrap != root.join(keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH)
+            {
+                return Err(guardian_entry_error(
+                    "an original runtime bootstrap requires the exact compiled owner member",
+                ));
+            }
+            command
+                .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")
+                .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true")
+                .arg(format!("--preload={}", bootstrap.display()));
+            Ok(())
         }
-        command
-            .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")
-            .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true")
-            .arg(format!("--preload={}", preload.display()));
-    } else {
-        // Non-graph installed callers keep their existing optional sidecar.
-        command
-            .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:false")
-            .args(keld_runtime::primary::staged_bun_launch_args(
-                root,
-                native_facade,
-            )?);
+        (None, None) => {
+            // Non-graph installed callers retain their optional sidecar,
+            // unchanged direct-entry identity and existing process semantics.
+            command
+                .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:false")
+                .args(keld_runtime::primary::staged_bun_launch_args(
+                    root,
+                    native_facade,
+                )?);
+            Ok(())
+        }
+        _ => Err(guardian_entry_error(
+            "original graph wrapper and fixed Host bootstrap must agree",
+        )),
     }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1436,14 +1463,22 @@ mod tests {
     }
 
     #[test]
-    fn installed_original_selects_verified_runtime_init_before_the_application() {
+    fn installed_original_selects_verified_root_preload_before_true_main() {
         let root = std::path::Path::new("/Applications/Example.app/Contents/Resources/app");
         let wrapper = root.join("node_modules/@keld/api/runtime-preload.js");
+        let bootstrap = root.join("keld-installed-runtime-entry.mjs");
+        let wrong_same_root = root.join("unverified-same-root.mjs");
         let mut command = std::process::Command::new("/verified/bun");
         command.arg("--preload=/verified/immutable-facts.ts");
-        super::configure_installed_runtime_preload(&mut command, root, true, Some(&wrapper))
-            .expect("admitted graph wrapper");
-        command.arg("run").arg(root.join("main.js"));
+        super::configure_installed_runtime_bootstrap(
+            &mut command,
+            root,
+            true,
+            Some(&wrapper),
+            Some(&bootstrap),
+        )
+        .expect("both independently admitted graph members");
+        super::append_installed_main(&mut command, root, std::path::Path::new("main.js"));
         let observed = command
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())
@@ -1454,21 +1489,53 @@ mod tests {
                 "--preload=/verified/immutable-facts.ts".to_owned(),
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".to_owned(),
                 "--define=__KELD_RUNTIME_PROCESS_FACTS__:true".to_owned(),
-                format!("--preload={}", wrapper.display()),
+                format!("--preload={}", bootstrap.display()),
                 "run".to_owned(),
                 root.join("main.js").display().to_string(),
             ]
         );
-        let mut refused = std::process::Command::new("/verified/bun");
-        assert!(
-            super::configure_installed_runtime_preload(&mut refused, root, false, Some(&wrapper))
-                .is_err()
-        );
+        let mut ordinary = std::process::Command::new("/verified/bun");
+        super::append_installed_main(&mut ordinary, root, std::path::Path::new("main.js"));
         assert_eq!(
-            refused.get_args().count(),
-            0,
-            "refusal must precede command mutation"
+            ordinary
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["run".to_owned(), root.join("main.js").display().to_string()]
         );
+        for (facade, wrapper, bootstrap) in [
+            (false, Some(wrapper.as_path()), Some(bootstrap.as_path())),
+            (true, None, Some(bootstrap.as_path())),
+            (true, Some(wrapper.as_path()), None),
+            (
+                true,
+                Some(wrapper.as_path()),
+                Some(std::path::Path::new("/unverified/bootstrap.mjs")),
+            ),
+            (
+                true,
+                Some(wrapper.as_path()),
+                Some(wrong_same_root.as_path()),
+            ),
+        ] {
+            let mut refused = std::process::Command::new("/verified/bun");
+            assert!(
+                super::configure_installed_runtime_bootstrap(
+                    &mut refused,
+                    root,
+                    facade,
+                    wrapper,
+                    bootstrap,
+                )
+                .is_err(),
+                "mismatched source or facade must fail closed"
+            );
+            assert_eq!(
+                refused.get_args().count(),
+                0,
+                "refusal must precede command mutation"
+            );
+        }
     }
 
     #[test]
