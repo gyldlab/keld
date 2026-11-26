@@ -1,0 +1,500 @@
+# Recovery and independent replacement authority
+
+Part of: [index](index.md)
+Owns: D-RECOVERY, initial-admission interruption, and manual key-loss recovery.
+
+## 4. Design: Recovery
+
+### D-60: Separate four recovery operations
+
+PROPOSED: Use the following closed operation table.
+
+| Operation | Authority | State effect |
+|---|---|---|
+| Ordinary interrupted refresh | Existing authenticated repository and protected store | Resume its recorded root/role phase, or refuse |
+| Ordinary application rollback | Existing KEL-53 journal and exact LKG binding | Restore only that artifact, without lowering the floor |
+| Planned identity or U1 transition | Fresh TUF authorization and the identity part's required signatures | Apply the complete joined transition |
+| Manual loss-only recovery | Independently authenticated recovery Host, pinned recovery policy, explicit user confirmation | Replace only the directive-bound trust and update key |
+
+A missing signature cannot select another operation.
+Normal refresh cannot call manual recovery. Neither Bun nor a webview can request recovery authority.
+The existing process-role decoder owns the dedicated recovery role.
+Its implementation requires the public API, permission, wire, and unsafe review gates.
+
+### D-61: Commission independent authority before distribution
+
+PROPOSED: `RepositoryPolicy` contains a required `recoveryPolicySha256` field.
+The signed Host's existing repository-policy digest authenticates that field.
+The immutable installed provenance retains authenticated references to the repository and recovery policies.
+The existing protected repository evidence store retains their exact bytes under the KEL-53 writer.
+Use D-9 evidence references and retention rules. Verify each digest before parsing.
+Normal TUF refresh cannot change this recovery policy.
+A planned policy transition needs the identity part's complete authority.
+
+`RecoveryPolicy` is canonical JSON using the identity part's exact encoding rules.
+Its maximum length is 16,384 bytes. Its ordered fields are:
+
+| Field | Closed value |
+|---|---|
+| `schema` | `keld.windows.recovery-policy/v1` |
+| `repositoryId` | Exact 32-byte repository ID, lowercase hexadecimal |
+| `recoveryPublisherPolicySha256` | SHA-256 of one exact `PublisherPolicy` |
+| `recoveryIssuerPolicySha256` | SHA-256 of that publisher's exact `IssuerPolicy` |
+| `recoveryOrigin` | One canonical HTTPS origin, under the identity part's URL rules |
+| `method` | `manual-authenticode-bootstrap-v1` |
+| `incidentClasses` | Ordered array containing only `loss-only` |
+| `maximumDirectiveLifetimeSeconds` | Integer `86400` |
+| `inPlaceManagedRecovery` | JSON `false` |
+
+The recovery publisher authority reuses the existing Authenticode verification owner, not the application's signing credential.
+Commission a distinct recovery-only `PublisherPolicy.profileOid` before distribution.
+The protected installed `RecoveryPolicy` pins both recovery publisher and issuer policy digests.
+The recovery profile OID MUST differ from the installed application profile OID.
+The recovery verifier MUST match the verified primary signer's full recovery-only
+profile OID and issuer policy, and MUST refuse a signer leaf containing the ordinary
+application profile OID. Its issuer comparison applies to the same verified primary
+signer. An OID prefix, subject, or generic Public Trust/code-signing EKU is
+not a substitute for the commissioned recovery-only full OID.
+Microsoft Artifact Signing rotates short-lived leaf certificates daily.
+Therefore observed leaf SPKI and thumbprint are artifact evidence, not
+installed durable signing-authority pins. An otherwise valid later leaf
+from the same commissioned recovery profile MUST NOT be rejected merely
+because its SPKI changed. Recreating the profile changes its OID and
+requires separately approved authority transition; never fall back
+to ordinary application signing.
+The pinned recovery publisher's `issuerPolicySha256` MUST equal `RecoveryPolicy.recoveryIssuerPolicySha256`.
+Normal Authenticode success or application-publisher success alone MUST NOT authorize recovery.
+An ordinary application signer MUST fail recovery authorization even if its Windows chain and application profile are valid.
+The same recovered application publisher and issuer policies remain required in the source and destination.
+The recovery Host instead uses the separately pinned recovery-only signer policy; it carries the application's destination identity.
+Recovery signing custody remains separate from TUF, catalogue, application signing, and installed U1 credentials.
+The release/security owner MUST record that separation before commissioning. A distinct label alone is insufficient.
+The installed recovery policy digest remains constant throughout a loss-only operation.
+Loss-only recovery cannot change application publisher scope, identity scheme, discovery, install mode, or root policy.
+The source must use the v2 identity scheme. Legacy recovery remains conditional on B-2.
+No new custom signature algorithm, emergency signing envelope, or generic broker is introduced.
+
+The recovery origin supplies instructions and authenticated recovery artifacts.
+TLS alone does not authorize a replacement. A downloaded digest from the affected TUF repository grants no recovery authority.
+The user obtains the recovery Host through the separately commissioned recovery origin.
+Windows validates the Host against the separately installed recovery-only
+publisher/profile and issuer policies and the full existing chain, timestamp,
+revocation, and one-primary/zero-secondary signature requirements.
+Do not read replacement recovery-signing policy from the directive, candidate, or newly self-signed root.
+
+Loss-only recovery compares source and destination `RepositoryPolicy` using this closed matrix.
+Compare exact canonical decoded fields against the protected installed source policy before any trust change.
+
+| RepositoryPolicy field | Loss-only rule |
+|---|---|
+| `schema`, `repositoryId`, `appId`, `target`, `metadataProfile` | Exact source/destination equality |
+| `metadataBaseUrl`, `targetsBaseUrl` | Exact equality; no origin or path substitution |
+| `catalogueKeys` | Exact equality, including key IDs, public keys, and order |
+| `publisherPolicySha256`, `discoveryPolicySha256`, `recoveryPolicySha256` | Exact equality to protected installed values |
+| `bootstrapRootSha256` | Must change to the directive-bound, independently authorized, verified replacement root |
+| `bootstrapRootVersion` | Must equal the new verified root version and strictly exceed the currently accepted root version recorded by protected metadata, without overflow |
+
+The destination repository-policy digest MAY differ only because the two bootstrap-root fields change.
+The directive's `source.rootSha256` MUST match the actual currently accepted
+root in the protected current metadata generation. That root may differ from
+the source policy's original commissioning `bootstrapRootSha256` after
+ordinary authenticated root rotations. Do not confuse the bootstrap pin
+with the current root or compare a proposed new version only against the
+original commissioning floor. The source policy digest MUST agree with
+protected current metadata's policy reference, installed provenance and
+retained authenticated policy evidence. The new independently authorized
+root version must strictly exceed the *current* root version; this
+conservative loss-only profile does not permit a version reset. If the
+available genuine independent replacement cannot meet that condition,
+refuse this in-place profile rather than lowering a protected floor.
+Verify its complete canonical bytes against the directive and the destination Host and catalogue.
+Retain the installed recovery policy and all of its recovery signer pins throughout the operation.
+No other field change inherits authority from the directive or from a newly self-signed root.
+Broader policy rotation requires a separately approved planned transition, not the loss-only path.
+
+If the recovery signing authority is also lost, this in-place method is unavailable.
+Do not lower a threshold, replace a policy from caller input, or invent a fresh identity.
+Retain the installation and data. Clean-system reinstallation remains a separate operator procedure.
+
+### D-62: Authenticate a dedicated replacement verifier
+
+PROPOSED: The dedicated recovery Host contains one Authenticode-covered PE section named `.keldrec`.
+The section name contains exactly eight ASCII bytes.
+Reuse the existing PE container's alignment, overlap, bounds, and covered-byte rules.
+Place `.keldrec` before `.keldea2`. The expected-identity section remains the final PE section.
+Its payload is one canonical JSON `RecoveryDirective`, between 1 and 65,536 bytes.
+Reject multiple recovery sections, trailing nonpadding bytes, unknown fields, and unsupported versions.
+
+The same fully verified primary signer authenticates `.keldea2` and `.keldrec`.
+The directive contains no digest of its containing Host. That would create a signing cycle.
+The verifier records the final signed Host digest in its local authorization record.
+The ordinary initial-install and application roles cannot consume `.keldrec` as permission to recover.
+The Guard returns a distinct private `RecoveryImage`. It cannot convert into an admitted catalogue Host.
+Its `.keldea2` binds the destination lane, repository policy, and U2. The directive binds the exact source and destination.
+The recovery Host and candidate Host can have different hashes. The catalogue must match the separately verified candidate Host.
+The recovery Host's signer satisfies the installed recovery-only profile and
+issuer policy; its verified leaf MUST NOT contain the ordinary app profile EKU.
+It need not satisfy the ordinary application's signer profile.
+The destination candidate Host MUST satisfy the unchanged installed application publisher and issuer policies.
+The recovery-only signer MUST NOT qualify as a normal Host or catalogue signer.
+
+The directive has these ordered fields:
+
+| Field | Closed value |
+|---|---|
+| `schema` | `keld.windows.recovery-directive/v1` |
+| `operation` | `replace-trust-and-key` |
+| `incidentClass` | `loss-only` |
+| `repositoryId`, `appId`, `channel`, `target` | Exact established lane and repository |
+| `source` | `rootSha256,repositoryPolicySha256,recoveryEpoch,updatePublicKeyEd25519,publisherScope` |
+| `destination` | `bootstrapRootSha256,repositoryPolicySha256,recoveryEpoch,updatePublicKeyEd25519,catalogueSha256` |
+| `rollback` | The identity part's complete exact `ArtifactBinding` |
+| `browserStore` | The identity part's exact `retain-source` binding |
+| `issuedAtUnixSeconds`, `expiresAtUnixSeconds` | Unsigned integers in the identity part's `n53` domain |
+
+All digest and key fields use the identity part's exact representations.
+Both recovery epochs fit checked u64. Destination epoch equals source epoch plus one.
+Epoch zero is valid. Encode epochs as canonical unsigned decimal integers without exponent or leading-zero aliases.
+Reject overflow. The remaining integer fields use their named field domains.
+Issue time cannot exceed the effective trusted UTC. Expiry must exceed that UTC.
+The positive interval cannot exceed the recovery policy's lifetime cap.
+The destination repository ID remains unchanged. The destination Host expectation and catalogue must match every repeated field.
+The source fields must match protected readback. The local journal additionally binds the exact source generation and provenance digests.
+The new root must validate its own threshold and the fully refreshed new metadata graph.
+That self-signature checks internal consistency. The independently verified directive supplies replacement authority.
+
+### D-63: Require an explicit, bounded user ceremony
+
+PROPOSED: The recovery Host displays the publisher, application, operation, source state, and destination release.
+The recovery Host states that automatic verification could not continue because a signing key was lost.
+The user confirms this exact displayed operation through the trusted native recovery UI.
+There is no unattended, command-line-confirm, environment-variable, Bun, or webview confirmation path.
+Cancellation, timeout, or UI failure grants no authority.
+Use a 120-second monotonic confirmation deadline. Do not extend that deadline through retries.
+
+After confirmation, reacquire metadata, installation, and physical-profile leases in that order.
+Revalidate the worker, retained sources, source generation, provenance, floors, and directive expiry.
+A changed input invalidates confirmation. Display and confirm a newly verified operation before trying again.
+The private `VerifiedRecoveryAuthorization` is noncloneable and bound to that worker and attempt.
+It exposes no raw path, key override, or reusable policy grant.
+The recovery owner consumes it once to construct `VerifiedMetadataRecovery` for the metadata owner.
+That narrow capability binds the exact old generation, old epoch, next epoch, replacement root, policy, and catalogue.
+The client adapter constructs `VerifiedRecoveryGraph` only after it verifies the complete replacement metadata graph.
+Graph verification alone grants no replacement authority.
+
+The user confirmation approves an operation already authenticated by the independent policy.
+Confirmation cannot make an unsigned or wrongly signed recovery artifact acceptable.
+This operational confirmation is separate from approval of this implementation specification.
+
+### D-64: Freeze the initial admission record
+
+PROPOSED: KEL-53 stores the record under the protected repository ledger, outside the installation tree.
+The filename is `admissions/<attemptId>.json`. The attempt ID is 32 random bytes encoded as 64 lowercase hexadecimal characters.
+Use the existing OS entropy owner. A caller cannot choose the attempt ID.
+The record is canonical JSON with a 32,768-byte cap and these ordered fields:
+
+| Field | Meaning |
+|---|---|
+| `schema` | `keld.windows.initial-admission/v1` |
+| `attemptId`, `repositoryId`, `ownerSid` | Exact attempt, repository, and admitted user |
+| `metadataSequence`, `metadataGenerationSha256`, `recoveryEpoch` | Exact admitted revision |
+| `hostSha256`, `catalogueSha256`, `repositoryPolicySha256`, `discoveryPolicySha256` | Exact authenticated inputs |
+| `manifestSha256`, `packageContentBlake3`, `packageTransportBlake3` | Exact complete package selection |
+| `destinationIdentity`, `destinationRootIdentity` | Native root derivation and retained ancestor identity |
+| `sourceIdentity` | Native retained archive volume/file identity |
+| `phase` | `admitted`, `creation-armed`, `bootstrap-owned`, `provenance-published`, `complete`, or `aborted` |
+
+`destinationIdentity` uses the complete v3 `WireIdentity` from D-8.
+`destinationRootIdentity` uses D-48's destination binding. `sourceIdentity` uses D-48's object observation.
+An `ExactEmptyScaffold` additionally requires D-43's independent pre-attempt creator provenance, not commissioned in this profile.
+With separately approved proof, seal the D-48 `existing` root identity. Reverify that proof, owner, DACL and empty contents on restart.
+These observations contain no caller-selected path. Matching recycled file identifiers never grants recovery authority.
+Sequence is a positive u64. Epoch is a nonnegative u64. Digest fields use `h32`; BLAKE3 fields use existing lowercase codecs.
+`ownerSid` is the canonical SID string captured by D-42, at most 184 ASCII bytes.
+The one-shot permit becomes consumed before the admission-record write.
+Publish and reread `admitted` while holding the metadata admission lease.
+Before that record, publish and reread D-9's complete seven-reference policy set.
+It includes the separately commissioned recovery publisher and issuer policies.
+Retain those objects while admission or committed provenance references them. Never search arbitrary attempts to reconstruct missing policy bytes.
+Publish D-68's pending pointer before installation creation.
+Flush and reread `creation-armed` before any installation-specific parent, scaffold, bootstrap-lock, or activation effect.
+Only then create installation parents, scaffold, and KEL-53's exclusive bootstrap lock.
+Installation parents here exclude only D-44's explicitly authorized shared acquisition ancestors.
+Recheck destination ownership under that lock. Persist `bootstrap-owned` before releasing the metadata lease.
+The existing initializer owns subsequent provenance, baseline, and current publication.
+Advance the admission phase only after the corresponding native durable operation succeeds.
+
+A restart of a nonterminal effectful phase requires the same authenticated inputs, user, root, and exact package.
+Before `bootstrap-owned`, recovery reacquires fresh admission for the exact target. Withdrawal or changed bytes refuses substitution.
+When `admitted` is the last durable phase, the owner MAY complete a terminal no-effect abort.
+Authenticate the journal and any pointer. Prove `creation-armed` never committed; census derived objects through retained parents.
+For `FreshAbsent`, prove no scaffold or installation-specific effect exists.
+For separately qualified `ExactEmptyScaffold`, reauthenticate its independent origin proof and unchanged D-48 root, owner, DACL and empty contents.
+Both dispositions require no new child, lock, active selection or effect, and unchanged provenance and application state.
+The metadata store may retain separately authenticated refresh advances and floors; abort MUST NOT roll them back.
+Only then durably write, flush and reread `aborted`. D-68 owns exact pointer removal and retained diagnostic evidence.
+If `creation-armed` exists, an effect is present or any creation history is ambiguous, refuse automatic abort and require named KEL-53 operator disposition.
+Absence of a scaffold alone is not proof of no effect. Never silently enroll another target.
+After `bootstrap-owned`, the journal owns commit or refusal using the recorded admitted inputs.
+Metadata expiry cannot substitute new bytes midway through that accepted transaction.
+An absent or invalid record beside an incomplete scaffold refuses normal initialization.
+Only the admitted recovery operation can reconcile that scaffold. It cannot recursively remove unrelated content.
+If creation succeeds before its object receipt becomes durable, stop on restart. Do not infer ownership from an empty directory.
+An authorized operator must reconcile that exact orphan. Automatic recovery cannot delete or adopt it.
+After each successful component creation, advance `destinationRootIdentity` to that verified component and its remaining derived suffix.
+Publish and reread that observation before creating its child. `destinationIdentity` retains the complete intended destination.
+
+### D-65: Join manual recovery to one transaction
+
+PROPOSED: Prepare the new metadata graph privately before changing established state.
+The same bounded client verifies it from the directive-bound replacement root.
+Download and authenticate the exact candidate and finite rollback binding.
+The recovery directive replaces planned-transition authority. It does not require an unavailable U1 signature.
+Apply D-90's manual reader and drain gates. Never run candidate code during preparation.
+Require a compatible rollback artifact before admitting any change.
+An old Host that cannot consume the new identity/recovery view does not satisfy that requirement.
+
+The KEL-53 recovery journal records the complete before/after state.
+Use the bounded immutable evidence references from D-9. Do not inline complete provenance, policy, or metadata objects.
+Its canonical record has a 65,536-byte cap and these ordered fields:
+
+| Field | Meaning |
+|---|---|
+| `schema` | `keld.windows.manual-recovery/v1` |
+| `attemptId`, `ownerSid`, `repositoryId` | Exact local attempt |
+| `recoveryHostSha256`, `recoveryPolicySha256`, `directiveSha256` | Independent authorization evidence |
+| `sourceGenerationSha256`, `sourceProvenanceSha256`, `sourceEpoch` | Protected before-state |
+| `destinationGenerationSha256`, `destinationProvenanceSha256`, `destinationEpoch` | Complete proposed after-state |
+| `applicationFloor`, `utcFloorMillis`, `browserBindingSha256`, `rollbackBindingSha256` | Invariants and finite LKG authority |
+| `exclusivePreparationBlobs` | Exact sorted exclusive blob SHA-256 and length plan, sealed before any preparation write |
+| `retirementIntentSha256` | Null before abort cleanup; then the exact D-23 retirement-intent digest |
+| `retirementCompletionSha256` | Null until full cleanup readback; then the same intent digest |
+| `phase` | `prepared`, `aborted`, `trust-committed`, `activation-bound`, or `complete` |
+
+Derive `exclusivePreparationBlobs` from the complete verified replacement graph and the protected owner census under the existing leases. The bounded
+canonical list contains only new exclusively owned `{sha256,length}` objects. Existing shared or live-referenced blobs MUST NOT appear in the list.
+Before the manual journal or pointer, inspect protected `current`, all D-23 ordinary intents, unreferenced blobs and N+1 under the repository lease.
+A foreign pending pointer refuses recovery. Finish ordinary orphan, blob-only residue and intents under D-24's authenticated old-state and crash-resume rules.
+For fresh N-2 retirement, authenticate N/N-1/N-2, anchor and owners; refuse held or foreign N-2.
+For a retained committed intent, authenticate N/N-1, anchor, owners and intent; D-24 permits its listed objects already absent.
+Resume exact intent before journal or pointer. Verify N-2 and intent both absent before preparation.
+Verify ordinary N+1, unreferenced blobs and all ordinary intents absent. Invalid orphan state halts without adoption.
+Repeat the protected owner census after each retirement, then derive the final exclusive-blob inventory.
+Keep the lease through plan sealing, journal and pointer readback. No ordinary writer may interleave an N+1.
+Prove successor and new exclusive-blob paths absent; exclude authenticated shared blobs.
+Bind the exact planned successor generation digest and exclusive list before writing any preparation object. A caller cannot supply or amend this plan.
+Both retirement fields are null in `prepared`. The recovery owner sets each field only at its specified step below. Each field changes from null once,
+under the protected journal writer. An `aborted` journal retains both fields after pending-pointer removal. Neither field grants deletion authority.
+Terminal `aborted` forbids trust commit. It permits only these two bounded, write-once cleanup-field updates under the original attempt and leases.
+
+Persist `prepared` before either store changes.
+Flush and reread the complete record at `recoveries/<attemptId>.json`.
+Publish and reread D-68's pending pointer before any preparation blob or
+successor-generation write. No preparation object may predate both records.
+The metadata owner's private `rebootstrap` method consumes the narrow authorization and complete verified replacement graph.
+It compares the exact source generation and epoch under the lease.
+It advances the epoch once and retains at least the previous UTC floor.
+Its next generation is `ready`, with sequence equal to the old sequence plus one.
+Publish every referenced blob and the complete generation before replacing the single current pointer.
+Verify each newly published blob against the sealed exclusive plan.
+Flush and reread each complete blob and the successor before trust commit.
+A crash before or during publication leaves no committed trust.
+The prepared journal names that exact destination generation. No network request occurs during trust commit or activation binding.
+The application floor is outside this operation and cannot be reset.
+Persist `trust-committed` after protected readback of the new metadata generation.
+Bind the existing KEL-53 activation journal to the new provenance and exact candidate.
+Persist `activation-bound` before releasing either transaction lease.
+Use the existing exact-health, candidate cleanup, commit, and rollback state machine.
+Persist `complete` only after that state machine reaches its accepted terminal state.
+
+The old update key grants no general release-selection authority after trust commit.
+The finite LKG binding permits only the exact recorded rollback artifact.
+Failed candidate health never reverses metadata recovery or lowers either floor.
+The physical browser store and its lease identity remain unchanged throughout recovery.
+
+An expired `prepared` attempt does not gain new authorization from its old directive.
+Use abort-and-retry, never in-place replacement of the recorded directive or its journal bindings.
+Only the KEL-53 recovery owner may abort under the existing repository and installation leases.
+First verify the protected journal, pending pointer, original signature evidence, and exact installed source generation.
+Check the old epoch, provenance, policy pins, and unchanged application current/LKG and browser bindings.
+Check that the metadata current pointer still selects the old generation and no trust or activation effect occurred.
+An absent successor or a partly published set of preparation objects is
+not committed trust. A prepared transaction may commit only after every
+required object matches its journal-bound digest and length. During abort,
+no planned object is adopted; an object whose bytes are truncated or corrupt
+is cleanup-only and MAY be retired when the sealed prewrite plan and terminal
+aborted journal name its exact path, the object is a regular non-reparse file with the exact
+store-owner SID and KEL-53 DACL profile, and it is unreachable from
+current/LKG/previous-LKG and every other protected owner. Open it relative
+to the retained parent, validate through that handle, and delete through the
+same handle; never reopen the pathname after validation. The matching
+pending pointer and leases remain held throughout. A partial/corrupt object
+MUST never be parsed, adopted, or selected as trust. A foreign or wrong-owner
+object, protection mismatch, reparse/directory, unlisted path, or live
+reference MUST halt cleanup and preserve the pointer, journal and established
+current for KEL-53 operator disposition.
+Any ambiguous or changed state MUST refuse abortion and preserve all evidence for diagnosis.
+Persist and reread terminal `aborted` before any cleanup. Under the same
+metadata, installation and physical-profile leases, first publish, flush
+and read back the D-23 mode-`recovery` retirement intent. Bind its exact
+attempt ID, protected old/current, expected successor digest, complete
+prewrite exclusive-blob inventory and matching pending pointer to the aborted
+journal. It MUST bind paths that were planned but never written.
+Verify every present listed object is exact or partial, has the expected
+store owner and DACL on its retained handle, and is unreferenced. Refuse
+unexpected attempt-owned preparation objects, foreign ownership, protection
+mismatch, reparse/directory objects or live-referenced deletion targets.
+Compute SHA-256 over the exact readback-verified intent bytes.
+Persist and reread that digest in the aborted journal's
+`retirementIntentSha256` field BEFORE any object deletion.
+If the journal intent digest is non-null, an existing intent MUST match
+that digest, the sealed plan, attempt and protected old state.
+If restart finds an intact intent but a null journal intent digest,
+verify every present listed object is an exact-or-partial planned regular
+file with the expected owner and DACL on its retained handle, and remains
+unreferenced. A listed absent object may be unwritten. Refuse unexpected
+attempt-owned preparation objects, foreign-owned objects, protection
+mismatches, reparse points, directories or live references.
+Also verify the complete sealed plan, old state and matching pending pointer.
+Only then persist and reread the intent digest. Delete nothing before
+that readback. A non-null mismatched journal digest MUST halt.
+No object deletion may precede both durable records. Retire only present
+exact-or-partial planned blobs and the uncommitted successor generation at
+`generations/<oldSequence+1>.json`. The successor and planned blobs MAY
+be absent before first publication or after interrupted retirement.
+For each present object, verify the exact planned path, regular non-reparse
+type, expected owner SID and KEL-53 DACL through one retained handle. Prove
+none is selected by current, LKG, previous LKG or another protected owner.
+Delete only through that same handle. A digest/length mismatch classifies
+the object as partial/corrupt cleanup residue, never as trust. Owner/DACL
+mismatch, foreign or unlisted path, reparse/directory type, or a live
+reference MUST halt. Absence alone never proves exclusive ownership.
+The aborted journal remains as bounded diagnostic evidence; its destination
+digest is historical, not live authority to keep uncommitted successor bytes.
+The immutable next-sequence filename MUST be absent before a new attempt
+can prepare different bytes at that same required sequence.
+Retirement is idempotent only under the matching authentic pre-deletion
+D-23 intent. An absent intent-listed blob or successor counts as retired
+only while the authenticated intent, journal and old state still match.
+Missing authoritative files, unexpected attempt-owned preparation objects,
+changed references, or a mismatched intent MUST refuse further deletion.
+Existing authenticated shared objects remain untouched.
+Reread the unchanged old current, provenance, epoch and application state.
+Verify the successor and every intent-listed exclusive blob are absent.
+Then durably persist and reread `retirementCompletionSha256` in the
+aborted journal. It MUST equal the previously bound
+`retirementIntentSha256`. Do not change any other journal field.
+Only then remove the D-23 intent and durably verify its path absent.
+
+After a crash with the intent present, resume only under that exact intent.
+If the intent is absent and both journal digests are null, cleanup has
+not started. Verify the sealed prewrite plan and every present exact-or-partial
+unreferenced preparation object using the same owner/DACL and retained-handle
+checks. A planned object MAY be absent.
+Refuse unexpected attempt-owned objects, divergent candidate digest
+or foreign ownership. Leave existing authenticated shared blobs untouched.
+Recheck the journal, old state and pointer before publishing a D-23 intent.
+After a crash with the intent absent and pending pointer present, require
+both non-null journal digests to match after cleanup and the old state to remain
+authenticated and unchanged. The journal MUST bind the same attempt and
+pointer. Verify absence of the expected successor and every sealed
+exclusive-preparation blob. This completed state permits pointer-only
+cleanup, not deletion.
+Mixed or mismatched journal digests MUST refuse pointer removal
+and a fresh attempt. Do not reconstruct missing inventory or delete any
+object after the intent is absent. Remove and reread the matching pointer
+under the same lease. An interrupted removal resumes this terminal cleanup only.
+If any readback or removal fails, keep the operation blocked; never infer success from a missing response.
+Only after verified pointer absence MAY a new random attempt and independently signed directive enter `prepared`.
+The new attempt requires a fresh native confirmation and full source, destination, policy, epoch, and expiry verification.
+Matching desired destination state is permitted; the expired directive itself never authorizes the new attempt.
+Reject a stale directive or a changed replacement without changing the established trust.
+
+### D-66: Define every recovery cut
+
+| Last durable state | Next permitted action |
+|---|---|
+| No journal, no pointer, no ordinary orphan or intent, and no unreferenced blobs | Established state remains authoritative. No retirement is needed. |
+| Before manual journal, no pointer, ordinary orphan, blob-only residue, intent or third committed N-2 | Complete D-24 ordinary and committed-history retirement before any manual journal or pointer. Refuse held or ambiguous objects. |
+| Initial `admitted`, pointer present or absent, target withdrawn | Require D-64's no-effect proof for `FreshAbsent`, or separately provenance-qualified `ExactEmptyScaffold`. Reread terminal `aborted`; clear only a matching pointer. |
+| Initial `creation-armed` or ambiguous scaffold | Preserve the pointer and journal for KEL-53 operator disposition. Never infer no-effect from apparent absence. |
+| `prepared`, old metadata current, directive valid | Reverify authorization, all source/policy bindings and D-90's manual gates; commit or refuse. |
+| `prepared`, old metadata current, directive expired | Verify no trust or application effect. Durably mark `aborted`. Retire present exact-or-partial planned preparation only with expected owner/DACL, regular non-reparse type and no protected references under a D-23 intent. Clear the pointer after old-state verification. |
+| `prepared`, new metadata current | Match the recorded destination generation. Advance the journal without repeating the epoch change. |
+| `aborted`, old metadata current, intent present, both journal digests null | Verify the sealed prewrite plan, matching attempt, protected old state, pending pointer, and every listed object's owner, DACL, type and unreachability. Bind and reread the exact intent digest before deletion. |
+| `aborted`, old metadata current, intent present, intent digest non-null, completion null | Require exact intent digest, sealed plan, old state, attempt and pointer equality. Resume only D-65's guarded retirement. Persist matching completion before intent removal and pointer cleanup. |
+| `aborted`, old metadata current, intent present, equal non-null digests | Match the exact intent, plan, attempt, pointer and old state. Verify every planned object absent. Remove and verify the intent absent before pointer-only cleanup. |
+| `aborted`, old metadata current, intent absent, both digests null | Verify the sealed plan and each present exact-or-partial unreferenced preparation object with expected owner/DACL and retained-handle identity. Permit planned objects not written. Publish the initial D-23 intent before deletion. |
+| `aborted`, old metadata current, intent absent, equal non-null digests | Require old state, matching attempt and absence of every planned object. Clear only the pointer. |
+| `aborted`, intent absent with mixed digests, or null intent digest with non-null completion, or unequal non-null digests | Halt. Do not delete or remove the pointer. |
+| `aborted`, mismatched plan or unlisted object | Halt. Do not delete or remove the pointer. |
+| `trust-committed` | Complete the exact activation binding. Refuse all unrelated selection until that binding exists. |
+| `activation-bound` | Resume only the corresponding KEL-53 activation phase. |
+| `complete` | Use the coherent new view or its finite LKG view. |
+| Unknown, corrupt, or contradictory state | Halt. Preserve state and evidence. Never choose an older record to appear healthy. |
+
+Recovery authenticates persisted directive and verifier evidence before continuing.
+Ordinary startup performs read-only diagnosis. It cannot mint a recovery authorization or create a replacement journal.
+After trust commit, existing durable authorization controls completion. Expiry does not authorize replacement inputs.
+Before trust commit, an expired directive MUST NOT resume trust commit.
+Follow the D-65 abort path before accepting a new directive and confirmation in a fresh attempt.
+If metadata current is new, finish only the committed exact attempt under the recorded durable authorization.
+No normal update may run while a manual-recovery journal is pending.
+Include process-termination cuts before the first preparation blob, during
+each blob publication, before successor generation publication, and before
+current replacement. Expiry at each cut with absent, exact, or partial
+planned objects that retain the expected owner/DACL and are unreferenced
+MUST permit finite abort without unauthorized deletion. A foreign or
+wrong-owner object, protection mismatch, reparse/directory, unlisted path,
+or referenced object MUST halt automatic cleanup with the original pointer
+and evidence preserved for KEL-53 operator disposition. Repeat each
+applicable cut with physical power loss.
+All persisted edges need process-termination and separately named physical-power-loss qualification.
+
+### D-67: State the limits of complete recovery
+
+PROPOSED: Loss-only recovery assumes a trustworthy OS and intact protected before-state.
+The verifier cannot prove that the OS is uncompromised. Operator incident classification supplies this prerequisite.
+Known or reported compromise refuses the loss-only ceremony. A successful signature check does not clear that classification.
+It also requires the independently commissioned recovery authority to remain available.
+These are explicit prerequisites, not facts inferred from successful signature verification.
+Suspected compromise uses a clean system and independently acquired current verifier.
+Old executables, services, browser extensions, and unverified state cannot be copied into that trusted installation.
+Preserve original data for forensic or user-data recovery. Do not claim automatic safe browser-data import from a compromised system.
+
+The legacy v1 bridge remains conditional on its own admissible signer and compatibility evidence.
+Absence of that evidence blocks the legacy cell. It does not block independent fresh-v2 qualification.
+No result in fresh-v2 qualification can mark manual recovery, legacy migration, or compromise recovery complete.
+D-89 forbids channel switches. Any sibling or uncertain membership blocks new mutation; retain evidence and fences.
+Never delete, relabel or catch up a sibling.
+
+### D-68: Locate and bound one pending repository operation
+
+PROPOSED: The existing KEL-53 writer owns `pending-operation.json` at the protected repository root.
+Its closed canonical JSON fields are `schema,repositoryId,appId,ownerSid,kind,attemptId`.
+The schema is `keld.repository-pending-operation/v1`. Its maximum size is 2,048 bytes.
+Identity fields use the exact established anchor values. The attempt ID uses D-64's random lowercase hexadecimal encoding.
+The kind is `initial-admission`, `manual-recovery`, or `planned-transition`.
+It selects exactly `admissions/<attemptId>.json`, `recoveries/<attemptId>.json`, or D-85's `transitions/<attemptId>.json`, respectively. No caller path is accepted.
+
+Allow one pending operation per repository. Publish and reread its complete journal before publishing the pointer.
+Publish and reread the pointer before the first installation effect or manual trust switch.
+An existing different pointer refuses another operation. A matching pointer permits only the recorded attempt's recovery or terminal abort cleanup.
+Every ordinary metadata open and admission checks this fixed pointer under the repository lease.
+Pending state blocks unrelated refresh, admission, update, and launch selection. Diagnosis may read the recorded state.
+The initial recovery path may refresh the same exact target before `bootstrap-owned`, as D-64 requires.
+It must update the admission revision before discarding any superseded evidence. Manual recovery follows D-66 instead.
+
+Keep every generation and object needed by the pending operation. Refuse a new mutation if the retention cap cannot hold them.
+Clear the pointer only after protected readback proves `complete` or `aborted` and coherent current application state.
+For manual `aborted`, the old metadata generation, epoch, provenance, and application state MUST remain unchanged.
+For initial `aborted`, enforce D-64's no-effect proof. Preserve any independently authenticated metadata advance and all floors.
+No abandoned prepared successor at the required next sequence may remain.
+Keep current/LKG evidence after pointer removal. Do not garbage-collect reachable policy objects.
+With no pointer, census the bounded journal ledger before any repository mutation, including ordinary refresh and new admission.
+An unreferenced initial `admitted` journal requires D-64's authenticated no-effect abort. Preserve its D-9 evidence until terminal readback.
+Manual zero-effect orphan cleanup uses D-65; planned orphans use D-85/D-86. Ambiguous state halts.
+Keep at most one pending journal and one completed journal for diagnosis per repository.
+If cleanup fails, refuse the next attempt. Do not grow the store through repeated attempts.
+Add process-termination cuts before and after pointer publication, after terminal readback, and during pointer removal.
+An intact pointer with a missing, corrupt, or inconsistent journal requires recovery. It cannot become an absent operation.

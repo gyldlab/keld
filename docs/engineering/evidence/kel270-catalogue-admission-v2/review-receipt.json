@@ -1,0 +1,119 @@
+{
+  "schema": "keld.catalogue-spec-evidence/v2",
+  "status": "DRAFT: independent exact-head review and human specification signoff pending",
+  "product_source_main": "ec29b7ce2b155a8c98f96036cbb9c54488b5c302",
+  "product_source_pr1531": "7ff41173d28d58ae61ccbb3382d055c8ef9c9c97",
+  "historical_reviewed_snapshot": "R3",
+  "historical_reviewed_manifest_sha256": "5c7c5a975d1d29e954fa98468a194a98daa45b804025f7c3f17a340787dee8f1",
+  "archive": {
+    "repo": "0monish/keld-research",
+    "commit": "6eaf583b3e95ef66c817977e2e3a63cc19e8e946",
+    "path": "artifacts/runs/kel270-pr1541-review-2026-11-15",
+    "manifest_sha256": "c043448ad71755857fd8acc56361e9980da47fa9cb3bc2f61aab2f7fe5f0fe73",
+    "receipt_sha256": "404fa74accac2869117f4e04aa7d69d24a2cae00a98c6937a13651c576bf8f5d",
+    "source_commit": "e4ff1ef2d27230dd00d25627ae3a5d4db833bd2f",
+    "url": "https://github.com/0monish/keld-research/tree/6eaf583b3e95ef66c817977e2e3a63cc19e8e946/artifacts/runs/kel270-pr1541-review-2026-11-15",
+    "scope": "Complete eight R2/R3 review/refutation reports and full historical generated reports, no content omitted. Archived snapshot only."
+  },
+  "historical_reports": [
+    {
+      "name": "review-identity-r2.json",
+      "reviewer": "review_identity_contract",
+      "disposition": "historical finding/refutation; see archived record",
+      "sha256": "1a9fc9b400642c97d7c82678201bf46896e2c77434c52c098a65627ad9b483d2"
+    },
+    {
+      "name": "review-meta-r1.json",
+      "reviewer": "/root/review_metadata_recovery",
+      "disposition": "historical finding/refutation; see archived record",
+      "sha256": "2e7169caa567087e3e95eeb2b20b9d2210d77fec439b930fdbd705d700449aba"
+    },
+    {
+      "name": "review-windows-r2.json",
+      "reviewer": "review_windows_lifecycle",
+      "disposition": "historical finding/refutation; see archived record",
+      "sha256": "1268ca516858e69c40240f9e7243e3c981ce2b7518292ed376a2b4f73c107bc0"
+    },
+    {
+      "name": "review-identity-refutation.json",
+      "reviewer": "review_identity_contract",
+      "disposition": "historical finding/refutation; see archived record",
+      "sha256": "32605a76c99072d5003abd0e4c9b0db392e94600e13fe0d5ce907de47e4fe29a"
+    },
+    {
+      "name": "review-meta-refutation.json",
+      "reviewer": "/root/review_metadata_recovery",
+      "disposition": "historical finding/refutation; see archived record",
+      "sha256": "83e14c824e0f0839bbbe7f744f6d8882a487577f22c8ae830174d45d34d05a62"
+    },
+    {
+      "name": "review-identity-r3.json",
+      "reviewer": "review_identity_contract",
+      "disposition": "QUALIFIED_NO_REMAINING_DRAFT_DEFECT_IN_REVIEWED_LENS",
+      "sha256": "8bf9938f58557844978be313f94cad07328e5dd2372553ba23354795a5c5d57d"
+    },
+    {
+      "name": "review-meta-r3.json",
+      "reviewer": "/root/review_metadata_recovery",
+      "disposition": "QUALIFIED_NO_REMAINING_DRAFT_DEFECT",
+      "sha256": "fd5a33482ad0475744e10b829f19dc5118aba38d162e3fdaec15fe4f50e73777"
+    },
+    {
+      "name": "review-windows-r3.json",
+      "reviewer": "review_windows_lifecycle",
+      "disposition": "Qualified no remaining draft defect in this Windows/lifecycle lens",
+      "sha256": "8094bca1735e2fe234267866e0090584c0e3e59189e28e3a31c216106e172319"
+    }
+  ],
+  "definition_reports": {
+    "identity": {
+      "passed": 94,
+      "failed": 0,
+      "sha256": "6721d0a8356bfc42bf3fb42d1b5bcc2b9c3b38a560689001c7109e68122393df",
+      "source": "verify_identity_vectors.py",
+      "qualification": "synthetic grammar and signatures only; no native Windows result"
+    },
+    "capacity": {
+      "passed": 9,
+      "failed": 0,
+      "sha256": "10ea1da408a256c7982dddab279009deccab0b0e1e23c84a3b8cfa67ab6eb83e",
+      "source": "verify_evidence_capacity.py",
+      "qualification": "synthetic object accounting only; no native Windows result"
+    }
+  },
+  "published_file_sha256": {
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/acceptance-plan.json": "a48f0519d7dcf08054dfaad9c8b4f75ef39d32052066a2d15518ef0326f2a295",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/identity-vectors.json": "400e007fc279f1895910aeeaaf5b3c78788656cc5982b6f49eeeee6fae3caf51",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/metadata-golden.json": "e9c0eb71df1a8c6f62373a8977c20405afc54f83752a7da4b7f3e6e582a7abea",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_evidence_capacity.py": "2e27f7b616f14cf413ffc069b9267ead84a991955e5a156d8539a1f9630c4ebb",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_identity_vectors.py": "d4ffb85035632fbd4a498dd1bf646f2a31603441bfb10092935f78695a32c207",
+    "docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py": "40b97c4c5c474ccfda819090017eeb1783ec90e9e262b6fe2769d57dc932959b",
+    "docs/specs/kel270-catalogue-admission-v2/identity.md": "1bd70dc1f7aeb245760174d323ca3f57815a8e62b33f1239d1336634d702085e",
+    "docs/specs/kel270-catalogue-admission-v2/implementation.md": "ca733d442356c5174ee2f4b7c6dbe4f47eff9d3bf6bdc9deb8ad5548d48cddf9",
+    "docs/specs/kel270-catalogue-admission-v2/index.md": "7ec2367b463f9d862d62255cb76c2997671dbe75c151c0add6d82918abc3d686",
+    "docs/specs/kel270-catalogue-admission-v2/integration.md": "77c3eadf087f5922dcfcda8a8e85994d2efe8a0ee2e5cda379040d0ba98e7f3d",
+    "docs/specs/kel270-catalogue-admission-v2/metadata.md": "f8e4b8cdbe86d31accd8f3ddd03a4efb62d9663a70f8512c3981176a7db32bb7",
+    "docs/specs/kel270-catalogue-admission-v2/qualification.md": "417f47115e691d82cf631ef12792192a8b1945f8e577d29b9d6cf0c54f279300",
+    "docs/specs/kel270-catalogue-admission-v2/recovery.md": "38b5af4e03b98e7cd398b8a954988d3e9ac55c79ca1cef557ca2dec14e70fad3",
+    "docs/specs/kel270-catalogue-admission-v2/requirements.md": "01f1213ba7105a8c5cecf82c7b37aff6f82b92a50140a112aead2dfab55bb6fe",
+    "docs/specs/kel270-catalogue-admission-v2/windows.md": "f9308760d0fa01ffd64440d914e7ff46463d692fb8ce880aa18b15eeb1bc0b0d"
+  },
+  "reproduction": {
+    "command": "python3 -B docs/engineering/evidence/kel270-catalogue-admission-v2/verify_spec_evidence.py --check",
+    "mode": "no-write byte-for-byte golden and synthetic-report digest verification",
+    "ci_artifact": "Hosted auto-integration is B-82 BLOCKED by protected-base CI provenance; full historical reports archived; manual exact-source check remains available",
+    "immutable_history": "Archived original report bytes and SHA-256 manifest in keld-research; historical reviews are not new exact-head approvals.",
+    "ci_integration_status": "B-82 TRUSTED_BASE_APPROVAL_PENDING"
+  },
+  "qualification": {
+    "native_product_cases": "NOT_RUN",
+    "original_groups": 19,
+    "original_planned_product_cases": 110,
+    "new_synthetic_review_cases": "NOT_NATIVE",
+    "independent_exact_head_design_review": "PENDING",
+    "partial_prepared_object_disposition": "PROPOSED_FOR_EXACT_HEAD_REVIEW: the sealed plan proves each new path absent before writes; exact or partial planned regular files may be retired only with expected owner/DACL, same retained handle and no protected references; foreign, protection-mismatched, unlisted, reparse or referenced objects halt; partial bytes are never adopted",
+    "human_signoff": "PENDING",
+    "production_signing_and_recovery_authority": "NOT_COMMISSIONED",
+    "merge_release": "DO_NOT_MERGE_OR_RELEASE"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "keld.metadata-codec-golden/v1",
+  "purpose": "Local-record encoding only. Role digest values are synthetic. No valid TUF signatures, trust authority, or native receipt.",
+  "records": [
+    {
+      "name": "generation",
+      "utf8": "{\"schema\":\"keld.metadata-generation/v1\",\"repositoryId\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":1,\"recoveryEpoch\":0,\"previousGenerationSha256\":null,\"policySha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"utcFloorMillis\":1794729600000,\"phase\":\"roles\",\"root\":{\"sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"length\":1024,\"version\":1},\"timestamp\":null,\"snapshot\":null,\"targets\":null,\"rootRefresh\":null}",
+      "length": 492,
+      "sha256": "79db3c4725599a5b2bb71c594758ce21fda84863e3f3db8c9f65ced003a36a7b"
+    },
+    {
+      "name": "current",
+      "utf8": "{\"schema\":\"keld.metadata-current/v1\",\"repositoryId\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"sequence\":1,\"generationSha256\":\"79db3c4725599a5b2bb71c594758ce21fda84863e3f3db8c9f65ced003a36a7b\"}",
+      "length": 218,
+      "sha256": "4698c3dab355891dab0a96f1a574726458dc21aa8937b86926e32ee45dcdda09"
+    },
+    {
+      "name": "anchor",
+      "utf8": "{\"schema\":\"keld.metadata-anchor/v1\",\"repositoryId\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"appId\":\"com.gyldlab.fixture\",\"ownerSid\":\"S-1-5-21-100-200-300-1001\",\"enrollmentState\":\"pending\",\"initialGenerationSha256\":\"79db3c4725599a5b2bb71c594758ce21fda84863e3f3db8c9f65ced003a36a7b\"}",
+      "length": 308,
+      "sha256": "c512e45f3041cde58defdbd1ed903008efb8d2ea90f463f8e5fc98d829f2036c"
+    }
+  ]
+}
