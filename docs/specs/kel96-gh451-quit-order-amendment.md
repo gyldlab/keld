@@ -252,8 +252,8 @@ Observe exactly one new coordinator entry in D-1's event order before this Destr
 
 ### D-1: Scoped order for section 4.5
 
-For the qualified GH-451 path only, apply the following steps instead of the
-unconditional admission sequence in existing section 4.5 steps 1–4.
+For the qualified GH-451 path only, replace existing section 4.5 steps 1–4
+with the following steps.
 Step 1 also defines the default-intent refusal before binding.
 
 1. Keep GH-531 Destroyed and LastWindowClosed facts ordered on the existing
@@ -344,8 +344,8 @@ Reclaim nonterminal effect identities only after exact consumption and proven no
 Keep known terminal effect identities until definitive old-link retirement, per #1432 `docs/engineering/gh451-conditional-quit-ipc-amendment.md:280@6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3`.
 Retirement ends local reservations, not historical winner or unknown custody.
 Never require post-EOF Status or Host exit before the terminal reply. Do not delay the existing terminal tail for a receipt-consumption confirmation.
-Keep a known committed decision and exact primary failure if Guardian preparation,
-echo retirement, correlated reply, local fence or cleanup fails. Do not synthesize
+Keep the committed decision and exact primary failure if Guardian preparation,
+Echo retirement, correlated reply, local fence or cleanup fails. Do not synthesize
 acceptance or repeat the tail. Never transfer an old identity to a successor.
 
 ### D-3: Owner and compatibility boundaries
@@ -374,7 +374,7 @@ Use existing `packages/@keld/api/src/` and `packages/@keld/electron/src/` seams.
 GH-451 and GH-523 own their separate public and generated contract changes.
 
 Do not change permissions, trust policy, supervisor identity rules, protected
-CI, deadline constants, or the approved legacy KEL-96 file and digest.
+CI, deadlines, or the approved legacy KEL-96 file and digest.
 Do not allocate wire values or enable native termination from this amendment.
 
 ## 6. Tasks
