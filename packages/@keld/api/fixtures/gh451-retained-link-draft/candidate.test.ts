@@ -17,6 +17,7 @@ class Port implements RetainedPort {
   current = true;
   live = true;
   fenceCount = 0;
+  unreservedDispatches = 0;
   readonly ledger: DraftCorrelationLedger;
   readonly leases: CorrelationLease[] = [];
   fenceFailure?: Error;
@@ -33,7 +34,9 @@ class Port implements RetainedPort {
     return this.live;
   }
   send(lease: CorrelationLease, request: Request): Promise<unknown> {
-    expect(this.ledger.isReserved(lease)).toBe(true);
+    const reserved = this.ledger.isReserved(lease);
+    if (!reserved) this.unreservedDispatches++;
+    expect(reserved).toBe(true);
     expect(
       request.operation === "status"
         ? this.ledger.status
@@ -88,7 +91,10 @@ test("old and unselected peers send zero conditional or fallback operations", as
     port[gate] = false;
     const api = new RetainedLinkDraft(port);
     port[gate] = true; // captured eligibility cannot become true after construction
-    expect(api.conditionalAvailable).toBe(false);
+    expect(
+      api.conditionalAvailable,
+      "GH451_MUTATION_ASSERT: peer-eligibility",
+    ).toBe(false);
     expect(await api.prepare()).toEqual({
       kind: "refused",
       reason: "unsupported",
@@ -106,8 +112,14 @@ test("Prepare Retained keeps same port and permits new preparation", async () =>
   const port = new Port();
   const api = new RetainedLinkDraft(port);
   port.reply({ kind: "retained" });
-  expect(await api.prepare()).toEqual({ kind: "retained" });
+  const first = await api.prepare();
+  expect(
+    port.unreservedDispatches,
+    "GH451_MUTATION_ASSERT: dispatch-reservation",
+  ).toBe(0);
+  expect(first).toEqual({ kind: "retained" });
   ack(api);
+  expect(port.live, "GH451_MUTATION_ASSERT: retained-port-live").toBe(true);
   expect(port.ordinaryProbe()).toBe("same port");
   port.reply({ kind: "prepared", token: "host-1" });
   expect(await api.prepare()).toEqual({ kind: "prepared", token: "host-1" });
@@ -196,9 +208,15 @@ for (const effect of ["prepare", "cancel", "commit"] as const) {
           correlation: effect === "prepare" ? 41 : 42,
           token: effect === "prepare" ? undefined : "host-1",
         };
-        expect(await api[effect]()).toEqual({ kind: "unknown", original });
+        expect(
+          await api[effect](),
+          "GH451_MUTATION_ASSERT: unknown-initial-effect",
+        ).toEqual({ kind: "unknown", original });
         const prior = port.ops();
-        expect(await api.prepare()).toEqual({ kind: "unknown", original });
+        expect(
+          await api.prepare(),
+          "GH451_MUTATION_ASSERT: unknown-latch",
+        ).toEqual({ kind: "unknown", original });
         expect(await api.cancel()).toEqual({ kind: "unknown", original });
         expect(await api.commit()).toEqual({ kind: "unknown", original });
         expect(port.ops()).toEqual(prior);
@@ -260,7 +278,10 @@ test("Status mismatch, indeterminate, lost and wrong-operation results remain un
     { ...original, operation: "cancel" },
   ]) {
     port.recorded({ kind: "accepted" }, wrong);
-    expect(await api.reconcile()).toEqual({ kind: "unknown", original });
+    expect(
+      await api.reconcile(),
+      "GH451_MUTATION_ASSERT: status-original",
+    ).toEqual({ kind: "unknown", original });
   }
   port.reply({ kind: "indeterminate" });
   expect(await api.reconcile()).toEqual({ kind: "unknown", original });
@@ -385,7 +406,10 @@ test("late Prepared after role retirement cannot authorize will-quit", async () 
     resolve(
       status ? { kind: "recorded", original, disposition: prepared } : prepared,
     );
-    expect(await pending).toEqual({ kind: "unknown", original });
+    expect(
+      await pending,
+      status ? undefined : "GH451_MUTATION_ASSERT: retired-prepared",
+    ).toEqual({ kind: "unknown", original });
     expect(await api.commit()).toEqual({ kind: "unknown", original });
     expect(port.fenceCount).toBe(0);
     expect(port.ops()).toEqual(status ? ["prepare", "status"] : ["prepare"]);
@@ -401,7 +425,9 @@ test("Status may not reuse unresolved effect correlation", async () => {
   expect(await api.reconcile()).toEqual(unknown);
   expect(await api.prepare()).toEqual(unknown);
   expect(port.fenceCount).toBe(0);
-  expect(port.ops()).toEqual(["prepare"]);
+  expect(port.ops(), "GH451_MUTATION_ASSERT: no-status-write").toEqual([
+    "prepare",
+  ]);
   expect(port.ledger.reservedCount).toBe(1);
 });
 
@@ -413,12 +439,18 @@ test("one active attempt survives Prepared receipt release and requires exact co
   expect(await api.prepare()).toEqual({ kind: "prepared", token: "token-1" });
   const receipt = api.pendingReceipt!;
   expect(receipt.source).toBe("direct");
-  expect(api.consumeReceipt({ ...receipt })).toBe(false);
+  expect(
+    api.consumeReceipt({ ...receipt }),
+    "GH451_MUTATION_ASSERT: receipt-identity",
+  ).toBe(false);
   expect(await api.commit()).toEqual({
     kind: "refused",
     reason: "receipt-pending",
   });
-  expect(await other.prepare()).toEqual({ kind: "refused", reason: "busy" });
+  expect(
+    await other.prepare(),
+    "GH451_MUTATION_ASSERT: attempt-exclusivity",
+  ).toEqual({ kind: "refused", reason: "busy" });
   expect(port.ops()).toEqual(["prepare"]);
   expect(api.consumeReceipt(receipt)).toBe(true);
   expect(port.ledger.reservedCount).toBe(0);
@@ -486,7 +518,10 @@ test("wrap and capacity preserve unresolved original until both consumption and 
     expect(port.ledger.original).toBe(lease);
   }
   expect(port.ops()).toEqual(["prepare"]);
-  expect(port.ledger.consume(ordinary)).toBe(false);
+  expect(
+    port.ledger.consume(ordinary),
+    "GH451_MUTATION_ASSERT: no-late-required",
+  ).toBe(false);
   expect(port.ledger.proveNoLate(ordinary)).toBe(true);
   port.recorded({ kind: "retained" }, original);
   expect(await api.reconcile()).toEqual({ kind: "retained" });
@@ -506,7 +541,9 @@ test("wrap and capacity preserve unresolved original until both consumption and 
   expect(reused.correlation).toBe(2);
   expect(reused).not.toBe(lease);
   expect(port.ledger.proveNoLate(lease)).toBe(false);
-  expect(port.ledger.consume(lease)).toBe(false);
+  expect(port.ledger.consume(lease), "GH451_MUTATION_ASSERT: stale-lease").toBe(
+    false,
+  );
   expect(api.consumeReceipt(receipt)).toBe(false);
   expect(port.ledger.isReserved(reused)).toBe(true);
   expect(port.ledger.consume(reused)).toBe(false);
@@ -527,7 +564,10 @@ test("no-late proof alone cannot retire an unconsumed effect", async () => {
   port.reply({ kind: "retained" });
   expect(await api.prepare()).toEqual({ kind: "retained" });
   const receipt = api.pendingReceipt!;
-  expect(port.ledger.reserveOrdinary()).toBeUndefined();
+  expect(
+    port.ledger.reserveOrdinary(),
+    "GH451_MUTATION_ASSERT: consumption-required",
+  ).toBeUndefined();
   expect(port.ledger.isReserved(port.leases[0]!)).toBe(true);
   expect(await api.prepare()).toEqual({
     kind: "refused",
@@ -563,7 +603,10 @@ test("lost Status occupies its separate bounded slot until independent no-late p
   const status = port.leases[1]!;
   expect(original.correlation).not.toBe(status.correlation);
   expect(port.ledger.original).toBe(original);
-  expect(port.ledger.status).toBe(status);
+  expect(
+    port.ledger.status,
+    "GH451_MUTATION_ASSERT: status-lease-retained",
+  ).toBe(status);
   for (let i = 0; i < 4; i++) expect(await api.reconcile()).toEqual(unknown);
   expect(port.ops()).toEqual(["prepare", "status"]);
   expect(port.ledger.reservedCount).toBe(2);
@@ -598,7 +641,10 @@ for (const recovery of [false, true]) {
         expect(await api.reconcile()).toEqual({ kind: "accepted" });
       } else {
         port.reply({ kind: "accepted" });
-        expect(await api.commit()).toEqual({ kind: "accepted" });
+        expect(
+          await api.commit(),
+          "GH451_MUTATION_ASSERT: accepted-despite-fence-error",
+        ).toEqual({ kind: "accepted" });
       }
       const receipt = api.pendingReceipt!;
       expect(receipt.disposition).toEqual({ kind: "accepted" });
