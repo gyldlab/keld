@@ -632,49 +632,99 @@ fn wait_for_launcher_ready(
     readiness: &mut File,
 ) -> Result<LinuxLandlockStatus, LinuxStrictError> {
     let deadline = std::time::Instant::now() + BUBBLEWRAP_READY_TIMEOUT;
+    wait_for_launcher_ready_until(child, readiness, deadline)
+}
+
+fn wait_for_launcher_ready_until(
+    child: &mut Child,
+    readiness: &mut impl std::io::Read,
+    deadline: std::time::Instant,
+) -> Result<LinuxLandlockStatus, LinuxStrictError> {
     let mut record = Vec::new();
+    let mut exited = None;
     loop {
-        let mut chunk = [0_u8; LAUNCHER_READY_MAX];
-        match readiness.read(&mut chunk) {
-            Ok(0) => {
-                return parse_launcher_ready(&record)
-                    .map_err(|detail| failed_readiness(child, detail));
+        // A target may write the complete post-Landlock record and exit before
+        // the parent is scheduled. Drain the nonblocking pipe through EOF
+        // before classifying that exit; an unclosed inherited writer cannot
+        // authorize strict startup merely by supplying a valid prefix.
+        loop {
+            if std::time::Instant::now() >= deadline {
+                break;
             }
-            Ok(read) => {
-                record.extend_from_slice(&chunk[..read]);
-                if record.len() > LAUNCHER_READY_MAX {
-                    return Err(failed_readiness(
-                        child,
-                        format!("record exceeds {LAUNCHER_READY_MAX} bytes"),
-                    ));
+            let mut chunk = [0_u8; LAUNCHER_READY_MAX];
+            match readiness.read(&mut chunk) {
+                Ok(0) => {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    let landlock = parse_launcher_ready(&record)
+                        .map_err(|detail| failed_readiness(child, detail))?;
+                    // A completed KLS1 record proves the Landlock layer, not
+                    // that a target exec succeeded. An already-exited nonzero
+                    // child is a failed startup even if its writer later EOFs.
+                    let status = match exited {
+                        Some(status) => Some(status),
+                        None => match child.try_wait() {
+                            Ok(status) => status,
+                            Err(source) => {
+                                terminate_failed_start(child);
+                                return Err(LinuxStrictError::new(
+                                    "launcher readiness",
+                                    source.to_string(),
+                                ));
+                            }
+                        },
+                    };
+                    if let Some(status) = status
+                        && !status.success()
+                    {
+                        return Err(failed_readiness(
+                            child,
+                            format!(
+                                "Bubblewrap exited with {status} after post-Landlock readiness before startup admission"
+                            ),
+                        ));
+                    }
+                    return Ok(landlock);
+                }
+                Ok(read) => {
+                    record.extend_from_slice(&chunk[..read]);
+                    if record.len() > LAUNCHER_READY_MAX {
+                        return Err(failed_readiness(
+                            child,
+                            format!("record exceeds {LAUNCHER_READY_MAX} bytes"),
+                        ));
+                    }
+                }
+                Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(source) if source.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(source) => {
+                    return Err(failed_readiness(child, source.to_string()));
                 }
             }
-            Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(source) if source.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(source) => {
-                return Err(failed_readiness(child, source.to_string()));
-            }
         }
-        let status = match child.try_wait() {
-            Ok(status) => status,
-            Err(source) => {
-                terminate_failed_start(child);
-                return Err(LinuxStrictError::new(
-                    "launcher readiness",
-                    source.to_string(),
-                ));
-            }
-        };
-        if let Some(status) = status {
-            let stderr = failed_child_stderr(child);
-            return Err(LinuxStrictError::new(
-                "launcher readiness",
-                format!(
-                    "Bubblewrap exited with {status} before post-Landlock readiness; stderr: {stderr}"
-                ),
-            ));
+        if exited.is_none() {
+            exited = match child.try_wait() {
+                Ok(status) => status,
+                Err(source) => {
+                    terminate_failed_start(child);
+                    return Err(LinuxStrictError::new(
+                        "launcher readiness",
+                        source.to_string(),
+                    ));
+                }
+            };
         }
         if std::time::Instant::now() >= deadline {
+            if let Some(status) = exited {
+                let stderr = failed_child_stderr(child);
+                return Err(LinuxStrictError::new(
+                    "launcher readiness",
+                    format!(
+                        "Bubblewrap exited with {status} without complete post-Landlock readiness and pipe EOF; stderr: {stderr}"
+                    ),
+                ));
+            }
             return Err(failed_readiness(
                 child,
                 "post-Landlock readiness did not arrive before the deadline",
@@ -1243,10 +1293,213 @@ fn seccomp_programs() -> Result<[BpfProgram; 2], LinuxStrictError> {
 
 #[cfg(test)]
 mod readiness_tests {
+    use std::fs::File;
+    use std::io::Write as _;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use nix::fcntl::OFlag;
+    use nix::unistd::pipe2;
+
     use super::{
         LAUNCHER_READY_FULL, LAUNCHER_READY_PARTIAL, LAUNCHER_READY_UNAVAILABLE,
-        LinuxLandlockStatus, parse_launcher_ready,
+        LinuxLandlockStatus, parse_launcher_ready, wait_for_launcher_ready,
+        wait_for_launcher_ready_until,
     };
+
+    fn completed_child(success: bool) -> Child {
+        let program = if success {
+            "/usr/bin/true"
+        } else {
+            "/usr/bin/false"
+        };
+        let mut child = Command::new(program)
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn independent exited-child control");
+        let status = child
+            .wait()
+            .expect("wait for child exit before observing pipe");
+        assert_eq!(status.success(), success, "child status={status}");
+        child
+    }
+
+    fn recorded_pipe(record: &[u8]) -> (File, File) {
+        let (reader, writer) = pipe2(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
+            .expect("nonblocking launcher readiness pipe");
+        let mut writer = File::from(writer);
+        writer.write_all(record).expect("write readiness bytes");
+        (File::from(reader), writer)
+    }
+
+    struct EofAfterWouldBlock {
+        reader: File,
+        writer: Option<File>,
+        saw_would_block: bool,
+    }
+
+    impl std::io::Read for EofAfterWouldBlock {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let result = self.reader.read(output);
+            if matches!(&result, Err(source) if source.kind() == std::io::ErrorKind::WouldBlock) {
+                self.saw_would_block = true;
+                // The real pipe's last writer remains open through the first
+                // EAGAIN observation, then closes before the next parent read.
+                self.writer.take();
+            }
+            result
+        }
+    }
+
+    struct FragmentedReady {
+        step: u8,
+    }
+
+    impl std::io::Read for FragmentedReady {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let step = self.step;
+            self.step += 1;
+            let chunk = match step {
+                0 => b"KLS1 landlock=".as_slice(),
+                1 => return Err(std::io::ErrorKind::WouldBlock.into()),
+                2 => b"fully-enforced\n".as_slice(),
+                _ => return Ok(0),
+            };
+            output[..chunk.len()].copy_from_slice(chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    #[test]
+    fn exited_zero_child_does_not_hide_complete_post_landlock_readiness() {
+        let mut child = completed_child(true);
+        let (mut reader, writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        drop(writer);
+        assert_eq!(
+            wait_for_launcher_ready(&mut child, &mut reader)
+                .expect("complete token and EOF precede exited-child classification"),
+            LinuxLandlockStatus::FullyEnforced
+        );
+    }
+
+    #[test]
+    fn exited_child_waits_across_would_block_for_fragmented_exact_record() {
+        let mut child = completed_child(true);
+        let mut reader = FragmentedReady { step: 0 };
+        assert_eq!(
+            wait_for_launcher_ready_until(
+                &mut child,
+                &mut reader,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .expect("fragmented record must be completed before exited-child refusal"),
+            LinuxLandlockStatus::FullyEnforced,
+        );
+    }
+
+    #[test]
+    fn exited_child_requires_exact_eof_terminated_record() {
+        for (record, expected) in [
+            (
+                b"KLS1 landlock=fully-enforced".as_slice(),
+                "invalid readiness record length",
+            ),
+            (
+                b"KLS1 landlock=unknown\n".as_slice(),
+                "invalid readiness record length",
+            ),
+            (
+                b"KLS1 landlock=fully-enforced\ntrailing".as_slice(),
+                "invalid readiness record length",
+            ),
+            (&[b'X'; super::LAUNCHER_READY_MAX + 1][..], "record exceeds"),
+        ] {
+            let mut child = completed_child(true);
+            let (mut reader, writer) = recorded_pipe(record);
+            drop(writer);
+            let error = wait_for_launcher_ready(&mut child, &mut reader)
+                .expect_err("invalid or oversized token must not authorize strict profile");
+            assert!(
+                error.detail.contains(expected),
+                "record={record:?} error={error}"
+            );
+        }
+    }
+
+    #[test]
+    fn early_nonzero_child_cannot_authorize_partial_token() {
+        let mut child = completed_child(false);
+        let (mut reader, writer) = recorded_pipe(b"KLS1 landlock=fully");
+        drop(writer);
+        let error = wait_for_launcher_ready(&mut child, &mut reader)
+            .expect_err("incomplete KLS1 and exited child cannot authorize strict profile");
+        assert!(
+            error.detail.contains("invalid readiness record length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn exited_nonzero_child_cannot_authorize_complete_buffered_token_after_late_eof() {
+        let mut child = completed_child(false);
+        let (reader, writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        let mut reader = EofAfterWouldBlock {
+            reader,
+            writer: Some(writer),
+            saw_would_block: false,
+        };
+        let error = wait_for_launcher_ready_until(
+            &mut child,
+            &mut reader,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect_err("the already-exited nonzero target must not become strict READY");
+        assert!(reader.saw_would_block, "must observe a held-writer EAGAIN");
+        assert!(error.detail.contains("exit status: 1"), "{error}");
+    }
+
+    #[test]
+    fn exited_nonzero_child_cannot_authorize_complete_token_at_immediate_eof() {
+        let mut child = completed_child(false);
+        let (mut reader, writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        drop(writer);
+        let error = wait_for_launcher_ready(&mut child, &mut reader)
+            .expect_err("fresh nonzero exit at EOF must deny strict readiness");
+        assert!(error.detail.contains("exit status: 1"), "{error}");
+    }
+
+    #[test]
+    fn complete_token_without_eof_never_authorizes_exited_child() {
+        let mut child = completed_child(true);
+        let (mut reader, _held_writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        let deadline = Instant::now() + Duration::from_millis(40);
+        let error = wait_for_launcher_ready_until(&mut child, &mut reader, deadline)
+            .expect_err("an inherited readiness writer must withhold EOF and authorization");
+        assert!(
+            error
+                .detail
+                .contains("without complete post-Landlock readiness"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn complete_token_observed_after_absolute_deadline_cannot_admit() {
+        let mut child = completed_child(true);
+        let (mut reader, writer) = recorded_pipe(LAUNCHER_READY_FULL);
+        drop(writer);
+        let expired = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic deadline fixture");
+        let error = wait_for_launcher_ready_until(&mut child, &mut reader, expired)
+            .expect_err("an expired deadline cannot be renewed by queued KLS1 bytes");
+        assert!(
+            error
+                .detail
+                .contains("without complete post-Landlock readiness"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn readiness_records_map_to_the_exact_landlock_state() {
