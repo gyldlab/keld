@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "bun",
+    "test",
+    "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\verify_native.test.ts"
+  ],
+  "pid": 2328,
+  "exit": 0,
+  "startedUnix": 1793836758.462574,
+  "completedUnix": 1793836758.6032,
+  "ownedDirectChildTimeout": false
+}

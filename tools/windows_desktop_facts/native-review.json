@@ -1,0 +1,40 @@
+{
+  "schema": "keld.w4-review/v1",
+  "scope": "Standalone native fixture only; no production activation approval",
+  "reviewer": "isolated agent /root/w4_native_review",
+  "refuter": "independent agent /root/w4_native_refute",
+  "finding": {
+    "id": "native-pointer-provenance",
+    "originalClassification": "Unresolved concern, not confirmed undefined behavior",
+    "originalExpressions": [
+      "GetMonitorInfoW(handle, &mut info.monitorInfo)",
+      "DisplayConfigGetDeviceInfo(&mut source.header)",
+      "DisplayConfigGetDeviceInfo(&mut target.header)"
+    ],
+    "correction": [
+      "GetMonitorInfoW(handle, (&raw mut info).cast())",
+      "DisplayConfigGetDeviceInfo((&raw mut source).cast())",
+      "DisplayConfigGetDeviceInfo((&raw mut target).cast())"
+    ],
+    "disposition": "Current full-packet pointer derivation removes the specific subfield-reference concern; independent reviewer and refuter verified the correction.",
+    "primarySources": [
+      "https://doc.rust-lang.org/std/ptr/index.html#provenance",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmonitorinfow",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-displayconfiggetdeviceinfo",
+      "https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-highcontrastw"
+    ]
+  },
+  "conclusion": "No blocking Win32 API, pointer-lifetime or resource-ownership defect confirmed in current fixture. Native result accuracy and cleanup require separate execution evidence.",
+  "reviewerExecutedNative": false,
+  "sourceSha256": {
+    "args.rs": "81bad19e2948eb20aa54e829a9fd1cf1d36dba88a9fb1e512a3153d7d76d5c30",
+    "context.rs": "c7448b7a44aaff2dc5d1089054777cf7e469edce8ec65b3abe3533ce6c9b28b1",
+    "display.rs": "7d692f01b616f6baf662ab572095d92ac8fca0c46a028f870ef94beb2be7c829",
+    "error.rs": "f507c09af4361542e9ca815ed824302e2e935795b9cd052e1c2c8c0dff3ad1e1",
+    "identity.rs": "0eb65a123b8fe6b3949d7f904e97a6992908c3a9e149edf7daaa0fb1a325a96e",
+    "main.rs": "bfe6d8c938496ef21e434d5dd44e98a64be686e5fccd85c6544d6abf3725fd33",
+    "metadata.rs": "daf7b22531c56ada0489b9ab330b16c04ef8994061e7e35cdd154804ac1b112d",
+    "tests.rs": "c23f369c6f9e99c6e684390e2e967d41eddae93f5b492f3e4e13abd363de5ede",
+    "theme.rs": "675141ce2b77546e1d0310e4f4bddceea17aa8ae01efa563d1333e0553a99e25"
+  }
+}

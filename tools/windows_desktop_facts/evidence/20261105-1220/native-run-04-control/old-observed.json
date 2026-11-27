@@ -1,0 +1,31 @@
+{
+  "scope": "mutated copy of actual native04 input; no new OS sample or settings write",
+  "variant": "old",
+  "originalIdentityCount": 1,
+  "afterInvalidIdentityCount": 2,
+  "changedWorkAreaX": -1,
+  "actualBoundsX": 0,
+  "error": null,
+  "accepted": {
+    "primary_id": 2,
+    "displays": [
+      {
+        "id": 2,
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 864
+        },
+        "work_area": {
+          "x": -1,
+          "y": 0,
+          "width": 1537,
+          "height": 816
+        },
+        "scale_factor": 1.25
+      }
+    ],
+    "should_use_dark_colors": false
+  }
+}

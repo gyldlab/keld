@@ -1,0 +1,8 @@
+
+tools\windows_desktop_facts\subscribe_contract.test.ts:
+(pass) W4 native first sample is taken after a valid held Subscribe and precedes facade Ready [611.28ms]
+
+ 1 pass
+ 8 filtered out
+ 0 fail
+Ran 1 test across 1 file. [635.00ms]

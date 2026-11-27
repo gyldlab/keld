@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "bun",
+    "test",
+    "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\verify_native.test.ts"
+  ],
+  "pid": 18776,
+  "exit": 0,
+  "bootstrapPid": 14784,
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.2326265000156127,
+  "setupError": null,
+  "startedUnix": 1793881232.714782,
+  "completedUnix": 1793881232.9491837,
+  "ownedProcessReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-04\\verify-native.owned.json"
+}

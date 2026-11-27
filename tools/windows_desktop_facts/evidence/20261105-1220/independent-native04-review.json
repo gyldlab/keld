@@ -1,0 +1,270 @@
+{
+  "schema": "keld.w4-native04-independent-evidence-review/v1",
+  "reviewer": "/root/w4_publication_review",
+  "control_subreviewer": "/root/w4_publication_review/native04_control_audit",
+  "created_at": "2026-11-05T12:28:51.313Z",
+  "reviewed_head": "327122ea784f51a01c3ed177d95835eb157e61aa",
+  "verdict": "QUALIFIED_GO: retained native04 evidence supports its bounded feasibility and containment-control claims; no blocking finding.",
+  "findings": [],
+  "audit_mode": "Independent source, retained raw output, process/managed receipts, and byte-hash audit. No native/test/build/census launch.",
+  "head_binding": "Native driver requires clean inputs and exact327; native and both control managed receipts identify327. All34 captured source hashes match current read bytes.",
+  "bindings": {
+    "native_capture_sha256": "0aa95eee0e62c611f88fa7a93cd7b9091ab86ac4bdacabced6c22a611e235802",
+    "native_manifest_entries": 40,
+    "native_manifest_mismatches": [],
+    "source_entries": 34,
+    "source_mismatches": [],
+    "shared_commit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+    "shared_entries": 11,
+    "shared_mismatches": [],
+    "probe_oracle_script_hash_mismatches": [],
+    "metadata_sha256": {
+      "native-run-04-driver.json": "84c8a3ba2bbcd0317f6ebf31d56d734b5bc9fcd9405f944a88b0faf366c4cb4a",
+      "native-run-04-driver.log": "314d55f04aeba1e4034f995d3b0e7bc2f2f84c2e3fbd31724b300934a220c483",
+      "native-run-04-sources.json": "cb0b9ec71306e9ae556674aaf260c0a01b26e8811d72fc40bc145b7e19effc99",
+      "native-run-04-pre-census.json": "633ee1378920f37054c9a4c4aafd1fbb2c43c006ccc5b4828e4e2373a12da248",
+      "native-run-04-post-census.json": "8b10a9cabac2fddd2cd5ae10e8920f749b4cc51c4a91c74548fe2ba05c8a402f",
+      "native-run-04-cleanup.json": "0b9209420b1b836054c85a2e394988f9e735848855b14c94c2f925f1249a15f4",
+      "native_run_04_driver_327.py": "c46f54fed92957044b14ffa48097f229c103bf16b7380ab2e18838ac66d443c8",
+      "native_run_04_cleanup.py": "31fd947e225725638b7c360cc97b2e95e88e0a9b1f2a12947db08c32f9e589ae",
+      "native_run_04_census.ps1": "cb080c4aa763fcc66a94644b3b4d0af3a9089d13ffb7e6306cf3689bfbf69697",
+      "native_run_04_control.py": "fc29b959c8ad91186c069fa65641b5ee81a45efbc5ef05a9a1d187bf3aab8b6c",
+      "native_run_04_control_v2.py": "8f510a0f741ce3367ae980ff9f544b0d6993b52d6f246476cfac812f304eb7de",
+      "native-run-04/manifest.json": "27059007039153b08b91be6b4f86a3afde080de999a2e1ab7c3b1ed902b3817f"
+    },
+    "control_sha256": {
+      "current-observed.json": "d5676782ab2a79345b5b86d161f2cc0fabb68998f10ba6d5ba1a1075570fda7e",
+      "current.process.json": "0a003c7903728f828bab72886719d4dfcf11817ceb19da15d02677f789acbac5",
+      "current.stderr": "cd98bfa47d5067658205385bc6946f19c629ed64d1ba5f77f2b16565643ca1d9",
+      "current.stdout": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "native-control.test.ts": "f6ca447f4a1b70ea1e54a7e2107cc7614d3ba7b31360e6eddd68d8d8ab93d47f",
+      "old-native_adapter.ts": "40e93e55c31e3e84357f80344e357d4b9007c4852e486d7254c39481164bf4a4",
+      "old-observed.json": "fc1b764432c41cc0d516cf0c80c063a2504e88c3fa2ceb01af9760a436bbff31",
+      "old.process.json": "3368b5ba5ec508c7c4929513d8dbad184001a15196828b3c394a8c50edc65a45",
+      "old.stderr": "22684bced036357e5802f05556d06e60e1ce8b5dc0c929c369b2f04abeadd479",
+      "old.stdout": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "receipt.json": "a05d130b571e6d98ab78f5a72d0308609387603ca61902394b489fc882ae0532"
+    }
+  },
+  "native_execution": {
+    "managed_run": "97080930655f4dadab96cb2c9b2acf96",
+    "managed_result_sha256": "d1c8a50c14c367598cde2840719d9dce35be0149e9c4b972c12c3457d689bdc5",
+    "actual_exit": 0,
+    "subscribe_tests": {
+      "passed": 1,
+      "failed": 0,
+      "filtered": 8
+    },
+    "verification_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "native_monotonic_ms": {
+      "subscribedAt": 93.1177,
+      "sampleStartedAt": 95.3434,
+      "sampleCompletedAt": 577.7212,
+      "settledAt": 580.7468,
+      "readyAt": 581.3174
+    },
+    "order": "validated HELLO and Subscribe -> asserted pending -> native sample -> DesktopSnapshot -> correlated Subscribed -> raw Ready -> facade Ready",
+    "settlement_after_subscribe_ms": 487.6291,
+    "original_caller_deadline_ms": 5000,
+    "source_check": "run_native.py launches Subscribe first; host fixture validates frame/channel/correlation/payload; targeted test asserts pending with no fabricated value before sample.",
+    "oracle": "Electron44.4.5 before/after hidden-window observations agree with captured projection: physical1920x1080 to DIP1536x864, physical work1920x1020 to DIP1536x816, scale1.25, dark=false.",
+    "native_negative_controls": {
+      "invalid-monitor": {
+        "exit": 1,
+        "source": "GetMonitorInfoW",
+        "status": 1461,
+        "usable_sample": false
+      },
+      "failed-dpi": {
+        "exit": 1,
+        "source": "GetDpiForMonitor",
+        "status": -2147024736,
+        "usable_sample": false
+      },
+      "high-contrast-size": {
+        "exit": 1,
+        "source": "SystemParametersInfoW(SPI_GETHIGHCONTRAST)",
+        "status": 0,
+        "usable_sample": false
+      }
+    },
+    "raw_json_equal_to_stdout": {
+      "pmv2": true,
+      "unaware": true,
+      "invalid-monitor": true,
+      "failed-dpi": true,
+      "high-contrast-size": true,
+      "electron": true
+    },
+    "process_receipts": {
+      "subscribe-native": {
+        "pid": 16984,
+        "exit": 0,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "pmv2": {
+        "pid": 19508,
+        "exit": 0,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "unaware": {
+        "pid": 19320,
+        "exit": 0,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "invalid-monitor": {
+        "pid": 7160,
+        "exit": 1,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "failed-dpi": {
+        "pid": 13384,
+        "exit": 1,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "high-contrast-size": {
+        "pid": 23024,
+        "exit": 1,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "electron": {
+        "pid": 13172,
+        "exit": 0,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      },
+      "verify-native": {
+        "pid": 18776,
+        "exit": 0,
+        "ownedMatches": true,
+        "enrolled": true,
+        "jobActiveAfter": 0,
+        "bootstrapExit": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null
+      }
+    }
+  },
+  "containment_control": {
+    "source_binding": "Independent complete-text comparison: old adapter is current adapter minus650-character containment guard/comment; byte hashes independently recomputed.",
+    "input": "Captured native04 data is parsed, verified, and structured-cloned. Only copied target identity/work-area fields mutate; original input is rechecked.",
+    "old": {
+      "passed": 0,
+      "failed": 1,
+      "target_exit": 1,
+      "job_active_after": 0,
+      "after_invalid_identity_count": 2,
+      "error": null
+    },
+    "current": {
+      "passed": 1,
+      "failed": 0,
+      "target_exit": 0,
+      "job_active_after": 0,
+      "after_invalid_identity_count": 1,
+      "repaired_identity_count": 2,
+      "repaired_primary_id": 2
+    },
+    "first_wrapper": {
+      "managed_run": "ea1d08bcdf1b4e4199f09b9637b39b3e",
+      "actual_exit": 1,
+      "classification": "Infrastructure failure after actual old-arm assertion failure; not itself a behavioral negative control.",
+      "error": "KeyError: 'exit'; run_owned metadata uses targetExit.",
+      "result_sha256": "a1b07f567af9a8e2542350913e3cc50e052019337467f6dd0cea9a8477214b4a",
+      "stderr_sha256": "19896138610fca458076f2d68363851137ae7185335af419d1666a473ba050f8"
+    },
+    "corrected_wrapper": {
+      "managed_run": "8e26cf5c364e4c04be7c01804ce4eb56",
+      "actual_exit": 0,
+      "behavior": "Audits preserved old-arm evidence and launches only current arm.",
+      "result_sha256": "f5e989ef152e282f1a99cb2e9634a8662c3b4c638bc4aa73a8ab3248223fdda6"
+    }
+  },
+  "cleanup": {
+    "empty_native_invocation_jobs": 8,
+    "all_process_and_owned_receipts_agree": true,
+    "all_enrolled": true,
+    "timeouts": false,
+    "forced_cleanup": false,
+    "setup_errors": false,
+    "pre_post_own_native_count": 0,
+    "foreign_identity_count_before": 13,
+    "foreign_identity_count_after": 13,
+    "foreign_identity_sets_equal": true,
+    "identity_fields": [
+      "ProcessId",
+      "CreationDate",
+      "ExecutablePath"
+    ],
+    "profile_absence_independently_observed": true,
+    "profile_cleanup_source": "Checks creation identity, non-reparse tree entries, empty invocation Jobs and sentinel before deletion; asserts profile absent and sentinel unchanged afterward.",
+    "sentinel_sha256": "1cddcf5f562d2d1c7b42828e5d750461ac8ef9bc4a0c2ba68236b6dd1b8f05a3",
+    "global_settings_and_foreign_signals": "Retained receipts report none; reviewed cleanup path deletes only invocation profile and signals no processes."
+  },
+  "limits": [
+    "Independent evidence audit, not a rerun of native04 or its tests.",
+    "Scripted Host and real client transport/mirror; production Windows Core admission, generation installation, native Host Ready and public product readiness are not proven.",
+    "First native action is established within the inspected native04 driver path; earlier tool-start timeout reconciliation was supplied by parent and was not independently replayed.",
+    "Slot handoff1188#6657815093 and release6657882531 were supplied by parent; external coordination comments were not re-fetched in this audit.",
+    "One observed single-primary origin-zero non-forced-colors desktop at scale1.25/textScale1. Mixed-DPI/multiple-display, topology changes, forced-colors and non-unit text scaling remain unqualified.",
+    "Containment negative is a mutated in-memory copy of captured native input, not observation of an OS returning that invalid rectangle.",
+    "Global settings unchanged is supported by inspected read-only paths/receipts; no independent before/after global-settings inventory was collected.",
+    "Probe/oracle binary hashes match retained inputs; this audit did not rebuild them.",
+    "Native03 history was not relabeled or used as native04 execution.",
+    "No full hosted/local-gate pass or production integration approval is implied."
+  ],
+  "reviewer_actions": {
+    "direct_file_reads": true,
+    "hash_and_json_inspection_only": true,
+    "native_or_test_runs": 0,
+    "census_runs": 0,
+    "product_or_source_edits": 0,
+    "foreign_process_signals": 0,
+    "owned_audit_process_completed": 18008
+  }
+}

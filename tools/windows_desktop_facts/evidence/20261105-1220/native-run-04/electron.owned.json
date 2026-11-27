@@ -1,0 +1,18 @@
+{
+  "bootstrapPid": 8512,
+  "targetPid": 13172,
+  "targetExit": 0,
+  "enrolled": true,
+  "targetWaitTimedOut": false,
+  "setupError": null,
+  "argv": [
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\electron-44.4.5\\electron.exe",
+    "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\oracle.cjs",
+    "--out=D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-04\\electron.json"
+  ],
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.6605349000019487
+}

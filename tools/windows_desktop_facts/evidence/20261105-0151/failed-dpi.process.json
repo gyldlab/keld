@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--mode",
+    "pmv2",
+    "--control",
+    "failed-dpi"
+  ],
+  "pid": 15220,
+  "exit": 1,
+  "bootstrapPid": 12004,
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.14389350000419654,
+  "setupError": null,
+  "startedUnix": 1793843482.4496841,
+  "completedUnix": 1793843482.5954204,
+  "ownedProcessReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-02\\failed-dpi.owned.json"
+}

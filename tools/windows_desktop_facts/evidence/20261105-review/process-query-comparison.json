@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "sourcePath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\original-before-query-fix.py",
+      "sourceSha256": "4cc5210c3e53488978d262003110e1196c76ddb51e983d5beacebc0bba64534e",
+      "sourcePlusFinalNewlineSha256": "9fd90a9b7140cc7f4c7afe0e3158ef01ce25c433443031e23091d1ce39506f7a",
+      "gatedSubjectSha256": "fff74c13d904f632e48f1c894f6ae08ba18469ea1a98ed983de8a47b0fb12967",
+      "expectFixed": false,
+      "desktopQueriesLaunched": false,
+      "foreignProcessesSignalled": false,
+      "repositoryEdited": false,
+      "bootstrapPid": 20256,
+      "bootstrapWaitBeforeCleanup": 258,
+      "exceptionType": "OwnedProcessCleanupError",
+      "exception": "owned cleanup could not be proven: independent injected Job accounting failure",
+      "elapsedBeforeObservationSeconds": 1.0109112999925856,
+      "bootstrapWaitAfterHelperRaised": 258,
+      "bootstrapWaitAfterGateReleased": 0,
+      "bootstrapExit": 0,
+      "targetLaunched": false,
+      "classifiedAsExpected": true
+    },
+    {
+      "sourcePath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\stale-zero-run\\subject-owned_process.py",
+      "sourceSha256": "3629a50dfc872c43f665426a96e20732b3df1dd6a8cd5cbb577f9e685e587a4e",
+      "sourcePlusFinalNewlineSha256": "3972b74c947fb09184f14fc1b9e58339df5035b3cfb472d11972df489bd0470b",
+      "gatedSubjectSha256": "f095d87b95f40a9ad40c2b9985a94f9f365c55e98616d63bbfb3d020d61164c7",
+      "expectFixed": true,
+      "desktopQueriesLaunched": false,
+      "foreignProcessesSignalled": false,
+      "repositoryEdited": false,
+      "bootstrapPid": 9032,
+      "bootstrapWaitBeforeCleanup": 258,
+      "exceptionType": "OwnedProcessCleanupError",
+      "exception": "owned cleanup could not be proven: independent injected Job accounting failure",
+      "elapsedBeforeObservationSeconds": 1.0163656999939121,
+      "bootstrapWaitAfterHelperRaised": 0,
+      "bootstrapWaitAfterGateReleased": 0,
+      "bootstrapExit": 1,
+      "targetLaunched": false,
+      "classifiedAsExpected": true
+    }
+  ],
+  "harnessSha256": "471e2143390729b1dc71445ce19a6927889494cb22ea29bdd9af2abfd73543e4",
+  "passed": true
+}

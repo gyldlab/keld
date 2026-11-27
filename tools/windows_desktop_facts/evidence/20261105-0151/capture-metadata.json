@@ -1,0 +1,384 @@
+{
+  "schema": "keld.w4-capture-publication/v1",
+  "captureRoot": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105",
+  "onlyTransformation": "CRLF to LF; UTF-8 bytes otherwise unchanged, including BOM, bare CR and raw output text.",
+  "crlfEncoding": "NONE, ALL, or sparse zero-based indices among newline occurrences in the published byte stream.",
+  "reconstruction": "For marked newline occurrences, insert one CR immediately before LF. Leave all other bytes unchanged.",
+  "files": {
+    "electron.json": {
+      "capturedSha256": "5ac062ef11e87f79859ebe8e87e321cf0d17231d8e7c585d57d0bca87b55eadc",
+      "publishedSha256": "5ac062ef11e87f79859ebe8e87e321cf0d17231d8e7c585d57d0bca87b55eadc",
+      "capturedBytes": 8629,
+      "publishedBytes": 8629,
+      "newlineCount": 393,
+      "crlf": "NONE",
+      "capture": "native-run-02/electron.json"
+    },
+    "electron.owned.json": {
+      "capturedSha256": "105bbb3238f724bbcbae2174538cf613a1012f35a90940f87ddedeca9ba6428f",
+      "publishedSha256": "a6b6645256c90320939082dba4c09e07ebcb58d700052644c261338851b82c01",
+      "capturedBytes": 651,
+      "publishedBytes": 633,
+      "newlineCount": 18,
+      "crlf": "ALL",
+      "capture": "native-run-02/electron.owned.json"
+    },
+    "electron.process.json": {
+      "capturedSha256": "92d9868c67c80efdea73ac4723abfa1ba555e55c78bc71d54fd3e3871579a532",
+      "publishedSha256": "c3356a84fb29ca7eacc297bfc4ae407aada7eea16373c466458dd4e52edcac08",
+      "capturedBytes": 793,
+      "publishedBytes": 774,
+      "newlineCount": 19,
+      "crlf": "ALL",
+      "capture": "native-run-02/electron.process.json"
+    },
+    "failed-dpi.json": {
+      "capturedSha256": "b772ac9880c6eefdd3b454851381531094362eb4d9328565e448360be46dcadf",
+      "publishedSha256": "ea8e1a604e921b532ea180405320d71796c985de93842c5a98a4439bde150f37",
+      "capturedBytes": 924,
+      "publishedBytes": 884,
+      "newlineCount": 40,
+      "crlf": "ALL",
+      "capture": "native-run-02/failed-dpi.json"
+    },
+    "failed-dpi.owned.json": {
+      "capturedSha256": "a21d9db52cd5b1b586459e3f7c3fa647917e519e1f078e979b063e7d0f428a45",
+      "publishedSha256": "5b961f248903cdfd5f1c54ec8f7463f312afe4971d5061ea1d8e4943059ae3d8",
+      "capturedBytes": 485,
+      "publishedBytes": 465,
+      "newlineCount": 20,
+      "crlf": "ALL",
+      "capture": "native-run-02/failed-dpi.owned.json"
+    },
+    "failed-dpi.process.json": {
+      "capturedSha256": "a2336140df7cb7dee85f7c90403c593d3f1ce8fa2607facf325e5eca3ba1bb88",
+      "publishedSha256": "315b6f1ea19f761e8d986461a4da4bbeabb9d8c5271bb2fd313a8d6c06752c84",
+      "capturedBytes": 630,
+      "publishedBytes": 609,
+      "newlineCount": 21,
+      "crlf": "ALL",
+      "capture": "native-run-02/failed-dpi.process.json"
+    },
+    "high-contrast-size.json": {
+      "capturedSha256": "5f4465e05ae357e151a56328078d551327dc330c5bf40b299dd678b5ffcc43ac",
+      "publishedSha256": "4906e1081d896e18ec819016e4b50589fb5ac76f1b36772d8515f82f0ffe2a5e",
+      "capturedBytes": 948,
+      "publishedBytes": 908,
+      "newlineCount": 40,
+      "crlf": "ALL",
+      "capture": "native-run-02/high-contrast-size.json"
+    },
+    "high-contrast-size.owned.json": {
+      "capturedSha256": "3df3ccba00f44acd492ca8f6e8455967a35ff9feb2b1ed60900a64260616c3f4",
+      "publishedSha256": "59264c45c293edf4b5da783bf6a82f1e5fc53826f96eb05f9f1e14507dd7285a",
+      "capturedBytes": 493,
+      "publishedBytes": 473,
+      "newlineCount": 20,
+      "crlf": "ALL",
+      "capture": "native-run-02/high-contrast-size.owned.json"
+    },
+    "high-contrast-size.process.json": {
+      "capturedSha256": "95e0e40b77e0984c10e6ced7e24c22b7ca41df7279379db89ec6f169e18cd5a5",
+      "publishedSha256": "ef47f14a9f109be82015219d3295f6ed20cc1c43ed299ef2b435c528743a0939",
+      "capturedBytes": 645,
+      "publishedBytes": 624,
+      "newlineCount": 21,
+      "crlf": "ALL",
+      "capture": "native-run-02/high-contrast-size.process.json"
+    },
+    "inputs.json": {
+      "capturedSha256": "dff50ff7486d883250ee4508192116c4e6146c004108108f107cf87a2b33692f",
+      "publishedSha256": "9449e60c9cf37f79ecfd498af306f3690f2e1ecdbfc09af0ab40b75c201a435b",
+      "capturedBytes": 787,
+      "publishedBytes": 771,
+      "newlineCount": 16,
+      "crlf": "ALL",
+      "capture": "native-run-02/inputs.json"
+    },
+    "invalid-monitor.json": {
+      "capturedSha256": "66d15ec20735fb82cd4fe7cab0877d058994ed975273a32bebca6d71327badd1",
+      "publishedSha256": "657576e2ccedee6e53918e032fe4bf48f5ff0b8449262f1a5a170c46f774a29d",
+      "capturedBytes": 921,
+      "publishedBytes": 881,
+      "newlineCount": 40,
+      "crlf": "ALL",
+      "capture": "native-run-02/invalid-monitor.json"
+    },
+    "invalid-monitor.owned.json": {
+      "capturedSha256": "5db2ebe24788af297d462566853daffba8d7c8ce9ede6104cef8155d5791764a",
+      "publishedSha256": "e5a7b6eb57d3f2a52b2f5bc84d9c209a68348d0d969c546293f67381b3d66105",
+      "capturedBytes": 490,
+      "publishedBytes": 470,
+      "newlineCount": 20,
+      "crlf": "ALL",
+      "capture": "native-run-02/invalid-monitor.owned.json"
+    },
+    "invalid-monitor.process.json": {
+      "capturedSha256": "020297dbc9d38f76aea0874bbde292843b676904a9e5071e1c2af3d4c801b312",
+      "publishedSha256": "c0e052bf78335dbb540349cb523edee7a0fe33ff042db0c722880304cafeb7f7",
+      "capturedBytes": 638,
+      "publishedBytes": 617,
+      "newlineCount": 21,
+      "crlf": "ALL",
+      "capture": "native-run-02/invalid-monitor.process.json"
+    },
+    "native-first-sample.json": {
+      "capturedSha256": "4d3c401e806c7b9c5d3d301b11468a24bb068dff3ad6aae35b9243891ed55a2b",
+      "publishedSha256": "4d3c401e806c7b9c5d3d301b11468a24bb068dff3ad6aae35b9243891ed55a2b",
+      "capturedBytes": 4566,
+      "publishedBytes": 4566,
+      "newlineCount": 173,
+      "crlf": "NONE",
+      "capture": "native-run-02/native-first-sample.json"
+    },
+    "pmv2.json": {
+      "capturedSha256": "64439ba88efc5bf9d5eebc3fb987727fde23b729cc080409c4f464a3da36302d",
+      "publishedSha256": "2108cd9f250c0179d8c1f6082c82a81e69b44335203b45f16602a8dcb5f0caec",
+      "capturedBytes": 3108,
+      "publishedBytes": 2981,
+      "newlineCount": 127,
+      "crlf": "ALL",
+      "capture": "native-run-02/pmv2.json"
+    },
+    "pmv2.owned.json": {
+      "capturedSha256": "5dfa968c7988a03b41a0bb2057711aeed1ecaef322c332f6e45a93155ae9b082",
+      "publishedSha256": "b294222ad9cbd0bdc5ba0c63575f4a8c0f4463f34f017402005e77785a49cc5b",
+      "capturedBytes": 448,
+      "publishedBytes": 430,
+      "newlineCount": 18,
+      "crlf": "ALL",
+      "capture": "native-run-02/pmv2.owned.json"
+    },
+    "pmv2.process.json": {
+      "capturedSha256": "f512feec583af4df03e13c7b04190066b57b53a0b50b34adb71329699e86346a",
+      "publishedSha256": "7832b81744897a718c0f3c6e87a5da179468571b17320dbf44be7d22a104254f",
+      "capturedBytes": 586,
+      "publishedBytes": 567,
+      "newlineCount": 19,
+      "crlf": "ALL",
+      "capture": "native-run-02/pmv2.process.json"
+    },
+    "subscribe-native.owned.json": {
+      "capturedSha256": "d83e1cf6d5c8a9e267f435c409dcd402f0d7ddb0b1c842289194951003f0b36b",
+      "publishedSha256": "6c50a3fe7bfe39ee3e11d12f9c0756f80c149af478a9dcba54b90abb790c3fa2",
+      "capturedBytes": 522,
+      "publishedBytes": 502,
+      "newlineCount": 20,
+      "crlf": "ALL",
+      "capture": "native-run-02/subscribe-native.owned.json"
+    },
+    "subscribe-native.process.json": {
+      "capturedSha256": "0f587b529771828369a49aaa74f079d1afdc637a8eb42eedc7a1cd074e409a5e",
+      "publishedSha256": "e46d423be389cf1991b29c157e661e0ef2ec63138c42bf2688d3834d06303c57",
+      "capturedBytes": 673,
+      "publishedBytes": 652,
+      "newlineCount": 21,
+      "crlf": "ALL",
+      "capture": "native-run-02/subscribe-native.process.json"
+    },
+    "subscribe-native.stderr": {
+      "capturedSha256": "046f309cdf33aad13abff8666aa07fc00818b03702a1ce949c0824155d1bf015",
+      "publishedSha256": "046f309cdf33aad13abff8666aa07fc00818b03702a1ce949c0824155d1bf015",
+      "capturedBytes": 232,
+      "publishedBytes": 232,
+      "newlineCount": 8,
+      "crlf": "NONE",
+      "capture": "native-run-02/subscribe-native.stderr"
+    },
+    "unaware.json": {
+      "capturedSha256": "8117a6fd12cbf16bc9ec86f73ab8c28f5c7884784514ad9277a005f43317dc4e",
+      "publishedSha256": "8efa9786dda6c89d011b329e124346e3450e51120c45f3c02736a327617841b7",
+      "capturedBytes": 3134,
+      "publishedBytes": 3007,
+      "newlineCount": 127,
+      "crlf": "ALL",
+      "capture": "native-run-02/unaware.json"
+    },
+    "unaware.owned.json": {
+      "capturedSha256": "6b46d4a0a6b5ec996f60f511b63d96f713b7d73d39abb06724a6fb50a5ecb5f9",
+      "publishedSha256": "1bd4ac621fd2c476018a52fbab5df87e69e5cb227c61117b89f882ab16f8d34e",
+      "capturedBytes": 451,
+      "publishedBytes": 433,
+      "newlineCount": 18,
+      "crlf": "ALL",
+      "capture": "native-run-02/unaware.owned.json"
+    },
+    "unaware.process.json": {
+      "capturedSha256": "7f99547001b3e56e44d16f037d0dd151710cff705923c378f768e948f4d31dc5",
+      "publishedSha256": "812b37e6d9dbcd8c68541089bde755c881721761320ba556fbdfc26371eef7d8",
+      "capturedBytes": 593,
+      "publishedBytes": 574,
+      "newlineCount": 19,
+      "crlf": "ALL",
+      "capture": "native-run-02/unaware.process.json"
+    },
+    "verify-native.owned.json": {
+      "capturedSha256": "5b630d17043364fc52c03b0b7e642a98322c19084b7b109f70fa015419f6812f",
+      "publishedSha256": "6c9f90ecc7c55c3f6cd28c4f31d3ca8defa5e5f42d4f5890a9feba8e36eb114f",
+      "capturedBytes": 474,
+      "publishedBytes": 456,
+      "newlineCount": 18,
+      "crlf": "ALL",
+      "capture": "native-run-02/verify-native.owned.json"
+    },
+    "verify-native.process.json": {
+      "capturedSha256": "539fefa7782d2ab9357fa44ca96ec5e58db286a166248e5366ab94eea6c40f27",
+      "publishedSha256": "593f30ce2c39b4ffcecdbcfe21efbfd73b29f625861d26a52dae1f1a35e3f811",
+      "capturedBytes": 621,
+      "publishedBytes": 602,
+      "newlineCount": 19,
+      "crlf": "ALL",
+      "capture": "native-run-02/verify-native.process.json"
+    },
+    "verify-native.stderr": {
+      "capturedSha256": "c3549d94225eb6fe6f6da02e3de3ba35d487aac537db21362183ea6070ffa230",
+      "publishedSha256": "c3549d94225eb6fe6f6da02e3de3ba35d487aac537db21362183ea6070ffa230",
+      "capturedBytes": 891,
+      "publishedBytes": 891,
+      "newlineCount": 12,
+      "crlf": "NONE",
+      "capture": "native-run-02/verify-native.stderr"
+    },
+    "capture-manifest.json": {
+      "capturedSha256": "d1a33d47439accd3f8fca917868b9ae7b0715f87c633cd14af8d7df4fe56e7e4",
+      "publishedSha256": "2389b3f0b4a6a443c6eba138b0622826159fd3d5248bd9cc705306927098797b",
+      "capturedBytes": 4022,
+      "publishedBytes": 3976,
+      "newlineCount": 46,
+      "crlf": "ALL",
+      "capture": "native-run-02/manifest.json"
+    },
+    "subscribe-native.stdout": {
+      "capturedSha256": "7e1af9e26fc8b1a1304406714913006d43e745d292225dbd9c9a741e4b6f3a2c",
+      "publishedSha256": "7e1af9e26fc8b1a1304406714913006d43e745d292225dbd9c9a741e4b6f3a2c",
+      "capturedBytes": 229,
+      "publishedBytes": 229,
+      "newlineCount": 2,
+      "crlf": "NONE",
+      "capture": "native-run-02/subscribe-native.stdout"
+    },
+    "verify-native.stdout": {
+      "capturedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "publishedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "capturedBytes": 28,
+      "publishedBytes": 28,
+      "newlineCount": 1,
+      "crlf": "NONE",
+      "capture": "native-run-02/verify-native.stdout"
+    },
+    "driver.json": {
+      "capturedSha256": "387fff84c074e8ec93de88d3e94032eaa3484459dd2f3b8bfdc9b9de3fdb832d",
+      "publishedSha256": "387fff84c074e8ec93de88d3e94032eaa3484459dd2f3b8bfdc9b9de3fdb832d",
+      "capturedBytes": 990,
+      "publishedBytes": 990,
+      "newlineCount": 29,
+      "crlf": "NONE",
+      "capture": "native-run-02-driver.json"
+    },
+    "driver.log": {
+      "capturedSha256": "e7944aee921b3ff6b5cf25acda3ed6ea7b10a123783d92e168085db9751f6823",
+      "publishedSha256": "acc8abb22e3fef3b5d8673ec18121b2cc6e8e67428a3cad43204f9c04e6c2a1e",
+      "capturedBytes": 325,
+      "publishedBytes": 323,
+      "newlineCount": 2,
+      "crlf": "ALL",
+      "capture": "native-run-02-driver.log"
+    },
+    "sources.json": {
+      "capturedSha256": "4136d5378a3ba24ea02ebb39e61da9998cdfa97d8032648d41ba4c3fd7348a39",
+      "publishedSha256": "4136d5378a3ba24ea02ebb39e61da9998cdfa97d8032648d41ba4c3fd7348a39",
+      "capturedBytes": 4032,
+      "publishedBytes": 4032,
+      "newlineCount": 38,
+      "crlf": "NONE",
+      "capture": "native-run-02-sources.json"
+    },
+    "cleanup.json": {
+      "capturedSha256": "76b6ac6be20ddf87bf20e617fc2f0cd118d5fbadbe2c2b0c3e30e294497d84dc",
+      "publishedSha256": "76b6ac6be20ddf87bf20e617fc2f0cd118d5fbadbe2c2b0c3e30e294497d84dc",
+      "capturedBytes": 937,
+      "publishedBytes": 937,
+      "newlineCount": 24,
+      "crlf": "NONE",
+      "capture": "native-run-02-cleanup.json"
+    },
+    "cleanup-sentinel.txt": {
+      "capturedSha256": "1c2e02fde3c9e6e8d7ca857e35286ffcf0174ec7b5463af701d7c8439f8ee5a9",
+      "publishedSha256": "1c2e02fde3c9e6e8d7ca857e35286ffcf0174ec7b5463af701d7c8439f8ee5a9",
+      "capturedBytes": 51,
+      "publishedBytes": 51,
+      "newlineCount": 1,
+      "crlf": "NONE",
+      "capture": "native-run-02-cleanup-sentinel.txt"
+    }
+  },
+  "omittedRunFiles": {
+    "electron.stderr": {
+      "reason": "empty stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "electron.stdout": {
+      "reason": "same JSON value as selected record",
+      "equivalentJsonFile": "electron.json",
+      "sha256": "344914c13d23b9d4eaa660ffb30f3ee54cd5155aa9fea512aba20eba113b7170",
+      "bytes": 8631
+    },
+    "failed-dpi.stderr": {
+      "reason": "empty stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "failed-dpi.stdout": {
+      "reason": "same JSON value as selected record",
+      "equivalentJsonFile": "failed-dpi.json",
+      "sha256": "dad20e2b9f95d2f02dbc3a8fe99c3da23d49170b9d082254501713c38894ff81",
+      "bytes": 679
+    },
+    "high-contrast-size.stderr": {
+      "reason": "empty stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "high-contrast-size.stdout": {
+      "reason": "same JSON value as selected record",
+      "equivalentJsonFile": "high-contrast-size.json",
+      "sha256": "5befba3885fe2a0b581c4765b0a3fe7556ae11aac8cbfbb25384c4b19389ec7d",
+      "bytes": 703
+    },
+    "invalid-monitor.stderr": {
+      "reason": "empty stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "invalid-monitor.stdout": {
+      "reason": "same JSON value as selected record",
+      "equivalentJsonFile": "invalid-monitor.json",
+      "sha256": "6828ebbec191ba09f789257a9e155e45f74a3d5f338f084c2971cacb2013d2cc",
+      "bytes": 676
+    },
+    "pmv2.stderr": {
+      "reason": "empty stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "pmv2.stdout": {
+      "reason": "same JSON value as selected record",
+      "equivalentJsonFile": "pmv2.json",
+      "sha256": "c5f8e357c0827f49e49958d099c8fa6830de3c2e47669f0a80c65433dc17a21d",
+      "bytes": 1745
+    },
+    "unaware.stderr": {
+      "reason": "empty stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "unaware.stdout": {
+      "reason": "same JSON value as selected record",
+      "equivalentJsonFile": "unaware.json",
+      "sha256": "eb850693874f1f9f787a859e56cd8292e83644256e4932dc8a8e690b06b1e992",
+      "bytes": 1771
+    }
+  },
+  "censusInputs": "Raw pre/post census files remain outside Git; census-projection.json binds their exact captured hashes and selected fields."
+}

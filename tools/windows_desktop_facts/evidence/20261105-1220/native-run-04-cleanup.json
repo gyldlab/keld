@@ -1,0 +1,24 @@
+{
+  "utc": "2026-11-05T12:22:30Z",
+  "head": "327122ea784f51a01c3ed177d95835eb157e61aa",
+  "driverExit": 0,
+  "emptyInvocationJobs": 8,
+  "forcedCleanup": false,
+  "ownNativeProcessesBefore": 0,
+  "ownNativeProcessesAfter": 0,
+  "baselineWebviews": 13,
+  "baselineWebviewsPreserved": true,
+  "removedProfile": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-04\\userdata-44.4.5",
+  "profileCreationIdentity": {
+    "device": 7958539122546112619,
+    "inode": 23925373020427103,
+    "creationTimeNs": 1793881232306992500
+  },
+  "checkedNonReparseEntries": 68,
+  "profileAbsent": true,
+  "outsideSentinel": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-04-cleanup-sentinel.txt",
+  "outsideSentinelSha256": "1cddcf5f562d2d1c7b42828e5d750461ac8ef9bc4a0c2ba68236b6dd1b8f05a3",
+  "globalSettingsChanged": false,
+  "foreignProcessSignals": false,
+  "existingCachesPreserved": true
+}

@@ -1,0 +1,73 @@
+{
+  "preUtc": "2026-11-04T23:58:39.6874067Z",
+  "postUtc": "2026-11-04T23:59:53.2317239Z",
+  "ownedRemaining": [],
+  "preservedPreexistingProcesses": [
+    {
+      "pid": 13988,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793727702069)/"
+    },
+    {
+      "pid": 3012,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793727702147)/"
+    },
+    {
+      "pid": 10636,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793727702578)/"
+    },
+    {
+      "pid": 4976,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793727702579)/"
+    },
+    {
+      "pid": 13864,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793727702655)/"
+    },
+    {
+      "pid": 15300,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793727702848)/"
+    },
+    {
+      "pid": 18620,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793789695504)/"
+    },
+    {
+      "pid": 11108,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793789695581)/"
+    },
+    {
+      "pid": 18556,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793789695731)/"
+    },
+    {
+      "pid": 9544,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793789695789)/"
+    },
+    {
+      "pid": 7592,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793789697221)/"
+    },
+    {
+      "pid": 21364,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793789707842)/"
+    },
+    {
+      "pid": 17528,
+      "name": "msedgewebview2.exe",
+      "created": "/Date(1793829084119)/"
+    }
+  ],
+  "foreignProcessesSignalled": 0
+}

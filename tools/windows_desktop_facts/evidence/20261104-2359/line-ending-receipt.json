@@ -1,0 +1,191 @@
+{
+  "reason": "Repository text files use LF. Observed JSON values and stdout/stderr contents are unchanged apart from CRLF line separators; original capture hashes can be reconstructed using captureLineEndings.",
+  "entries": {
+    "electron.json": {
+      "captureSha256": "11148b8228926ddcbb4a07368b45f3f35ad00ee46b26c43600c5b8445b6624f6",
+      "publishedSha256": "11148b8228926ddcbb4a07368b45f3f35ad00ee46b26c43600c5b8445b6624f6",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "electron.process.json": {
+      "captureSha256": "8998f3f2df49c540680ba22d7f6cbba29d5dba569f95efcc8bdaa68284f417f6",
+      "publishedSha256": "46aa802792c5212a12c5ea125bd798567371523012da09977a88f4537fd3dd1a",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "failed-dpi.json": {
+      "captureSha256": "653550ff4f039d3280710e94382eb3860b312d1de607149b221fc47df524f12e",
+      "publishedSha256": "b3a4cb62a1bf2564f5e41cf7d7720338b6a6ddbdfd5345b562e8a192b267ea99",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "failed-dpi.process.json": {
+      "captureSha256": "6ddf49654e6e02450f4ccf68e6abeebf1f42ffa0c6ea66696aac47adb88fd581",
+      "publishedSha256": "60b3848e580f2ba1d47b39174ff559991161694c47c2512051401eaf22b6026a",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "generation-boundary-review.json": {
+      "captureSha256": "62e5de608edc511ab61fbc9894630ece84d673730d6b56228505c7310b952308",
+      "publishedSha256": "62e5de608edc511ab61fbc9894630ece84d673730d6b56228505c7310b952308",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "high-contrast-size.json": {
+      "captureSha256": "298ca83176f268d720e83f05b31999581771074044365f2b76850701d7973b7c",
+      "publishedSha256": "2fefa3a5b14ea0e71252c38362376fbf9d46a36905ac21d51fd79a61bc6e7cd8",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "high-contrast-size.process.json": {
+      "captureSha256": "0882e6f3018f37d8c6f70023061a0bae3ca3cdeec66fb0c1d2f37fc7602976e8",
+      "publishedSha256": "32ea8a6dbf23f485c73be87b40aaf59941e24742b9c7e9ff7b22952f132003fe",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "inputs.json": {
+      "captureSha256": "27bd04a1d7619355184aac7de50eda69073f0e06a4f367d417efdf98ce7c70f2",
+      "publishedSha256": "243fee323256eadb9af6d93467a5643f8feac82a88768586c5f3efcd166e7af9",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "invalid-monitor.json": {
+      "captureSha256": "8d857478984ee55a7d88d8ef5f1c57773cdcd6132d0d89451f8a49dfa857264a",
+      "publishedSha256": "22191702bbe1862915ec015f36ff77e6b14aa0a245342fe81fa6a4e85968ae03",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "invalid-monitor.process.json": {
+      "captureSha256": "eb107ff0ccc442616df0f0e999652c6dd67f353c0fdca32b682e28d0c3b7453e",
+      "publishedSha256": "f2f74a3c1545ee3c26111465f225d1b652c5097ba6095e6cba629ab0c26f1b8c",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "mutant_ready_bypass.log": {
+      "captureSha256": "5840b4c874f6bb4efb25f12c0dd3d3bf44b75fa861ca3067ad508a2e0280136c",
+      "publishedSha256": "5840b4c874f6bb4efb25f12c0dd3d3bf44b75fa861ca3067ad508a2e0280136c",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "mutant_short_deadline.log": {
+      "captureSha256": "8f2473a7062139c03998ca97ee00d79d7e8090196d56154504555163182dccda",
+      "publishedSha256": "8f2473a7062139c03998ca97ee00d79d7e8090196d56154504555163182dccda",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "mutation-controls.json": {
+      "captureSha256": "7507ff43415e7ff0c304f08f738d3247ba0fcaf9c4de3dbf30ebe45c4870f10d",
+      "publishedSha256": "7507ff43415e7ff0c304f08f738d3247ba0fcaf9c4de3dbf30ebe45c4870f10d",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "native-cleanup.json": {
+      "captureSha256": "a5edcf96504f4893413601f85bccf7d2e71da2a090ffe1d9ce079b030ddcf28d",
+      "publishedSha256": "dd8794429dc2c58a06a1bf108b4e7e57429fc5fb62796137bd82753ebe38fc54",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "native-first-sample.json": {
+      "captureSha256": "dfc205fcaea95c7f6a7f94ae893e882e120b9a0c0af7aa3ab1bf3f402cc5fb3c",
+      "publishedSha256": "dfc205fcaea95c7f6a7f94ae893e882e120b9a0c0af7aa3ab1bf3f402cc5fb3c",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "native-reviewed-build.json": {
+      "captureSha256": "31748974e0944137e969a4c57ad094b69abd033272ac4c2c12c083a0050bc6d9",
+      "publishedSha256": "9d6672309406cb102151e012cceb79ff9da23e294185b62e03d5697152f8ee85",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "native-run-01-driver.json": {
+      "captureSha256": "cd300260d93432f18d2c97973ef37cfdf854c12d0159fd9644c277d4a44c91a5",
+      "publishedSha256": "1585ba8d4c4db94869584b89327090c7581d10c521b75dfd50be45fcbe89e50f",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "pmv2.json": {
+      "captureSha256": "d3fbb1144b4ef3dbc0b15a4e88d3000352bc32d76f40f77b50c304ba3518de66",
+      "publishedSha256": "07a0c037d94e9e52d3a201cf00d05fe7df8ecf817fffa9cf69f00225db097f73",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "pmv2.process.json": {
+      "captureSha256": "84f4e9a945b4a95905e215f13b29863431597841be325e5888f562dd0540a126",
+      "publishedSha256": "82391a25f4df56e9f1518a0b6fd636e85b1051f2dc9a488686f55087a87ff0d2",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "process-cleanup.json": {
+      "captureSha256": "23574468871599715342adefaa9893c1ba8899015d57dbc0e5a18e3a0b6ed425",
+      "publishedSha256": "66bba79609e52deb8add95cb51f46c5e1dc9f94809e8b64fcb4fc90d6fd9dbd2",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "shared-export-controls.json": {
+      "captureSha256": "8a21d5ebb244f715f4e601d370204b38e8c392860987f642258a41b0aa77dc3b",
+      "publishedSha256": "124bb84ca78017b5302cf6dc52543cd519121cf5380d41433a63cb6ab4ac6812",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "sources.json": {
+      "captureSha256": "786ee57419395f6f5f1de739ede26090804d143cf6cea82d4ff4f0b0b2f45f6f",
+      "publishedSha256": "085dd721ae1abd3ce6eb3a4cdc9fd896108d9d39a213b9991e15cd4396282f2f",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "subscribe-native.process.json": {
+      "captureSha256": "63507356f7c082528322392c3f6863080e186e89fa386536d76aec2b2bf435e0",
+      "publishedSha256": "734641d0845ba9130fcd92cb7db7f7e4c3e8b0a7c1b2bd2047a1a05f698b2181",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "subscribe-native.stderr": {
+      "captureSha256": "bf138aff971efb5b6bebb0198c64350aed06ee1eb70e6acd64143a7673d6f069",
+      "publishedSha256": "bf138aff971efb5b6bebb0198c64350aed06ee1eb70e6acd64143a7673d6f069",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "subscribe-native.stdout": {
+      "captureSha256": "2f7c602748591b2a3bf052706b9b54d43c4d6f33f50faa7b3b005cf8d24660ee",
+      "publishedSha256": "2f7c602748591b2a3bf052706b9b54d43c4d6f33f50faa7b3b005cf8d24660ee",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "unaware.json": {
+      "captureSha256": "8d4c15023b20e9af6f0d00144deab4c811cda7b8250fcbffc8019eef158c5738",
+      "publishedSha256": "cfb9f2d78e60e0803d1a9cf3c5c989a2b8478d1265b808abaa5b7f3a9c2a6324",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "unaware.process.json": {
+      "captureSha256": "f96ec19f0150c422e4d3f7edd4e3acc75d4e2fd999355ebe878b034d8d309c45",
+      "publishedSha256": "2365efa1998fd729d3b5330e5b2a4c424085dc1b9f2ee17f86b697bc2064f38c",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "verify-native.process.json": {
+      "captureSha256": "62f49dfbe449c2484beed3f5b8bc0eb265d9296a0b8d041d4852d7f342469718",
+      "publishedSha256": "86fcdf9ece2707f56ec0a9e45cb162ff7beafceaf7e06f31c57faf0471007233",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    },
+    "verify-native.stderr": {
+      "captureSha256": "96ed4cafe314426f8511f6f9844c9f62d5cb1e843ca7cf8d9314513c48965e8d",
+      "publishedSha256": "96ed4cafe314426f8511f6f9844c9f62d5cb1e843ca7cf8d9314513c48965e8d",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "verify-native.stdout": {
+      "captureSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "publishedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "captureLineEndings": "LF",
+      "transformation": "none"
+    },
+    "workspace-clippy.json": {
+      "captureSha256": "cea152eecb105f498bcb3be969d32af8c034d20e2b3ce8b1a61ae2b0fb68d3b9",
+      "publishedSha256": "2743d407b9426f8b66e6309c9e4800ca80b183bfbbaca5fc6da64dd372333f3e",
+      "captureLineEndings": "CRLF",
+      "transformation": "CRLF-to-LF only"
+    }
+  }
+}

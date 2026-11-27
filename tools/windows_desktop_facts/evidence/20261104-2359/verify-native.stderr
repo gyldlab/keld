@@ -1,0 +1,12 @@
+
+tools\windows_desktop_facts\verify_native.test.ts:
+(pass) fresh Windows desktop evidence > actual held Subscribe precedes native capture, application and facade Ready [0.52ms]
+(pass) fresh Windows desktop evidence > fresh native facts agree with an independent Electron geometry/theme oracle [0.82ms]
+(pass) fresh Windows desktop evidence > a separate native process reacquires full identity and physical facts without a cache [16.81ms]
+(pass) fresh Windows desktop evidence > unaware units and physical-as-logical values are refused on the actual non-unit desktop [16.29ms]
+(pass) fresh Windows desktop evidence > real invalid-input API controls fail and never return usable desktop facts [51.48ms]
+(pass) fresh Windows desktop evidence > actual native values pass the original shared codec and retired sources refuse reuse [15.34ms]
+
+ 6 pass
+ 0 fail
+Ran 6 tests across 1 file. [122.00ms]

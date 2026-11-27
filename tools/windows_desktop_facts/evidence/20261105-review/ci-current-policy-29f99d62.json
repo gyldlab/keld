@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "agent": "/root/w4_ci_diagnosis",
+  "repo": "gyldlab/keld",
+  "pr": 1401,
+  "head": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "base": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "ownership": {
+    "team": "@gyldlab/keld-maintainers",
+    "source": "https://github.com/gyldlab/keld/blob/29f99d62cf227e5244672cef6094c6a31a240e94/.github/CODEOWNERS#L6-L14",
+    "paths": [
+      "/.github/",
+      "/tools/"
+    ],
+    "individualAssigneeVerified": null
+  },
+  "liveSettings": {
+    "observedAt": "2026-11-05T02:09:39.0293378Z",
+    "readCommands": [
+      "gh api repos/gyldlab/keld/rules/branches/main",
+      "gh api repos/gyldlab/keld/branches/main/protection/required_status_checks"
+    ],
+    "sources": [
+      "https://api.github.com/repos/gyldlab/keld/rules/branches/main",
+      "https://api.github.com/repos/gyldlab/keld/branches/main/protection/required_status_checks"
+    ],
+    "effectiveRuleTypes": [
+      "pull_request"
+    ],
+    "requiredChecks": [
+      "gatekeeper",
+      "title-lint",
+      "CI required"
+    ],
+    "strict": true,
+    "requiredCheckAppId": 15368,
+    "provenanceRequired": false,
+    "verisentryRequired": false,
+    "correction": "The provenance and VeriSentry publisher failures are diagnostic under the live required-check configuration; they are not a current merge-admission blocker. The historical job error uses 'blocking failure', which is not evidence of live required-check policy."
+  },
+  "prSnapshot": {
+    "observedAt": "2026-11-05T02:08:49.0732785Z",
+    "state": "OPEN",
+    "isDraft": true,
+    "headUnchanged": true,
+    "pendingChecks": [],
+    "failingChecks": [
+      {
+        "name": "CI provenance",
+        "url": "https://github.com/gyldlab/keld/actions/runs/41948498017/job/126986520933"
+      },
+      {
+        "name": "KELD VeriSentry publisher",
+        "url": "https://github.com/gyldlab/keld/actions/runs/41948498017/job/126986573265"
+      },
+      {
+        "name": "Mermaid validation + pinned render",
+        "url": "https://github.com/gyldlab/keld/actions/runs/41948497582/job/126986676637"
+      },
+      {
+        "name": "CI required",
+        "url": "https://github.com/gyldlab/keld/actions/runs/41948497582/job/126992738931"
+      }
+    ]
+  },
+  "requiredFailure": {
+    "jobId": 126992738931,
+    "url": "https://github.com/gyldlab/keld/actions/runs/41948497582/job/126992738931",
+    "logRetrievedAt": "2026-11-05T02:10:45.9806511Z",
+    "lines": [
+      "2026-11-05T01:43:18.7923212Z   KELD_RESULT_MERMAID: failure",
+      "2026-11-05T01:43:18.7924603Z   KELD_ROUTE_MERMAID: true",
+      "2026-11-05T01:43:18.8786650Z CI-REQUIRED: Mermaid diagram validation/render must succeed, got 'failure'. Re-run the exact head after the CI service is healthy; do not treat missing, skipped, cancelled, or failed evidence as a pass.",
+      "2026-11-05T01:43:18.8801862Z ##[error]Process completed with exit code 1."
+    ],
+    "cause": "Selected Mermaid result failure propagated to required aggregator; underlying Mermaid job image-pull transport reset established in prior exact-head diagnosis."
+  },
+  "savedAt": "2026-11-05T02:11:31.7530850Z",
+  "purpose": "Public GitHub policy correction: provenance diagnostics are not current required merge checks",
+  "trackerReference": "KEL-169; private tracker content intentionally excluded",
+  "retirementPublicSource": "https://github.com/gyldlab/keld/issues/1341",
+  "originalReceiptSha256": "30b97494b52cab55576bca4bd5f1b3bc07999fc39f6f7de1f94d88a0bf0c0190",
+  "sourceHashes": {
+    "w4-ci-owner-main-rules.json": "abe78f20e877eca4744b0046d1ae142afb2e9895884276f4146427cc82ed0040",
+    "w4-ci-owner-required-checks.json": "fd4b7c3006c976f0f076e587afd647b07319766822cdf358274c528bf4592744",
+    "w4-ci-required-job126992738931.log": "9d458ddeb1fb2962ab1c77c48c2d441135e4b349dbf42d5c844c2dea8235ef9e",
+    "w4-ci-owner-codeowners.txt": "7d733616d604ae6e76aba9a09d181334820ea76b427d0c71fb9c52d543d7ee46",
+    "w4-ci-owner-gh1341.json": "3cb9a3a3fb4997ec34b6242ec4a90651f202c5db2b70eb12a65b1b82777f37c7"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "bun",
+    "test",
+    "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\subscribe_contract.test.ts",
+    "-t",
+    "W4 native first sample"
+  ],
+  "pid": 21792,
+  "exit": 0,
+  "bootstrapPid": 10376,
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.7785639999783598,
+  "setupError": null,
+  "startedUnix": 1793843481.1686883,
+  "completedUnix": 1793843481.9494138,
+  "ownedProcessReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-02\\subscribe-native.owned.json"
+}

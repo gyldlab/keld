@@ -1,0 +1,18 @@
+{
+  "head": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "branch": "agent/gh-1186-windows-desktop-feasibility-20261105",
+  "hashes": {
+    "docs/specs/gh1186-windows-desktop-facts.md": "1bee2637b5154b7de6602412e06c03e09c1c0e48c3cb34bea44a0ddaf8b991de",
+    "tools/windows_desktop_facts/integration-notes.md": "643be183891eab1e37fb13ef94ba20c45ea1a7bc8050252d90b26163c6b6b984",
+    "tools/windows_desktop_facts/EVIDENCE.md": "dcf52b3c27538b2968ca5cfa1350a5fd7d10eb8ac127b12afe1d8d5ac542fd87",
+    "tools/windows_desktop_facts/README.md": "4e7793bbc2653e668bc6e1050c1a55b201dcedaea9379db159a54d04fa81a774",
+    "docs/engineering/keld-error-codes.md": "331e44028d44459a795a896a2ccb2932fd4fcfa98a949198730986a763124f13",
+    "tools/windows_desktop_facts/integration.patch": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d"
+  },
+  "registrySectionEqualsCanonical": true,
+  "canonicalSectionSha256": "0609c6fe4ed72bc88a007b71eaf8c30c19cb2092dffc60f402d0a80de277f0f4",
+  "registryDiffNumstat": "7\t0\tdocs/engineering/keld-error-codes.md",
+  "outOfScopeChanges": [],
+  "productDiff": "",
+  "patchNumstat": "17\t4\tcrates/keld-wv/src/webview2/mod.rs"
+}

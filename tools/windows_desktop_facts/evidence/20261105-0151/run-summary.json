@@ -1,0 +1,325 @@
+{
+  "schema": "keld.w4-native-run-summary/v1",
+  "status": "passed",
+  "sourceHead": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "lease": {
+    "acquired": "https://github.com/gyldlab/keld/issues/1188#issuecomment-6647411719",
+    "released": "https://github.com/gyldlab/keld/issues/1188#issuecomment-6647424705"
+  },
+  "driver": {
+    "file": "driver.json",
+    "exit": 0,
+    "pid": 21392,
+    "startedUnix": 1793843479.378151,
+    "completedUnix": 1793843483.794539,
+    "elapsedSeconds": 4.416388,
+    "firstNativeAction": "valid held Subscribe test"
+  },
+  "proof": "Windows native sampling plus existing client transport/mirror; scripted Host",
+  "coreAdmissionProven": false,
+  "timing": {
+    "file": "native-first-sample.json",
+    "pointer": "/monotonicMs",
+    "unit": "milliseconds in test process",
+    "subscribedAt": 94.3557,
+    "sampleStartedAt": 96.1543,
+    "sampleCompletedAt": 609.8055,
+    "settledAt": 612.5453,
+    "readyAt": 613.1395,
+    "sampleDurationMs": 513.6512,
+    "strictOrderVerified": true,
+    "durationAlsoRecordedIn": "subscribe-native.stdout: W4_NATIVE_SUBSCRIBE.sampleMs",
+    "originalCallerDeadlineMs": 5000
+  },
+  "tests": {
+    "nativeHeldSubscribe": {
+      "passed": 1,
+      "failed": 0,
+      "filteredOut": 8,
+      "tests": 1,
+      "files": 1,
+      "source": {
+        "file": "subscribe-native.stderr",
+        "fields": "Bun summary lines"
+      }
+    },
+    "nativeReceiptAssertions": {
+      "passed": 6,
+      "failed": 0,
+      "filteredOut": null,
+      "tests": 6,
+      "files": 1,
+      "source": {
+        "file": "verify-native.stderr",
+        "fields": "Bun summary lines"
+      }
+    },
+    "totalPassed": 7,
+    "totalFailed": 0
+  },
+  "custody": {
+    "invocations": 8,
+    "emptyJobs": 8,
+    "timeouts": 0,
+    "forcedCleanups": 0,
+    "setupErrors": 0,
+    "allProcessOwnedReceiptPairsMatch": true,
+    "processes": [
+      {
+        "name": "electron",
+        "targetPid": 21860,
+        "targetExit": 0,
+        "bootstrapPid": 6408,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.6683695999963675,
+        "processFile": "electron.process.json",
+        "ownedFile": "electron.owned.json"
+      },
+      {
+        "name": "failed-dpi",
+        "targetPid": 15220,
+        "targetExit": 1,
+        "bootstrapPid": 12004,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.14389350000419654,
+        "processFile": "failed-dpi.process.json",
+        "ownedFile": "failed-dpi.owned.json"
+      },
+      {
+        "name": "high-contrast-size",
+        "targetPid": 15712,
+        "targetExit": 1,
+        "bootstrapPid": 19180,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.13697599997976795,
+        "processFile": "high-contrast-size.process.json",
+        "ownedFile": "high-contrast-size.owned.json"
+      },
+      {
+        "name": "invalid-monitor",
+        "targetPid": 14664,
+        "targetExit": 1,
+        "bootstrapPid": 23224,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.14148720001685433,
+        "processFile": "invalid-monitor.process.json",
+        "ownedFile": "invalid-monitor.owned.json"
+      },
+      {
+        "name": "pmv2",
+        "targetPid": 20928,
+        "targetExit": 0,
+        "bootstrapPid": 13376,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.15241599999717437,
+        "processFile": "pmv2.process.json",
+        "ownedFile": "pmv2.owned.json"
+      },
+      {
+        "name": "subscribe-native",
+        "targetPid": 21792,
+        "targetExit": 0,
+        "bootstrapPid": 10376,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.7785639999783598,
+        "processFile": "subscribe-native.process.json",
+        "ownedFile": "subscribe-native.owned.json"
+      },
+      {
+        "name": "unaware",
+        "targetPid": 19332,
+        "targetExit": 0,
+        "bootstrapPid": 20944,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.15496390001499094,
+        "processFile": "unaware.process.json",
+        "ownedFile": "unaware.owned.json"
+      },
+      {
+        "name": "verify-native",
+        "targetPid": 3128,
+        "targetExit": 0,
+        "bootstrapPid": 2480,
+        "bootstrapExit": 0,
+        "jobActiveAfter": 0,
+        "timedOut": false,
+        "forcedCleanup": false,
+        "setupError": null,
+        "elapsedSeconds": 0.24070519997621886,
+        "processFile": "verify-native.process.json",
+        "ownedFile": "verify-native.owned.json"
+      }
+    ]
+  },
+  "facts": {
+    "nativeSource": "native-first-sample.json#/sample/raw/sample",
+    "physicalBounds": {
+      "height": 1080,
+      "width": 1920,
+      "x": 0,
+      "y": 0
+    },
+    "physicalWorkArea": {
+      "height": 1020,
+      "width": 1920,
+      "x": 0,
+      "y": 0
+    },
+    "dpi": {
+      "deviceScaleFactor": 1.25,
+      "source": "GetDpiForMonitor(MDT_EFFECTIVE_DPI)",
+      "x": 120,
+      "y": 120
+    },
+    "nativeTargetPaths": [
+      {
+        "friendlyName": "",
+        "outputTechnology": -2147483648,
+        "pathFlags": 1,
+        "sourceAdapterLuid": {
+          "highPart": 0,
+          "lowPart": 58488
+        },
+        "sourceId": 0,
+        "targetAdapterLuid": {
+          "highPart": 0,
+          "lowPart": 58488
+        },
+        "targetAvailable": true,
+        "targetDevicePath": "\\\\?\\DISPLAY#CMN153C#5&264fd57a&0&UID512#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+        "targetId": 512
+      }
+    ],
+    "textScaleSource": "native-first-sample.json#/sample/textScale",
+    "textScaleFactor": 1,
+    "sharedSource": "native-first-sample.json#/sample/facts",
+    "logicalBounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 864
+    },
+    "logicalWorkArea": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 816
+    },
+    "effectiveScaleFactor": 1.25,
+    "shouldUseDarkColors": false,
+    "oracleSource": "electron.json#/primary",
+    "oracleBounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 864
+    },
+    "oracleWorkArea": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 816
+    },
+    "oracleScaleFactor": 1.25,
+    "oracleVersion": "44.4.5"
+  },
+  "sameMeasuredFactsAsNative01": {
+    "native": true,
+    "oracle": true,
+    "native01RawSha256": "dfc205fcaea95c7f6a7f94ae893e882e120b9a0c0af7aa3ab1bf3f402cc5fb3c",
+    "native01OracleRawSha256": "11148b8228926ddcbb4a07368b45f3f35ad00ee46b26c43600c5b8445b6624f6",
+    "comparedNativeFields": [
+      "machine",
+      "desktop",
+      "theme",
+      "textScale",
+      "sharedFacts"
+    ],
+    "excludedDynamicFields": [
+      "native process IDs and subscription timestamps",
+      "textScale.pid",
+      "oracle samples[].tMs"
+    ],
+    "note": "Compare measured native/shared/oracle values; do not claim complete receipt-byte equality."
+  },
+  "cleanup": {
+    "file": "cleanup.json",
+    "censusFile": "census-projection.json",
+    "utc": "2026-11-05T01:51:28Z",
+    "ownedNativeBefore": 0,
+    "ownedNativeAfter": 0,
+    "candidatesAfter": 0,
+    "baselineIdentities": 13,
+    "baselineIdentitiesPreserved": 13,
+    "profileAbsent": true,
+    "checkedNonReparseEntries": 67,
+    "profileCreationIdentitySource": "cleanup.json#/profileCreationIdentity",
+    "profileCreationIdentityDecimalStrings": {
+      "device": "7958539122546112619",
+      "inode": "2814749768546840",
+      "creationTimeNs": "1793843483029295700"
+    },
+    "outsideSentinelFile": "cleanup-sentinel.txt",
+    "outsideSentinelSha256": "1c2e02fde3c9e6e8d7ca857e35286ffcf0174ec7b5463af701d7c8439f8ee5a9",
+    "globalSettingsChanged": false,
+    "foreignProcessSignals": false,
+    "existingCachesPreserved": true
+  },
+  "bindings": {
+    "sourceManifest": {
+      "file": "sources.json",
+      "capturedSha256": "4136d5378a3ba24ea02ebb39e61da9998cdfa97d8032648d41ba4c3fd7348a39",
+      "publishedSha256": "4136d5378a3ba24ea02ebb39e61da9998cdfa97d8032648d41ba4c3fd7348a39",
+      "sourceFilesVerifiedAgainstCapturedGitHead": 31
+    },
+    "binaryInputsFile": "inputs.json",
+    "binaries": {
+      "probe": {
+        "path": "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+        "sha256": "947ed40f2c9be6dca101b5feb9b626eac11611c93d7767185aa88da60c6336f0"
+      },
+      "oracle": {
+        "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\electron-44.4.5\\electron.exe",
+        "sha256": "bd14928e0728366fd3f41499cb398ff3f4304dab259a3e605077899a6f8c748e"
+      }
+    },
+    "originalManifestFile": "capture-manifest.json",
+    "originalManifestVerifiedFiles": 40,
+    "captureMetadataFile": "capture-metadata.json",
+    "publishedManifestFile": "SHA256.json"
+  },
+  "limits": [
+    "Recorded native feasibility uses the original shared client with a scripted Host; production Core admission is not proved.",
+    "Production Windows selection, post-Init admission, old-generation completion fencing and shared-owner decisions remain outside this native run.",
+    "Only the recorded single-primary, non-forced-colors configuration is qualified; no display/theme setting was changed.",
+    "Publication performs file reads, hashing, reversible line-ending normalization and read-only Git inspection only. No native sampling, GUI, build or process test is rerun."
+  ]
+}
