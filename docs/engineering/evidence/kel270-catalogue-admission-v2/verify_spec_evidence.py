@@ -82,6 +82,17 @@ EXPECTED_HISTORICAL_REVIEWERS = {
     "review-meta-r3.json": "/root/review_metadata_recovery",
     "review-windows-r3.json": "review_windows_lifecycle",
 }
+# Exact report digests from the archive manifest pinned in EXPECTED_ARCHIVE.
+EXPECTED_HISTORICAL_REPORT_SHA256 = {
+    "review-identity-r2.json": "1a9fc9b400642c97d7c82678201bf46896e2c77434c52c098a65627ad9b483d2",
+    "review-meta-r1.json": "2e7169caa567087e3e95eeb2b20b9d2210d77fec439b930fdbd705d700449aba",
+    "review-windows-r2.json": "1268ca516858e69c40240f9e7243e3c981ce2b7518292ed376a2b4f73c107bc0",
+    "review-identity-refutation.json": "32605a76c99072d5003abd0e4c9b0db392e94600e13fe0d5ce907de47e4fe29a",
+    "review-meta-refutation.json": "83e14c824e0f0839bbbe7f744f6d8882a487577f22c8ae830174d45d34d05a62",
+    "review-identity-r3.json": "8bf9938f58557844978be313f94cad07328e5dd2372553ba23354795a5c5d57d",
+    "review-meta-r3.json": "fd5a33482ad0475744e10b829f19dc5118aba38d162e3fdaec15fe4f50e73777",
+    "review-windows-r3.json": "8094bca1735e2fe234267866e0090584c0e3e59189e28e3a31c216106e172319",
+}
 EXPECTED_HISTORICAL_R3 = {
     "review-identity-r3.json": "QUALIFIED_NO_REMAINING_DRAFT_DEFECT_IN_REVIEWED_LENS",
     "review-meta-r3.json": "QUALIFIED_NO_REMAINING_DRAFT_DEFECT",
@@ -182,8 +193,8 @@ def verify_receipt(receipt: dict | None = None, plan_bytes: bytes | None = None)
     for entry in receipt["historical_reports"]:
         if set(entry) != {"name", "reviewer", "disposition", "sha256"}:
             raise ValueError("unknown historical review metadata")
-        if not isinstance(entry["sha256"], str) or len(entry["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in entry["sha256"]):
-            raise ValueError("historical report digest is invalid")
+        if entry["sha256"] != EXPECTED_HISTORICAL_REPORT_SHA256[entry["name"]]:
+            raise ValueError("historical report digest does not match the pinned archive: " + entry["name"])
         expected_disposition = EXPECTED_HISTORICAL_R3.get(
             entry["name"], "historical finding/refutation; see archived record"
         )
