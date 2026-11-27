@@ -6,6 +6,7 @@ use super::fixture::{
     RELOCATION_COUNT, RELOCATIONS_POINTER, SECTION_CHARACTERISTICS, SIZE_OF_IMAGE, Section, Spec,
     VIRTUAL_ADDRESS, VIRTUAL_SIZE, build, container_section, data, get_u32, golden_key,
     golden_payload, header_at, optional_of, put_u16, put_u32, text, two_section_spec, two_sections,
+    v2_container_section,
 };
 use super::malformed::cases;
 use super::{embed, refusal};
@@ -59,6 +60,38 @@ fn ac9_two_containers_refuse_with_008() {
         ..two_section_spec()
     });
     assert_eq!(refusal(read_host_identity_bytes(&input)).0, "KELD-PACK-008");
+}
+
+#[test]
+fn ac9_final_valid_v1_refuses_preceding_v2_or_recovery_in_default_build() {
+    // Both PE layouts have a valid final v1 section. Before the fix, the default
+    // v1 reader accepted it even though an earlier identity/role section exists.
+    for (name, preceding) in [
+        ("valid v2 identity", v2_container_section(0x3000, 0x600)),
+        (
+            "recovery role",
+            container_section(*b".keldrec", 0x3000, 0x600),
+        ),
+    ] {
+        let image = build(&Spec {
+            sections: vec![
+                text(),
+                data(),
+                preceding,
+                container_section(*b".keldeai", 0x4000, 0x800),
+            ],
+            ..two_section_spec()
+        });
+        assert_eq!(
+            refusal(read_host_identity_bytes(&image)).0,
+            "KELD-PACK-008",
+            "{name}"
+        );
+    }
+    assert_eq!(
+        read_host_identity_bytes(&canonical()).expect("single canonical v1 section"),
+        golden_payload()
+    );
 }
 
 #[test]

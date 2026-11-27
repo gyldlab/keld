@@ -607,11 +607,27 @@ fn admit_virtual_layout(
     Ok(())
 }
 
+// The public v1 reader must refuse mixed identity sections and recovery roles
+// even in default builds, independently of the private v2 codec feature.
+fn reject_mixed_identity_sections(sections: &[Section]) -> Result<(), PackError> {
+    if sections
+        .iter()
+        .any(|section| section.name == *b".keldea2" || section.name == *b".keldrec")
+    {
+        return Err(PackError::IdentityContainerDuplicate);
+    }
+    Ok(())
+}
+
 /// Reader steps 1 to 5 over any positioned-read source.
 fn read_container(source: &impl ImageSource) -> Result<ExpectedAppIdentityPayload, PackError> {
     // Step 1.
     let layout = admit_structure(source)?;
     let sections = layout.sections();
+
+    // Neither an ordinary v2 identity nor a recovery role may coexist with
+    // v1. This applies even when the private v2 codec is not compiled.
+    reject_mixed_identity_sections(sections)?;
 
     // Step 2: count by the exact 8 name bytes.
     let mut named = sections
@@ -800,3 +816,9 @@ const fn container_invalid(detail: &'static str) -> PackError {
 
 #[cfg(test)]
 mod tests;
+
+// Private additive D-WIRE v2 implementation. The shipping v1 entry points and
+// `.keldeai` parser do not call it; T-82 Pack API/wire approval is outstanding.
+#[cfg(feature = "kel270-dwire-v2")]
+#[allow(dead_code)] // Private v2 PE path has no product caller before T-82 review.
+mod v2;
