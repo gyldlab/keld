@@ -88,10 +88,19 @@ if ($PSCmdlet.ParameterSetName -ceq 'OwnedDiagnosticAlias') {
     # Read-only case from the default diagnostic suite. The Rust owner creates
     # and retires the actual target and junction; this path is only a locator.
     # No builder override, builder process, compiler, writes or deletion here.
-    if ($OwnedDiagnosticAliasRoot -cnotmatch '^[A-Za-z]:[\\/]' -or
+    if ($OwnedDiagnosticAliasRoot -cnotmatch '^[A-Za-z]:\\' -or
+        $OwnedDiagnosticAliasRoot.Contains('/') -or
+        $OwnedDiagnosticAliasRoot -match '(^|\\)\.\.?(\\|$)' -or
         [IO.Path]::GetFileName($OwnedDiagnosticAliasRoot) -cnotmatch '^keld-nsis-fixture-[0-9a-f]{32}$') {
         throw 'KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS: expected an absolute local fixture path'
     }
+    # GitHub's Windows runner may give Rust TEMP an 8.3 ancestor (RUNNER~1).
+    # .NET Path.GetFullPath expands that spelling, whereas the production
+    # Require-LocalPath deliberately refuses non-normalized build locators.
+    # Canonicalize ONLY this read-only test's native-owner-supplied locator,
+    # not production build inputs. The original guard still checks the
+    # resulting path (including every reparse ancestor) before reading.
+    $diagnosticRoot = [IO.Path]::GetFullPath($OwnedDiagnosticAliasRoot)
     $parseTokens = $null
     $parseErrors = $null
     $builderAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -106,7 +115,8 @@ if ($PSCmdlet.ParameterSetName -ceq 'OwnedDiagnosticAlias') {
     )) {
         . (Get-UniqueDiagnosticFunction $builderAst $name)
     }
-    $compilerParent = Join-Path $OwnedDiagnosticAliasRoot 'compiler-parent'
+    $null = Require-LocalPath $diagnosticRoot 'owned read-only diagnostic root'
+    $compilerParent = Join-Path $diagnosticRoot 'compiler-parent'
     $target = Join-Path $compilerParent 'alias-target'
     $aliasPath = Join-Path $compilerParent 'published-alias'
     # Independently pinned SHA256 of the fixed three-byte synthetic fixture
