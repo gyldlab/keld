@@ -77,3 +77,41 @@ test("AC11: a throwing terminal acknowledgement accessor cannot strand settlemen
   expect(x.coordinator.quit()).toBe(publicQuit);
   expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);
 });
+
+test("AC11: terminal acknowledgement captures one callback with its original receiver", async () => {
+  const x = fixture();
+  const publicQuit = x.coordinator.quit();
+  const t = await x.prepared(0);
+  const disposition = { kind: "accepted" as const };
+  let lookups = 0;
+  let calls = 0;
+  let receiver: unknown;
+  let receipt: unknown;
+  Object.defineProperty(x.host, "consumeDisposition", {
+    get() {
+      if (++lookups !== 1) return undefined;
+      return function (
+        this: unknown,
+        delivery: Parameters<NonNullable<typeof x.host.consumeDisposition>>[0],
+      ) {
+        calls++;
+        receiver = this;
+        receipt = delivery;
+        return { ready: true };
+      };
+    },
+  });
+  x.commits[0]!.reply.resolve(disposition);
+  expect(await publicQuit).toBeUndefined();
+  expect(x.coordinator.disposition).toBe("committed");
+  expect(lookups).toBe(1);
+  expect(calls).toBe(1);
+  expect(receiver).toBe(x.host);
+  expect(receipt).toEqual({
+    operation: "commit",
+    token: t,
+    original: undefined,
+    disposition,
+  });
+  expect(x.late).toEqual([]);
+});

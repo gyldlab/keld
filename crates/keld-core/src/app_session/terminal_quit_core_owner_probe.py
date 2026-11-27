@@ -19,6 +19,11 @@ ROOT = Path(__file__).resolve().parent
 SOURCE_HASHES = {}
 COMPILE_TIMEOUT_SECONDS = 60
 PROJECTION_TIMEOUT_SECONDS = 30
+OWNER_TEST_PREFIX = (
+    "app_session::window_registry::tests::terminal_quit_candidate::core_owner_integration::"
+)
+CLOSING_CASE = "real_registry_close_pending_and_closing_cannot_authorize_terminal"
+DRAIN_CREATE_CASE = "actual_create_during_reversible_drain_cannot_be_hidden_by_build_failure"
 
 
 def live_group_members(group):
@@ -184,7 +189,43 @@ def generate(tests_path, registry_body):
         "}}",
     ))
 
-def build_and_run(tmp, label, candidate, registry_body, only=None, expected=0):
+def verify_projection_result(result, label, *, only=None, expected_panic=None):
+    lines = result.stdout.splitlines()
+    if expected_panic is None:
+        if result.returncode == 0 and all(
+            lines.count(f"test {OWNER_TEST_PREFIX}{name} ... ok") == 1
+            for name in (DRAIN_CREATE_CASE, CLOSING_CASE)
+        ):
+            return
+        raise RuntimeError(f"{label}: exact baseline tests did not both pass")
+
+    selector = OWNER_TEST_PREFIX + only
+    named_panic = rf"thread '{re.escape(selector)}'(?: \([0-9]+\))? panicked at .+:"
+    panic_rows = [index for index, line in enumerate(lines)
+                  if re.fullmatch(r"thread '.+'(?: \([0-9]+\))? panicked at .+:", line)]
+    failure_heading = f"---- {selector} stdout ----"
+    if (
+        result.returncode == 101
+        and lines.count("running 1 test") == 1
+        and lines.count(f"test {selector} ... FAILED") == 1
+        and lines.count(failure_heading) == 1
+        and lines.count(f"    {selector}") == 1
+        and sum(line.startswith("test result: FAILED. 0 passed; 1 failed; 0 ignored;")
+                for line in lines) == 1
+        and len(panic_rows) == 1
+    ):
+        index = panic_rows[0]
+        if (
+            lines.index(failure_heading) < index
+            and re.fullmatch(named_panic, lines[index])
+            and lines[index + 1:index + 2]
+            == [f"assertion `left == right` failed: {expected_panic}"]
+        ):
+            return
+    raise RuntimeError(f"{label}: did not observe the exact selected assertion {expected_panic}")
+
+
+def build_and_run(tmp, label, candidate, registry_body, only=None, expected_panic=None):
     root = tmp / label
     session = root / "app_session"
     tests = session / "window_registry/tests.rs"
@@ -204,14 +245,14 @@ def build_and_run(tmp, label, candidate, registry_body, only=None, expected=0):
     binary = root / "probe"
     run_bounded(["rustc", "--edition=2024", "--test", "-D", "warnings", str(source), "-o", str(binary)],
                 f"{label} compile", COMPILE_TIMEOUT_SECONDS, check=True)
-    command = [str(binary)]
+    command = [str(binary), "--color", "never", "--format", "pretty"]
     if only:
-        command.extend(["--exact", "app_session::window_registry::tests::terminal_quit_candidate::core_owner_integration::" + only])
+        command.extend(["--exact", OWNER_TEST_PREFIX + only])
     result = run_bounded(command, label, PROJECTION_TIMEOUT_SECONDS)
+    expected = 101 if expected_panic is not None else 0
     print(f"=== {label} (exit {result.returncode}, expected {expected}) ===", flush=True)
     print(result.stdout, flush=True)
-    if result.returncode != expected or (expected != 0 and "1 failed" not in result.stdout):
-        raise RuntimeError(f"{label}: unexpected result")
+    verify_projection_result(result, label, only=only, expected_panic=expected_panic)
 
 def compile_dispatch_projection(tmp):
     """Compile the actual draft adapter and guard, not a simulated reader test.
@@ -306,7 +347,8 @@ def main():
         assert CANDIDATE.count("assert!(window.terminal.admit_create());") == 1
         build_and_run(tmp, "mutation_skip_create_invalidation",
                       CANDIDATE.replace("assert!(window.terminal.admit_create());", ""),
-                      registry_methods, "actual_create_during_reversible_drain_cannot_be_hidden_by_build_failure", 101)
+                      registry_methods, DRAIN_CREATE_CASE,
+                      "GH451_PROJECTION_ASSERT_DRAIN_CREATE_INVALIDATES")
         census = "fn has_live_windows"
         assert registry_methods.count(census) == 1
         before, after = registry_methods.split(census, 1)
@@ -314,7 +356,7 @@ def main():
         assert after.count(original) == 1
         mutation = before + census + after.replace(original, "!matches!(entry.phase, Phase::Destroyed(_) | Phase::Closing(_))")
         build_and_run(tmp, "mutation_ignore_closing", CANDIDATE, mutation,
-                      "real_registry_close_pending_and_closing_cannot_authorize_terminal", 101)
+                      CLOSING_CASE, "GH451_PROJECTION_ASSERT_CLOSING_NOT_EMPTY")
         compile_dispatch_projection(tmp)
 
 if __name__ == "__main__":

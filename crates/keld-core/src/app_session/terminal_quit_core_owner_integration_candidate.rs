@@ -186,7 +186,11 @@ fn real_registry_close_pending_and_closing_cannot_authorize_terminal() {
         ));
         assert!(window.registry.native_released(WebviewId(99)).diagnostic);
     });
-    assert_eq!(fixture.prepare(), Outcome::Retained); // Closing
+    assert_eq!(
+        fixture.prepare(),
+        Outcome::Retained,
+        "GH451_PROJECTION_ASSERT_CLOSING_NOT_EMPTY"
+    ); // Closing
     fixture.cut(|_, window, _| {
         let release = window.registry.native_released(WebviewId(7));
         assert!(!release.diagnostic);
@@ -248,7 +252,11 @@ fn actual_create_during_reversible_drain_cannot_be_hidden_by_build_failure() {
     fixture.cut(|_, window, _| {
         assert!(!window.registry.native_failed(build).diagnostic);
     });
-    assert_eq!(fixture.finish_commit(prepared, true), Outcome::Retained);
+    assert_eq!(
+        fixture.finish_commit(prepared, true),
+        Outcome::Retained,
+        "GH451_PROJECTION_ASSERT_DRAIN_CREATE_INVALIDATES"
+    );
     assert!(fixture.shutdown.is_running());
     assert!(!fixture.shutdown.reader_stop.load(Ordering::Acquire));
     assert_ne!(token(&fixture), prepared);

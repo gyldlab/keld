@@ -51,21 +51,132 @@ impl OwnedTestGroup {
         // Five existing identity-fixture bounds cover bind, Ready, held
         // replies and supervisor cleanup. No product deadline is changed.
         let deadline = Instant::now() + super::BOUND * 5;
-        loop {
-            if let Some(status) = self.child.0.try_wait()? {
+        while Instant::now() < deadline {
+            let group = self.group.as_raw();
+            let census = read_owned_group_census(group, deadline)?;
+            if let Some(already_live_peer) = exited_leader_has_live_peer(&census, group)? {
+                // A fresh census starts after leader exit, when the
+                // leader can no longer add a member to this group.
+                let census = read_owned_group_census(group, deadline)?;
+                let has_live_peer = exited_leader_has_live_peer(&census, group)?
+                    .ok_or_else(|| io::Error::other("authenticated reader leader state changed"))?;
+                if Instant::now() >= deadline {
+                    break;
+                }
+                if already_live_peer || has_live_peer {
+                    return Err(io::Error::other(
+                        "authenticated reader leader exited with a live fixture group member",
+                    )
+                    .into());
+                }
+                // The census included the exact owned leader as a zombie.
+                // Do not signal this group after *any* reaping wait.
                 self.armed = false;
-                return Ok(status);
+                return Ok(self.child.0.wait()?);
             }
-            if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "authenticated reader test watchdog",
-                )
-                .into());
+            thread::park_timeout(Duration::from_millis(50));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "authenticated reader test watchdog",
+        )
+        .into())
+    }
+}
+
+fn read_owned_group_census(group: i32, deadline: Instant) -> io::Result<String> {
+    const MAX_BYTES: u64 = 64 * 1024;
+    let mut stdout = tempfile::tempfile()?;
+    let stderr = tempfile::tempfile()?;
+    let mut census = super::super::ReapedRouterProbe::new(
+        Command::new("/bin/ps")
+            .args(["-x", "-g", &group.to_string(), "-o", "pid=,pgid=,stat="])
+            .env("COMMAND_MODE", "unix2003")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout.try_clone()?))
+            .stderr(Stdio::from(stderr.try_clone()?))
+            .spawn()?,
+    );
+    while Instant::now() < deadline {
+        if stdout.metadata()?.len() > MAX_BYTES || stderr.metadata()?.len() != 0 {
+            return Err(io::Error::other(
+                "authenticated reader group census output invalid",
+            ));
+        }
+        if let Some(status) = census.0.try_wait()? {
+            if !status.success() || stderr.metadata()?.len() != 0 {
+                return Err(io::Error::other("authenticated reader group census failed"));
             }
-            thread::park_timeout(Duration::from_millis(10));
+            stdout.seek(SeekFrom::Start(0))?;
+            let mut output = String::new();
+            stdout.take(MAX_BYTES + 1).read_to_string(&mut output)?;
+            if output.len() as u64 > MAX_BYTES {
+                return Err(io::Error::other(
+                    "authenticated reader group census too large",
+                ));
+            }
+            return Ok(output);
+        }
+        thread::park_timeout(Duration::from_millis(10));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "authenticated reader group census watchdog",
+    ))
+}
+
+// Same snapshot for the unreaped leader and its peers. A missing or
+// ambiguous leader is not proof of retirement.
+fn exited_leader_has_live_peer(census: &str, group: i32) -> io::Result<Option<bool>> {
+    let invalid = || io::Error::other("invalid authenticated reader group census");
+    let mut leader_exited = None;
+    let mut has_live_peer = false;
+    for row in census.lines().filter(|row| !row.trim().is_empty()) {
+        let mut fields = row.split_ascii_whitespace();
+        let pid = fields
+            .next()
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|&pid| pid > 0)
+            .ok_or_else(invalid)?;
+        let pgid = fields.next().and_then(|value| value.parse::<i32>().ok());
+        let state = fields.next().ok_or_else(invalid)?;
+        if pgid != Some(group) || fields.next().is_some() {
+            return Err(invalid());
+        }
+        let zombie = state.starts_with('Z');
+        if pid == group {
+            if leader_exited.replace(zombie).is_some() {
+                return Err(invalid());
+            }
+        } else {
+            has_live_peer |= !zombie;
         }
     }
+    Ok(leader_exited.ok_or_else(invalid)?.then_some(has_live_peer))
+}
+
+#[test]
+fn authenticated_reader_fixture_census_distinguishes_live_peers_from_zombies() -> io::Result<()> {
+    assert_eq!(exited_leader_has_live_peer("70 70 S\n", 70)?, None);
+    assert_eq!(
+        exited_leader_has_live_peer("70 70 Z+\n71 70 T\n", 70)?,
+        Some(true)
+    );
+    assert_eq!(
+        exited_leader_has_live_peer("70 70 Z\n71 70 Z\n", 70)?,
+        Some(false)
+    );
+    for census in [
+        "",
+        "71 70 R\n",
+        "70 70 Z\n70 70 Z\n",
+        "70 70 Z\n71 69 S\n",
+        "70 70\n",
+    ] {
+        assert!(exited_leader_has_live_peer(census, 70).is_err());
+    }
+    Ok(())
 }
 
 impl Drop for OwnedTestGroup {

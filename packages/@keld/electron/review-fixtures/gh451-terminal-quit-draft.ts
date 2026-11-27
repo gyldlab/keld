@@ -18,6 +18,8 @@ import type {
 } from "./gh451-terminal-quit-draft-contract";
 export type * from "./gh451-terminal-quit-draft-contract";
 
+type ReceiptConsumer<T> = NonNullable<DraftHost<T>["consumeDisposition"]>;
+
 type Handle = {
   public: Promise<void>;
   resolve: () => void;
@@ -456,15 +458,15 @@ export class DraftQuitCoordinator<T> {
         "competing",
         d.error ?? refusal("another terminal winner committed"),
         false,
-        () => this.consume(p, d),
+        (consumer) => this.consume(p, d, consumer),
       );
     // An impossible operation/result pair is not evidence of no effect.
     if (d.kind === "accepted") {
       if (p.operation !== "commit")
         return this.uncertain(a, p, undefined, unknownError());
       // Known acceptance survives an error in local fencing.
-      return this.finish(a, "committed", d.error, false, () =>
-        this.consume(p, d),
+      return this.finish(a, "committed", d.error, false, (consumer) =>
+        this.consume(p, d, consumer),
       );
     }
     if (!this.current())
@@ -560,15 +562,22 @@ export class DraftQuitCoordinator<T> {
     this.effect(a, { operation: "cancel", token });
   }
 
-  private consume(p: Pending<T>, d: Disposition<T>): Consumption {
+  private consume(
+    p: Pending<T>,
+    d: Disposition<T>,
+    consumer?: ReceiptConsumer<T>,
+  ): Consumption {
     try {
+      const receipt = {
+        operation: p.operation,
+        token: p.token,
+        original: p.original,
+        disposition: d,
+      };
       return (
-        this.host.consumeDisposition?.({
-          operation: p.operation,
-          token: p.token,
-          original: p.original,
-          disposition: d,
-        }) ?? {
+        (consumer
+          ? Reflect.apply(consumer, this.host, [receipt])
+          : this.host.consumeDisposition?.(receipt)) ?? {
           ready: false,
           error: new Error("missing receipt acknowledgement"),
         }
@@ -732,7 +741,7 @@ export class DraftQuitCoordinator<T> {
     outcome: Outcome,
     error?: unknown,
     retired = false,
-    consume?: () => Consumption,
+    consume?: (consumer: ReceiptConsumer<T>) => Consumption,
   ): void {
     if (this.active !== a) return;
     const unknown = outcome === "unknown" && !retired;
@@ -756,7 +765,8 @@ export class DraftQuitCoordinator<T> {
     let consumed: Consumption | undefined;
     if (consume) {
       try {
-        consumed = this.host.consumeDisposition ? consume() : undefined;
+        const consumer = this.host.consumeDisposition;
+        consumed = consumer ? consume(consumer) : undefined;
       } catch (lookupError) {
         // A throwing adapter getter must not strand a known terminal result.
         consumed = { ready: false, error: lookupError };

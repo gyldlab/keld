@@ -6,7 +6,10 @@ import sys
 import tempfile
 import unittest
 
-from terminal_quit_core_owner_probe import run_bounded
+from terminal_quit_core_owner_probe import (
+    CLOSING_CASE, DRAIN_CREATE_CASE, OWNER_TEST_PREFIX, run_bounded,
+    verify_projection_result,
+)
 
 
 class ProjectionRunnerTests(unittest.TestCase):
@@ -71,6 +74,47 @@ class ProjectionRunnerTests(unittest.TestCase):
                 [sys.executable, "-c", "raise SystemExit(1)"], "compile", 5, check=True,
             )
         self.assertEqual(caught.exception.returncode, 1)
+
+    def test_negative_result_requires_the_exact_named_assertion(self):
+        selector = OWNER_TEST_PREFIX + CLOSING_CASE
+        marker = "GH451_PROJECTION_ASSERT_CLOSING_NOT_EMPTY"
+        output = (
+            f"running 1 test\ntest {selector} ... FAILED\n\nfailures:\n\n"
+            f"---- {selector} stdout ----\n\n"
+            f"thread '{selector}' (42) panicked at test.rs:12:9:\n"
+            f"assertion `left == right` failed: {marker}\n  left: A\n right: B\n"
+            f"\nfailures:\n    {selector}\n\n"
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out;\n"
+        )
+
+        def verify(code, stdout):
+            verify_projection_result(
+                subprocess.CompletedProcess([], code, stdout=stdout), "fixture",
+                only=CLOSING_CASE, expected_panic=marker,
+            )
+
+        verify(101, output)
+        for code, wrong in [
+            (0, output),
+            (101, output.replace(marker, "ordinary unrelated assertion")),
+            (101, output.replace(marker, "ordinary unrelated assertion") + marker + "\n"),
+            (101, output.replace(f"thread '{selector}'", "thread 'other_test'")),
+            (101, output.replace("running 1 test", "running 2 tests")),
+            (101, output.replace(f"test {selector}", f"test {DRAIN_CREATE_CASE}")),
+        ]:
+            with self.subTest(code=code, stdout=wrong), self.assertRaises(RuntimeError):
+                verify(code, wrong)
+
+    def test_positive_result_requires_both_exact_cases(self):
+        closing = f"test {OWNER_TEST_PREFIX}{CLOSING_CASE} ... ok"
+        drain = f"test {OWNER_TEST_PREFIX}{DRAIN_CREATE_CASE} ... ok"
+        verify_projection_result(
+            subprocess.CompletedProcess([], 0, stdout=f"{closing}\n{drain}\n"), "baseline",
+        )
+        with self.assertRaises(RuntimeError):
+            verify_projection_result(
+                subprocess.CompletedProcess([], 0, stdout=f"{closing}\n"), "baseline",
+            )
 
 
 if __name__ == "__main__":
