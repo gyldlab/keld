@@ -35,7 +35,7 @@ selection, deadline changes, Windows or Linux parity, signing or release.
   owns physical Destroyed, LastWindowClosed and the window registry.
 - FACT: `docs/architecture/06-runtime-and-tooling.md:27` retains Host lifecycle
   ownership. `docs/architecture/05-webview-and-native.md:302` retains registry ownership.
-  Architecture 02 section 4 and architecture 03 section 1 retain wire and authority boundaries.
+  `docs/architecture/02-ipc.md:397@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and `docs/architecture/03-security.md:8@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` retain wire and authority boundaries.
 
 The proposed amendment changes the conditional admission order, not these owners. GH-451 and GH-523 remain drafts. This document does not approve them.
 
@@ -90,19 +90,19 @@ must not permit replay or a fresh conditional attempt.
   - **At-risk precondition:** An admitted Create or CreateWithPreload fails before Commit.
   - **Expected RED:** The invalidated token reserves terminal shutdown.
 
-Under GH-531, adoption claims an existing Open survivor after role transfer.
-An adoptable survivor prevents Prepare. A retired role's token cannot authorize
-Commit on a successor. Do not construct an impossible empty-registry adoption.
-Test each same-role failed-build path independently.
-For adoption, omit the Open-survivor census guard in a separate mutation.
-The successor has subscribed and has an adoptable Open survivor.
-The test goes RED if Prepare grants a token while that survivor exists.
-Verify that a genuine successor adopts the survivor without a new build.
-Reject an old-generation token even after the successor's registry becomes empty.
-This end-to-end control proves the combined retirement and final-cut checks.
+FACT: GH-531 `docs/specs/gh531-window-registry-close-state-machine.md:924@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` defines the five registry states.
+FACT: GH-531 `docs/specs/gh531-window-registry-close-state-machine.md:945@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` makes adoption claim an existing Open survivor.
+Before Prepare, test Opening, Open, ClosePending, and Closing separately.
+Each live state must refuse Prepare. For Closing, deliver Released. Observe Destroyed before Prepare becomes eligible.
+Remove only the live-state census guard in one owner fixture.
+The test goes RED if Prepare grants a token in any live state.
+Omit only the physical-release predicate in another fixture while Closing still owns native teardown.
+The test goes RED if Prepare succeeds before Released and Destroyed.
+Verify a genuine successor adopts its Open survivor without a new build.
+Reject the retired role's token after adoption and after the registry later becomes empty.
 Test the final generation check separately in a nonshipping owner-level fixture.
-Keep all other final-cut predicates valid. Compare a matching generation with a stale generation.
-Remove only the generation check. The test goes RED if the stale generation passes that check.
+Keep all other final-cut predicates valid. Compare matching and stale generations.
+Remove only the generation check. The test goes RED if the stale generation passes.
 
 ### AC-3: Owed filesystem replies precede reservation
 
@@ -206,7 +206,7 @@ With the exact writer and prerequisites available, reuse the [IPC Accepted-befor
 Withhold terminal Consume and Status. Observe one existing cleanup tail complete without either confirmation.
 Add only a success-path wait for either confirmation. The bounded owner-level tail oracle must go RED.
 Hold terminal retirement after consumption and no-late proof. Omit only the retirement requirement. The test goes RED on early release. Prove exact retirement without Consume in a separate control.
-For each D-2 failure, inject only that failure after conditional reservation and run the same fixture without the fault. At the owning seam, check unchanged cause, code, and the exact primary error. Verify no fabricated Accepted, false clean exit, or second tail.
+For each D-2 failure, inject only that failure after conditional reservation. Run the same fixture without the fault. At the owning seam, check unchanged cause, code, and the exact primary error. Verify no fabricated Accepted, false clean exit, or second tail.
 - Guardian preparation: reuse the [Core owner failure fixture](https://github.com/gyldlab/keld/blob/070a20525896c4603fe153d9707d8b02c4953b48/crates/keld-core/src/app_session/tests/terminal_cleanup_and_windows_shutdown.rs#L1-L53) with conditional reservation. Observe fatal attribution and preserved error.
 - Echo retirement: reuse the [Core Echo error observer](https://github.com/gyldlab/keld/blob/e3a45811fa8ffa82a07bcd5e22e8dfb68cc7a0c4/crates/keld-core/src/app_session/auth_router_tests.rs#L851-L909). Induce only Echo retirement failure on the conditional path and observe the exact retirement error.
 - Reply and cleanup: use the controls above. Local fence: reuse the [API fence fixture](https://github.com/gyldlab/keld/blob/070a20525896c4603fe153d9707d8b02c4953b48/packages/@keld/api/fixtures/gh451-retained-link-draft/candidate.test.ts#L675-L744) for direct and recovered Accepted with the original error. Check custody and one tail in conditional integration.
@@ -274,7 +274,7 @@ Step 1 also defines the default-intent refusal before binding.
    the reversible coordinator after those events and before `destroy()` returns.
    Neither a legacy Quit write nor terminal Commit is required before return. Prepare and the
    final cut still check the authoritative registry. If a replacement window
-   is Opening or Open at Prepare, refuse preparation. If Create is admitted
+   is Opening, Open, ClosePending, or Closing at Prepare, refuse preparation. If Create is admitted
    after Prepare, the old token cannot reserve even if that Create later fails.
    For a positively selected role without Bound, preserve the same Destroy and event order.
    Apply the unavailable disposition from AC-7 before `destroy()` returns.
@@ -289,7 +289,7 @@ Step 1 also defines the default-intent refusal before binding.
    With a registered listener, verify the existing listener policy instead.
 2. Keep the existing lifecycle coordinator Running. Prepare checks the
    authenticated current Ready and subscribed original and its registry under its
-   existing admission order. Opening and Closing count as live.
+   existing admission order. Opening, Open, ClosePending, and Closing count as live.
    Prepare grants reversible authority only. The existing owner mints the token.
    Admission of a later Create or CreateWithPreload permanently invalidates the token.
    A later failure does not restore the token.
@@ -409,7 +409,7 @@ a prerequisite for the reversible design decision.
 | Criteria | Planned witness |
 |---|---|
 | AC-1 | Exact facade veto, Save retry, post-Prepare Cancel and retained receipt with each missing proof, and B-3 surviving-Prepare recovery |
-| AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption, combined retirement check and isolated generation check |
+| AC-2 | Same-role failed Create/CreateWithPreload, all four live-state refusals, Released/Destroyed gate, successor adoption and isolated generation check |
 | AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
 | AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls, exact error custody and successful Reply/Err |
 | AC-5 | Separate held-reply and held-lease races, both reservation orders in each, code-only control, queued reader contender and one tail |
