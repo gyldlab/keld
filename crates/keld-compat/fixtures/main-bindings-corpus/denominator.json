@@ -1,0 +1,45 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-main-bindings-v1",
+  "corpus_sha256": "sha256:4f429955bfedf79ae084ac10aaac3cf0717a5871913978a9956c3e5dfb6b36e4",
+  "kind": "activation",
+  "cells": [
+    {
+      "operation_id": "menu.binding.named-import",
+      "oracle_id": "electron-v44.4.5.menu.process-main"
+    },
+    {
+      "operation_id": "shell.binding.named-import",
+      "oracle_id": "electron-v44.4.5.shell.process-main"
+    },
+    {
+      "operation_id": "dialog.binding.named-import",
+      "oracle_id": "electron-v44.4.5.dialog.process-main"
+    },
+    {
+      "operation_id": "session.binding.named-import",
+      "oracle_id": "electron-v44.4.5.session.process-main"
+    },
+    {
+      "operation_id": "screen.binding.named-import",
+      "oracle_id": "electron-v44.4.5.screen.process-main"
+    },
+    {
+      "operation_id": "clipboard-item.binding.named-import",
+      "oracle_id": "electron-v44.4.5.clipboard-item.process-main"
+    },
+    {
+      "operation_id": "clipboard.binding.named-import",
+      "oracle_id": "electron-v44.4.5.clipboard.process-main"
+    },
+    {
+      "operation_id": "native-image.binding.named-import",
+      "oracle_id": "electron-v44.4.5.native-image.process-main"
+    },
+    {
+      "operation_id": "native-theme.binding.named-import",
+      "oracle_id": "electron-v44.4.5.native-theme.process-main"
+    }
+  ]
+}

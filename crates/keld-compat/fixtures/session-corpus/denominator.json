@@ -1,0 +1,17 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-session-v1",
+  "corpus_sha256": "sha256:11856b4b06b88dd1836b4ceef2b7954d9dc1cbea61f31562cd67dab6190e04ba",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "web-request.on-before-request.file-url-filter",
+      "oracle_id": "electron-v44.4.5.web-request.on-before-request"
+    },
+    {
+      "operation_id": "web-request.on-headers-received.response-headers",
+      "oracle_id": "electron-v44.4.5.web-request.on-headers-received"
+    }
+  ]
+}
