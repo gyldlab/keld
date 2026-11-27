@@ -37,8 +37,7 @@ selection, deadline changes, Windows or Linux parity, signing or release.
   ownership. `docs/architecture/05-webview-and-native.md:302` retains registry ownership.
   Architecture 02 section 4 and architecture 03 section 1 retain wire and authority boundaries.
 
-The proposed amendment changes the conditional admission order, not these owners.
-GH-451 and GH-523 remain drafts. This document does not approve them.
+The proposed amendment changes the conditional admission order, not these owners. GH-451 and GH-523 remain drafts. This document does not approve them.
 
 ## 3. Acceptance criteria
 
@@ -69,11 +68,11 @@ Remove only the corresponding retry guard in each run.
 The test goes RED if a fresh conditional effect starts before both proofs hold.
 The matched pre-Prepare veto with no conditional record remains a valid control.
 
-Test a veto after Prepare separately. Observe the exact successful Cancel and
-the release of its receipt before a fresh conditional effect starts.
-Hold each required proof in a separate check. Omit only the corresponding
-retry guard. The test goes RED if the next attempt starts before settlement.
-The settled case permits a fresh attempt on the same qualified role.
+Test a veto after Prepare with one queued retry. Observe exact successful Cancel. Hold each receipt proof separately.
+Omit only the corresponding retry guard. The test goes RED on early before-quit or Prepare.
+Lose role qualification during final receipt consumption. Reject the queued intent without before-quit or Prepare.
+Omit only the final qualification check. The test goes RED on a new callback or effect.
+The settled case permits one fresh attempt on the same qualified role.
 
 For a local pre-send refusal after valid Prepare, run the B-3 acceptance check.
 Apply it separately to Cancel and Commit. A free local request slot alone
@@ -208,6 +207,7 @@ The intact control preserves cause and code and runs one tail; missing acknowled
 With the exact writer and prerequisites available, reuse the [IPC Accepted-before-EOF witness](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L321-L347).
 Withhold terminal Consume and Status. Observe one existing cleanup tail complete without either confirmation.
 Add only a success-path wait for either confirmation. The bounded owner-level tail oracle must go RED.
+Hold terminal retirement after consumption and no-late proof. Omit only the retirement requirement. The test goes RED on early release. Prove exact retirement without Consume in a separate control.
 
 ### AC-7: Legacy order stays unchanged
 
@@ -336,12 +336,12 @@ A zero in-flight count alone does not prove successful terminal writes or a
 current live generation. Check actual write failure and identity at the cut.
 Preserve unresolved work and exact errors. Do not invent a timeout or exit code.
 
-Keep committed decisions immutable after reservation. A lost reply does not
-prove noncommit. Reconcile only the original attempt using the negotiated
-GH-451 contract. Reclaim live-link receipt identities only with exact consumption
-and proven no-late delivery. Definitive old-link retirement ends its local
-reservations, not the historical known winner or unknown custody. Never require
-post-EOF Status or Host exit as a condition for sending a terminal reply.
+Keep committed decisions immutable after reservation. A lost reply does not prove noncommit.
+Reconcile only the original attempt using the negotiated GH-451 contract.
+Reclaim nonterminal effect identities only after exact consumption and proven no-late delivery.
+Keep known terminal effect identities until definitive old-link retirement, per #1432 `docs/engineering/gh451-conditional-quit-ipc-amendment.md:280@6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3`.
+Retirement ends local reservations, not historical winner or unknown custody.
+Never require post-EOF Status or Host exit before the terminal reply.
 Do not delay the existing terminal tail for a receipt-consumption confirmation.
 Keep a known committed decision and exact primary failure if Guardian preparation,
 echo retirement, correlated reply, local fence or cleanup fails. Do not synthesize
