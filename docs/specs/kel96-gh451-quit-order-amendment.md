@@ -96,8 +96,8 @@ Before Prepare, test Opening, Open, ClosePending, and Closing separately.
 Each live state must refuse Prepare. For Closing, deliver Released. Observe Destroyed before Prepare becomes eligible.
 Remove only the live-state census guard in one owner fixture.
 The test goes RED if Prepare grants a token in any live state.
-Omit only the physical-release predicate in another fixture while Closing still owns native teardown.
-The test goes RED if Prepare succeeds before Released and Destroyed.
+After registry census becomes empty, withhold only the physical-release observation in a nonshipping owner fixture.
+Remove only the destruction-complete check. The test goes RED if Prepare succeeds without that observation.
 Verify a genuine successor adopts its Open survivor without a new build.
 Reject the retired role's token after adoption and after the registry later becomes empty.
 Test the final generation check separately in a nonshipping owner-level fixture.
