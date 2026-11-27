@@ -283,15 +283,42 @@ fn container_error_has_stable_code_and_reinstall_guidance() {
         "{text}"
     );
     assert!(text.contains("Reinstall the signed package"), "{text}");
-    assert!(text.contains("`keld build`"), "{text}");
     assert!(text.contains("exactly one valid container"), "{text}");
+    let guidance = text.replace("(KELD-PACK-007: host image carries no container)", "");
+    assert!(!guidance.contains("keld build"), "{text}");
+    assert!(guidance.contains("keld-pack"), "{text}");
+    assert!(guidance.contains("unsigned prebuilt"), "{text}");
+    assert!(guidance.contains("before signing"), "{text}");
     assert!(
-        text.contains("rebuild `keld-host.exe` or `keld-updater-helper.exe`"),
+        guidance.contains("`keld-host.exe` or `keld-updater-helper.exe`"),
         "{text}"
     );
-    let guidance = text.replace("(KELD-PACK-007: host image carries no container)", "");
     assert!(
         !guidance.replace("keld-host.exe", "").contains("host"),
         "{text}"
     );
+}
+
+/// The updater's outer remedy is insufficient if an embedded keld-pack error
+/// still tells the operator to run the reserved `keld build` command.
+#[test]
+fn nested_container_remedies_reject_unavailable_build_command() {
+    let pack_errors = [
+        keld_pack::PackError::IdentityContainerMissing,
+        keld_pack::PackError::IdentityContainerInvalid {
+            detail: "non-canonical test container",
+        },
+    ];
+    for pack in pack_errors {
+        let error = UpdateError::ExpectedIdentityContainer {
+            pack_code: pack.code(),
+            detail: pack.to_string(),
+        };
+        let text = error.to_string();
+        assert!(text.contains(pack.code()), "{text}");
+        assert!(!text.contains("keld build"), "{text}");
+        assert!(text.contains("Reinstall the signed package"), "{text}");
+        assert!(text.contains("keld-pack"), "{text}");
+        assert!(text.contains("before signing"), "{text}");
+    }
 }

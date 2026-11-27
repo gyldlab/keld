@@ -159,7 +159,7 @@ impl core::fmt::Display for IpcError {
             Self::PayloadTooLarge => write!(
                 f,
                 "KELD-IPC-004: frame payload exceeds MAX_FRAME_LEN ({MAX_FRAME_LEN} bytes). \
-                 Shrink the payload or move large transfers to an approved measured bulk/resource adapter."
+                 Shrink the payload to fit one frame. No bulk/resource transport is implemented on this app-link; large transfers require a separately reviewed and measured transport."
             ),
             Self::Protocol { detail } => write!(
                 f,
@@ -335,11 +335,17 @@ mod tests {
         assert_code_and_fix(
             &IpcError::PayloadTooLarge,
             "KELD-IPC-004",
-            "bulk/resource adapter",
+            "No bulk/resource transport is implemented",
         );
         assert!(
             !IpcError::PayloadTooLarge.to_string().contains("keld://"),
             "the error must not prescribe one unqualified engine resource scheme"
+        );
+        assert!(
+            !IpcError::PayloadTooLarge
+                .to_string()
+                .contains("move large transfers"),
+            "the error must not prescribe a nonexistent app-link adapter"
         );
         assert_code_and_fix(
             &IpcError::Protocol {

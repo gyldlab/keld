@@ -1139,7 +1139,8 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("KELD-IPC-004"), "missing error code in: {msg}");
         assert!(
-            msg.contains("bulk/resource adapter"),
+            msg.contains("Shrink the payload to fit one frame.")
+                && msg.contains("No bulk/resource transport is implemented on this app-link;"),
             "missing fix hint in: {msg}"
         );
     }
