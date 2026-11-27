@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: KEL-96
 - Owner: GYLDLAB (approval pending)
-- Updated: 2026-11-26
+- Updated: 2026-11-27
 - Pin: 2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a
 
 ## 1. Goal & non-goals
@@ -105,6 +105,14 @@ Remove only the generation check. The test goes RED if the stale generation pass
   - **At-risk precondition:** The writer requires Running and the transition lock.
   - **Expected RED:** The reply is missing, the lease remains, or reservation is early.
 
+Test lease settlement independently of reply delivery. Reuse the
+[held-lease component witness](https://github.com/gyldlab/keld/blob/d8e8859afbc0ac603da45d9739052548c7bccfd2/crates/keld-core/src/app_session/terminal_quit_core_real_fs_candidate.rs#L208-L232)
+and the [authenticated reader witness](https://github.com/gyldlab/keld/blob/d8e8859afbc0ac603da45d9739052548c7bccfd2/crates/keld-core/src/app_session/tests/conditional_quit_dispatch.rs#L498-L517).
+After successful reply delivery, hold the lease and verify no reservation.
+Release the lease and verify one reservation. In the existing nonshipping
+owner fixture, omit only the lease-settlement predicate and retain the
+reply-success predicate. The test goes RED if reservation precedes lease release.
+
 ### AC-4: Drain failure retains exact custody
 
 - **Given:** A conditional drain still owes a terminal reply or lease, or its actual terminal writer fails.
@@ -128,6 +136,13 @@ Force the terminal writer to fail, then release its lease.
 The test goes RED if the failed generation remains current before fixture cleanup.
 Check that the failed generation admits no later work.
 
+Test D-2's failed-write accounting independently in the existing nonshipping
+writer and lease fixture. Observe the recorded write failure before lease
+release and verify that release does not count it as successful settlement.
+In a separate run, defer only the failure record until after lease release;
+keep exact-generation retirement enabled. The test goes RED if it observes
+lease release before the failure record, even when retirement still completes.
+
 Run distinct viable-held-drain and actual-failed-writer cases, plus successful Reply and successfully delivered typed Err
 controls. An in-flight count of zero alone cannot establish write success or a live role.
 In both failure cases, also check the original error and attempt custody.
@@ -144,6 +159,14 @@ Check that new work cannot start without proved settlement on a viable link.
   - **Single fault:** Let the later contender replace the committed cause.
   - **At-risk precondition:** The first contender already reserved shutdown.
   - **Expected RED:** The recorded cause changes or a second cleanup starts.
+
+Check the exact winning code in both eligible reservation orders. Reuse the
+[model winner tests](https://github.com/gyldlab/keld/blob/d8e8859afbc0ac603da45d9739052548c7bccfd2/crates/keld-core/src/app_session/terminal_quit_candidate.rs#L595-L665)
+and the [separate code and identity check](https://github.com/gyldlab/keld/blob/d8e8859afbc0ac603da45d9739052548c7bccfd2/crates/keld-core/src/app_session/terminal_quit_candidate.rs#L846-L887).
+Independently change only the recorded winning code in the nonshipping owner
+fixture. The test goes RED for a different code even with the original cause
+and exactly one cleanup tail. This follows
+[GH-523 AC-7](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/specs/gh523-host-authorized-app-exit.md#L100-L113).
 
 Use a validated Exit fixture for the second contender until GH-523 is approved.
 
@@ -169,7 +192,7 @@ Do not treat a missing caller acknowledgement as proof of noncommit.
 
 ### AC-7: Legacy order stays unchanged
 
-- **Given:** A legacy or unqualified session uses the existing Quit path.
+- **Given:** An actual legacy or unselected session uses the existing Quit path.
 - **When:** The Host admits the legacy Quit.
 - **Then:** Existing section 4.5 behavior and bytes remain unchanged.
   Conditional requests never fall back to this path.
@@ -178,7 +201,16 @@ Do not treat a missing caller acknowledgement as proof of noncommit.
   - **At-risk precondition:** A legacy fixture requests Quit with a live window.
   - **Expected RED:** The previously accepted legacy operation is refused.
 
-Test the opposite direction separately on a qualified session.
+Use the four dispositions in the [GH-451 IPC negotiation proposal](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L45-L82):
+
+| Peer state | Quit disposition |
+|---|---|
+| Actual legacy peer | Keep existing Quit behavior and bytes. Send no conditional frames. |
+| Negotiation-capable but unselected | Keep existing Quit behavior. Do not send Bind or enter the conditional choreography. |
+| Positively selected but not bound | Conditional Quit is unavailable, including with zero windows. Do not send a legacy Quit on refusal, loss or mismatch. Follow the existing protocol-error policy where applicable. |
+| Bound to the current qualified original | Use the conditional coordinator. Do not downgrade to legacy. |
+
+Check each row separately. Test the opposite direction on a qualified session.
 Use distinct refused and unresolved conditional attempts.
 Retain each original disposition. Observe no legacy Quit frame, terminal reservation or cleanup tail.
 Mutate only conditional-to-legacy fallback. The test goes RED if any of those legacy effects occur.
@@ -196,6 +228,18 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    Outside an active attempt, retain the existing listener policy. For a
    qualified original with no listener, default Quit enters the same
    conditional coordinator as an explicit Quit.
+   For this qualified path only, B-1 must record precedence over the
+   default-Quit write-before-return clause of
+   [GH-531 criterion 32](https://github.com/gyldlab/keld/blob/2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a/docs/specs/gh531-window-registry-close-state-machine.md#L389-L406).
+   Preserve the Destroy reply and physical facts, and emit `closed` before
+   `window-all-closed` when applicable. Enter the reversible coordinator
+   after those events and before `destroy()` returns; neither a legacy Quit
+   write nor terminal Commit is required before return. Prepare and the
+   final cut still check the authoritative registry. If a replacement window
+   is Opening or Open at Prepare, refuse preparation. If Create is admitted
+   after Prepare, the old token cannot reserve even if that Create later fails.
+   Test qualified and legacy destroy ordering separately, including an
+   admitted replacement window. The legacy write-before-return rule stays.
 2. Keep the existing lifecycle coordinator Running. Prepare checks the
    authenticated current Ready and subscribed original and its registry under its
    existing admission order. Opening and Closing count as live.
@@ -318,11 +362,11 @@ a prerequisite for the reversible design decision.
 |---|---|
 | AC-1 | Exact facade veto and Save retry, plus retained receipt with each missing proof |
 | AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption, combined retirement check and isolated generation check |
-| AC-3 | Authenticated FS Reply and Err, held lease, pause and reserve counters |
-| AC-4 | Independent viable-drain and failed-writer mutations, exact error custody, successful Reply/Err controls |
-| AC-5 | Both eligible reservation orders, queued reader contender and one tail |
+| AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
+| AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls; exact error custody; successful Reply/Err |
+| AC-5 | Both reservation orders, code-only control, queued reader contender and one tail |
 | AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
-| AC-7 | Existing legacy Quit bytes, live-window behavior, old-peer refusal and independent no-fallback controls |
+| AC-7 | Four peer dispositions, legacy Quit bytes, qualified and legacy destroy order, replacement window and independent no-fallback controls |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
 establish order. Native acceptance uses an independent process witness.
@@ -355,7 +399,8 @@ fixtures. Do not claim a faster shutdown from a model.
 - **Owner:** KEL-96 lifecycle owner with GH-451 and GH-531 owners.
 - **Impact:** T-2 cannot change shipping lifecycle behavior.
 - **Check:** Review and approve this exact amendment blob. Record its precedence
-  only for the qualified conditional path. Keep the original approved text intact.
+  only for the qualified conditional path, including D-1's GH-531 criterion 32
+  exception. Keep the original approved KEL-96 and GH-531 text intact.
 
 ### B-2: Shared terminal and drain custody
 
