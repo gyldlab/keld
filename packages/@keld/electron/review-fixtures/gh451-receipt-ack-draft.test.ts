@@ -1,6 +1,12 @@
 // Review-only facade receipt guards, not authenticated transport evidence.
 import { expect, test } from "bun:test";
-import { fixture, g, token, turn, w1 } from "./gh451-terminal-quit-draft-fixture";
+import {
+  fixture,
+  g,
+  token,
+  turn,
+  w1,
+} from "./gh451-terminal-quit-draft-fixture";
 
 test("AC11: missing Prepare consumption holds authorization until explicit release", async () => {
   const x = fixture();
@@ -201,7 +207,10 @@ test("AC11: direct typed Retained reporter retirement skips stale consumption", 
 
   expect(consumes).toBe(0);
   expect(x.late).toEqual([
-    { error, custody: { phase: "prepare", original: undefined, generation: g } },
+    {
+      error,
+      custody: { phase: "prepare", original: undefined, generation: g },
+    },
   ]);
   expect(x.coordinator.disposition).toBe("unknown");
   expect(await x.coordinator.reconcile()).toBe("unknown");
