@@ -240,11 +240,7 @@ function fixture(
         api.consumeReceipt(mapped.receipt);
       }
       if (ledger.isReserved(mapped.lease) || ledger.status)
-        return {
-          ready: false,
-          pending: true,
-          error: new Error("independent release proof pending"),
-        };
+        return { ready: false, pending: true };
       if (delivery.disposition.kind !== "prepared") token = undefined;
       if (delivery.disposition.kind === "canceled") onConsumedCancel?.();
       return { ready: true };
@@ -617,6 +613,77 @@ test("composed: known Prepare held until independent no-late proof permits conti
   expect(f.fences).toBe(1);
 });
 
+for (const operation of ["prepare", "commit"] as const) {
+  test(`composed: ${operation} Retained waits for receipt release without false failure`, async () => {
+    const f = fixture();
+    if (operation === "commit") f.reply({ kind: "prepared", token: "old" });
+    f.reply({ kind: "retained" }, false);
+    const publicQuit = f.coordinator.quit();
+    await awaitObserved(
+      () => f.coordinator.heldDisposition?.kind === "retained",
+    );
+    await expect(publicQuit).rejects.toThrow("KELD-COMPAT-012: retained");
+    const expected: Request["operation"][] =
+      operation === "prepare" ? ["prepare"] : ["prepare", "commit"];
+    const held = f.ledger.original;
+    expect(held).toBeDefined();
+    for (let i = 0; i < 2; i++) {
+      expect(f.coordinator.quit()).toBe(publicQuit);
+      expect(await f.coordinator.reconcile()).toBe("unknown");
+      expect(f.ledger.original).toBe(held);
+      expect(f.sent.map((request) => request.operation)).toEqual(expected);
+      expect(f.late).toEqual([]);
+    }
+    f.proveOriginalNoLate();
+    expect(await f.coordinator.reconcile()).toBe("retained");
+    expect(f.ledger.original).toBeUndefined();
+    expect(f.late).toEqual([]);
+    f.reply({ kind: "retained" });
+    const retry = f.coordinator.quit();
+    expect(retry).not.toBe(publicQuit);
+    await expect(retry).rejects.toThrow("KELD-COMPAT-012: retained");
+    expect(f.sent.map((request) => request.operation)).toEqual([
+      ...expected,
+      "prepare",
+    ]);
+    expect(f.fences).toBe(0);
+  });
+}
+
+test("composed: recovered Invalidated with proof held produces no synthetic errors", async () => {
+  const f = fixture();
+  const lost = f.lose();
+  const publicQuit = f.coordinator.quit();
+  await expect(publicQuit).rejects.toBe(lost);
+  const original = f.original();
+  f.recorded({ kind: "invalidated" }, original);
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.coordinator.heldDisposition?.kind).toBe("invalidated");
+  for (let i = 0; i < 2; i++) {
+    expect(f.coordinator.quit()).toBe(publicQuit);
+    expect(await f.coordinator.reconcile()).toBe("unknown");
+    expect(f.sent).toEqual([
+      { operation: "prepare" },
+      { operation: "status", original },
+    ]);
+    expect(f.late).toEqual([]);
+  }
+  f.proveOriginalNoLate();
+  expect(await f.coordinator.reconcile()).toBe("retained");
+  expect(f.late).toEqual([]);
+  await expect(publicQuit).rejects.toBe(lost);
+  f.reply({ kind: "retained" });
+  const retry = f.coordinator.quit();
+  expect(retry).not.toBe(publicQuit);
+  await expect(retry).rejects.toThrow("KELD-COMPAT-012: retained");
+  expect(f.sent.map((request) => request.operation)).toEqual([
+    "prepare",
+    "status",
+    "prepare",
+  ]);
+  expect(f.fences).toBe(0);
+});
+
 test("composed: known Accepted survives exact local fence failure", async () => {
   const f = fixture();
   const failure = new Error("local fence failure");
@@ -886,6 +953,30 @@ for (const source of ["effect", "status"] as const) {
     );
   });
 }
+
+test("composed: retirement during local refusal delivery preserves the typed error", async () => {
+  const ledger = new DraftCorrelationLedger(1, 1);
+  const f = fixture([], true, ledger);
+  const ordinary = ledger.reserveOrdinary()!;
+  expect(ordinary).toBeDefined();
+  const publicQuit = f.coordinator.quit();
+  f.retire();
+  await expect(publicQuit).rejects.toThrow("original role retired");
+  await awaitObserved(() => f.late.length === 1);
+  expect(f.late[0]?.error).toBeInstanceOf(Error);
+  expect((f.late[0]?.error as Error).message).toBe("draft refusal: capacity");
+  expect(f.late[0]?.custody).toEqual({
+    phase: "prepare",
+    original: undefined,
+    generation,
+  });
+  expect(f.coordinator.quit()).toBe(publicQuit);
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.sent).toEqual([]);
+  expect(f.ledger.original).toBeUndefined();
+  expect(f.ledger.isReserved(ordinary)).toBe(true);
+  expect(f.late).toHaveLength(1);
+});
 
 test("composed: direct Invalidated is unknown until exact Prepare Status", async () => {
   const f = fixture();

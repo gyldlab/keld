@@ -56,7 +56,9 @@ export type ConsumedDisposition<T> = Readonly<{
   disposition: Disposition<T>;
 }>;
 export type Consumption =
-  { ready: true } | { ready: false; pending?: true; error: unknown };
+  | { ready: true }
+  | { ready: false; pending: true }
+  | { ready: false; pending?: false; error: unknown };
 export interface DraftHost<T> {
   // Captured negotiated/selected qualification, never inferred from Ready.
   readonly conditionalEligible: boolean;

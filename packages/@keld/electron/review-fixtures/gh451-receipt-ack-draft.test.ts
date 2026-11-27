@@ -44,6 +44,77 @@ test("AC11: missing Retained consumption blocks a fresh conditional attempt", as
   await expect(retry).rejects.toThrow("KELD-COMPAT-012");
 });
 
+test("AC11: known typed Retained rejects exactly once while release remains pending", async () => {
+  const x = fixture();
+  const error = new Error("exact typed Retained");
+  let ready = false;
+  x.f.consume = () =>
+    ready ? { ready: true } : { ready: false, pending: true };
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "retained", error });
+  await expect(publicQuit).rejects.toBe(error);
+  expect(x.coordinator.heldDisposition?.kind).toBe("retained");
+  for (let i = 0; i < 2; i++) {
+    expect(await x.coordinator.reconcile()).toBe("unknown");
+    expect(x.coordinator.quit()).toBe(publicQuit);
+    expect(x.late).toEqual([]);
+  }
+  ready = true;
+  expect(await x.coordinator.reconcile()).toBe("retained");
+  expect(x.late).toEqual([]);
+  expect(x.prepares).toHaveLength(1);
+});
+
+test("AC11: recovered typed noncommit reports once independently of receipt release", async () => {
+  const x = fixture();
+  const original = { operation: "prepare" as const, correlation: 7 };
+  const lost = new Error("lost Prepare");
+  const error = new Error("exact Invalidated");
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "unknown", original, error: lost });
+  await expect(publicQuit).rejects.toBe(lost);
+  let ready = false;
+  x.f.consume = () =>
+    ready ? { ready: true } : { ready: false, pending: true };
+  const recovery = x.coordinator.reconcile();
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "invalidated", error },
+  });
+  expect(await recovery).toBe("unknown");
+  const reports = [
+    { error, custody: { phase: "prepare" as const, original, generation: 1n } },
+  ];
+  expect(x.late).toEqual(reports);
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.late).toEqual(reports);
+  ready = true;
+  expect(await x.coordinator.reconcile()).toBe("retained");
+  expect(x.late).toEqual(reports);
+  await expect(publicQuit).rejects.toBe(lost);
+  expect(x.statuses).toHaveLength(1);
+  expect(x.prepares).toHaveLength(1);
+});
+
+test("AC11: late typed refusal preserves the actual cause after retirement", async () => {
+  const x = fixture();
+  const publicQuit = x.coordinator.quit();
+  x.coordinator.retire(1n);
+  await expect(publicQuit).rejects.toThrow("original role retired");
+  const error = new Error("exact typed refusal");
+  x.prepares[0]!.resolve({ kind: "refused", error });
+  await turn();
+  expect(x.late).toEqual([
+    {
+      error,
+      custody: { phase: "prepare", original: undefined, generation: 1n },
+    },
+  ]);
+  expect(x.coordinator.quit()).toBe(publicQuit);
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.trace).toEqual(["before", "prepare"]);
+});
+
 test("AC11: known terminal acceptance does not require consumption callback", async () => {
   const x = fixture();
   const publicQuit = x.coordinator.quit();

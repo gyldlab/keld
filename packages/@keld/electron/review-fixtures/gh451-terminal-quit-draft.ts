@@ -65,6 +65,9 @@ type Pending<T> = {
   token?: T;
   original?: Original<T>;
   held?: Disposition<T>;
+  awaitingRelease?: boolean;
+  // A known noncommit error is independent of private receipt reclamation.
+  noncommitDelivered?: boolean;
 };
 type Recovery = {
   promise: Promise<Outcome>;
@@ -451,13 +454,20 @@ export class DraftQuitCoordinator<T> {
             original: p.original,
             generation: this.generation,
           });
-      } else if (d.kind === "unknown" && d.error !== undefined) {
-        this.rememberOriginal(p, d.original);
-        this.report(d.error, {
-          phase: source === "status" ? "status" : p.operation,
-          original: p.original,
-          generation: this.generation,
-        });
+      } else if (
+        d.kind === "unknown" ||
+        d.kind === "refused" ||
+        d.kind === "retained" ||
+        d.kind === "invalidated"
+      ) {
+        if (d.kind === "unknown") this.rememberOriginal(p, d.original);
+        // Late nonterminal errors are historical custody, never retry authority.
+        if (d.error !== undefined && !p.noncommitDelivered)
+          this.report(d.error, {
+            phase: source === "status" ? "status" : p.operation,
+            original: p.original,
+            generation: this.generation,
+          });
       }
       return;
     }
@@ -514,19 +524,32 @@ export class DraftQuitCoordinator<T> {
     // subsequent effect or fresh attempt until allocator custody is safe.
     if (d.kind !== "refused") {
       p.held = d;
+      p.awaitingRelease = false;
       const consumed = this.consume(p, d);
       if (this.active !== a || a.pending !== p) return;
       if (!consumed.ready) {
-        if (
-          (d.kind === "canceled" || d.kind === "prepared") &&
-          consumed.pending
-        ) {
-          // A known reply awaiting an independent proof is not an effect
-          // failure. Keep both public settlement and effects blocked.
+        if (consumed.pending) {
+          // Pending proof is not an effect failure. Keep private effects blocked.
+          p.awaitingRelease = true;
           a.phase = p.operation;
           const recovery = a.recovery;
           a.recovery = undefined;
           recovery?.resolve("unknown"); // reconciliation is not yet complete
+          if (
+            (d.kind === "retained" || d.kind === "invalidated") &&
+            !p.noncommitDelivered
+          ) {
+            // A definitive noncommit may settle the public error now, but the
+            // attempt remains held. Mark delivery before any reentrant callback.
+            p.noncommitDelivered = true;
+            if (d.error !== undefined)
+              this.failPublic(a, d.error, {
+                phase: p.operation,
+                original: p.original,
+                generation: this.generation,
+              });
+            else this.reject(a.h, refusal("retained"));
+          }
           return;
         }
         return this.uncertain(a, p, p.original, consumed.error);
@@ -541,7 +564,7 @@ export class DraftQuitCoordinator<T> {
       return this.finish(
         a,
         p.operation === "cancel" ? a.cancelOutcome : "retained",
-        d.error,
+        p.noncommitDelivered ? undefined : d.error,
       );
     }
     if (d.kind === "canceled") return this.finish(a, a.cancelOutcome);
@@ -668,9 +691,7 @@ export class DraftQuitCoordinator<T> {
     if (a.recovery) return a.recovery.promise;
     const p = a.pending;
     if (
-      (a.phase !== "unknown" &&
-        !(a.phase === "prepare" && p?.held?.kind === "prepared") &&
-        !(a.phase === "cancel" && p?.held?.kind === "canceled")) ||
+      (a.phase !== "unknown" && !p?.awaitingRelease) ||
       !p ||
       !this.current() ||
       (!p.held && (!p.original || !this.host.status))
