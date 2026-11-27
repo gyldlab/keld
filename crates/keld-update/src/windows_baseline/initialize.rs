@@ -124,6 +124,7 @@ pub(super) enum BaselineBoundary {
     LastKnownGoodPublished,
     RootsVerified,
     ProvenancePublished,
+    FinalReadbackVerified,
 }
 
 #[cfg(test)]
@@ -253,6 +254,10 @@ fn initialize_with_authority_and_token_check(
     }
     token_check(authority).map_err(|cause| error("installer authority", cause))?;
     crate::provenance::match_identity(&trust.installation, verified.installation())?;
+    // Admit and pin the verified archive before the first bootstrap-lock or
+    // other installation effect. Never reopen its pathname to populate stage.
+    let mut retained_source =
+        publication::ValidatedBaselineStageSource::open_legacy(verified, archive)?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
     let update_name = trust
@@ -267,7 +272,9 @@ fn initialize_with_authority_and_token_check(
     observe(BaselineBoundary::ActivationLockCreated)
         .map_err(|cause| error("activation lock boundary", cause))?;
 
-    publish_baseline_version(verified, archive, &roots, authority, &mut observe)?;
+    // Keep the admitted source's read-only share through commit and the exact
+    // seed reread. Readback opens the installed copy, not the source pathname.
+    publish_baseline_version(&mut retained_source, &roots, authority, &mut observe)?;
     let version = super::load::validate_initial_version(&roots)?;
     seed_baseline_pointers(verified, &roots, &mut observe)?;
     commit_baseline(&roots, &mut lock, &mut observe)?;
@@ -276,6 +283,9 @@ fn initialize_with_authority_and_token_check(
     drop(roots);
     let loaded: LoadedWindowsBaseline = super::load_windows_baseline(trust)?;
     let version = super::load::validate_initial_seed(&loaded.roots)?;
+    observe(BaselineBoundary::FinalReadbackVerified)
+        .map_err(|cause| error("final readback boundary", cause))?;
+    drop(retained_source);
     Ok(WindowsBaselineReceipt {
         loaded,
         _version: version,
