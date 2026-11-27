@@ -230,12 +230,20 @@ Use distinct refused and unresolved conditional attempts.
 Retain each original disposition. Observe no legacy Quit frame, terminal reservation or cleanup tail.
 Mutate only conditional-to-legacy fallback. The test goes RED if any of those legacy effects occur.
 
+Hold Bind unresolved on a positively selected role with one window.
+Destroy the last window with no last-window listener. Verify D-1's event order.
+Observe the unavailable disposition and normal Destroy return, without either Quit path.
+Observe no conditional close sweep, Prepare or terminal reservation.
+In separate controls, test the actual legacy, unselected and qualified bound roles.
+Remove only the selected-but-unbound refusal. The test goes RED on either Quit path.
+
 ## 4. Design
 
 ### D-1: Scoped order for section 4.5
 
 For the qualified GH-451 path only, apply the following steps instead of the
 unconditional admission sequence in existing section 4.5 steps 1–4.
+Step 1 also defines the default-intent refusal before binding.
 
 1. Keep GH-531 Destroyed and LastWindowClosed facts ordered on the existing
    app link. The facade alone suppresses the public event during active Quit.
@@ -247,19 +255,24 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    If the current snapshot already shows a live replacement, do not enter
    automatic Quit. The later authoritative checks remain necessary.
    Do not apply this default-intent restriction to explicit Quit.
-   For this qualified path only, B-1 must record precedence over the
-   default-Quit write-before-return clause of
+   B-1 must record precedence over the default-Quit write-before-return clause of
    [GH-531 criterion 32](https://github.com/gyldlab/keld/blob/2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a/docs/specs/gh531-window-registry-close-state-machine.md#L389-L406).
-   Preserve the Destroy reply and physical facts, and emit `closed` before
-   `window-all-closed` when applicable. Enter the reversible coordinator
-   after those events and before `destroy()` returns; neither a legacy Quit
-   write nor terminal Commit is required before return. Prepare and the
+   This applies to qualified bound and selected-but-unbound default intent.
+   Preserve the Destroy reply and physical facts. Emit `closed` before
+   `window-all-closed` when applicable. For the qualified bound path, enter
+   the reversible coordinator after those events and before `destroy()` returns.
+   Neither a legacy Quit write nor terminal Commit is required before return. Prepare and the
    final cut still check the authoritative registry. If a replacement window
    is Opening or Open at Prepare, refuse preparation. If Create is admitted
    after Prepare, the old token cannot reserve even if that Create later fails.
+   For a positively selected role without Bound, preserve the same Destroy and event order.
+   Apply the unavailable disposition from AC-7 before `destroy()` returns.
+   Send no legacy Quit and enter no conditional choreography.
+   Do not delay Destroy return for Bind. Keep the existing protocol-error policy.
+   This exception does not change legacy or unselected behavior.
    Test qualified and legacy destroy ordering separately, including an
    admitted replacement window. The legacy write-before-return rule stays.
-   Without a listener, observe entry into the conditional coordinator once.
+   Without a listener on the qualified bound path, observe coordinator entry once.
    For an already-known live replacement, observe no automatic entry,
    before-quit callback or replacement close request.
    With a registered listener, verify the existing listener policy instead.
@@ -389,7 +402,7 @@ a prerequisite for the reversible design decision.
 | AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls; exact error custody; successful Reply/Err |
 | AC-5 | Separate held-reply and held-lease races, both reservation orders in each, code-only control, queued reader contender and one tail |
 | AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
-| AC-7 | Four peer dispositions, legacy Quit bytes, qualified and legacy destroy order, listener policy, replacement window and independent no-fallback controls |
+| AC-7 | Four peer dispositions and destroy orders, held Bind refusal, legacy Quit bytes, listener policy, replacement window and independent no-fallback controls |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
 establish order. Native acceptance uses an independent process witness.
@@ -422,8 +435,10 @@ fixtures. Do not claim a faster shutdown from a model.
 - **Owner:** KEL-96 lifecycle owner with GH-451 and GH-531 owners.
 - **Impact:** T-2 cannot change shipping lifecycle behavior.
 - **Check:** Review and approve this exact amendment blob. Record its precedence
-  only for the qualified conditional path, including D-1's GH-531 criterion 32
-  exception. Keep the original approved KEL-96 and GH-531 text intact.
+  for the qualified conditional path. Include the GH-531 criterion 32 exception
+  for qualified bound and positively selected but unbound default intent.
+  Preserve the legacy and unselected write-before-return rule.
+  Keep the original approved KEL-96 and GH-531 text intact.
 
 ### B-2: Shared terminal and drain custody
 
