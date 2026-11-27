@@ -210,9 +210,13 @@ impl TerminalQuit {
         if pending.phase != Phase::Prepared {
             return Outcome::Busy;
         }
-        if pending.invalidated || !facts.can_prepare() {
+        if pending.invalidated {
             self.state = State::Idle { cancelled: None };
             return Outcome::Retained;
+        }
+        if !facts.can_prepare() {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
         }
         pending.phase = Phase::Draining;
         self.state = State::Pending(pending);
@@ -245,9 +249,13 @@ impl TerminalQuit {
         if !facts.fs_terminal_drained {
             return Outcome::AwaitingDrain;
         }
-        if pending.invalidated || !facts.can_prepare() {
+        if pending.invalidated {
             self.state = State::Idle { cancelled: None };
             return Outcome::Retained;
+        }
+        if !facts.can_prepare() {
+            self.state = State::Unknown;
+            return Outcome::Unknown;
         }
         if !reserve() {
             self.state = State::Unknown;
@@ -473,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn final_recheck_refuses_unreported_live_or_undestroyed_window() {
+    fn unconfirmed_registry_change_preserves_unknown_disposition() {
         let facts = ready(1);
         for changed in [
             HostFacts {
@@ -485,13 +493,22 @@ mod tests {
                 ..facts
             },
         ] {
+            let mut before_drain = TerminalQuit::new();
+            let before_token = prepared(&mut before_drain, facts);
+            assert_eq!(
+                before_drain.begin_commit(before_token, changed),
+                Outcome::Unknown
+            );
+            assert_eq!(before_drain.prepare(facts), Outcome::Unknown);
+
             let mut quit = TerminalQuit::new();
             let token = prepared(&mut quit, facts);
             assert_eq!(quit.begin_commit(token, facts), Outcome::DrainRequired);
             assert_eq!(
                 quit.finish_commit(token, changed, || panic!("must not reserve")),
-                Outcome::Retained
+                Outcome::Unknown
             );
+            assert_eq!(quit.prepare(facts), Outcome::Unknown);
         }
     }
 
