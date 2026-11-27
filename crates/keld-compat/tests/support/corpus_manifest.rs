@@ -229,6 +229,12 @@ pub enum Shape {
 pub enum Runner {
     /// A keld-compat integration target run by Cargo and libtest.
     Libtest { target: &'static str },
+    /// A statically registered exact case in a workspace integration target.
+    ExactLibtest {
+        package: &'static str,
+        target: &'static str,
+        case: &'static str,
+    },
     /// A Bun test file under `packages/`.
     Bun,
 }
@@ -323,8 +329,38 @@ pub const NATIVE_V1: Registration = Registration {
     ],
 };
 
+/// GH-569 pinned module and main-role process observations on macOS.
+pub const MODULE_PROCESS_V1: Registration = Registration {
+    corpus_id: "electron-module-process-v1",
+    fixture_dir: "fixtures/module-process-corpus",
+    shape: Shape::V1,
+    platforms: &[Platform::Macos],
+    targets: &[
+        TestTarget {
+            path: "crates/keld-compat/tests/module_process_reference.rs",
+            runner: Runner::Libtest {
+                target: "module_process_reference",
+            },
+        },
+        TestTarget {
+            path: "crates/keld-host/tests/no_flag_macos.rs",
+            runner: Runner::ExactLibtest {
+                package: "keld-host",
+                target: "no_flag_macos",
+                case: "module_process::shipping_role_early_dependency_reports_process_facts",
+            },
+        },
+    ],
+};
+
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
-pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1, APP_V1, NATIVE_V1];
+pub const REGISTRY: &[Registration] = &[
+    LIFECYCLE_V0,
+    WINDOW_V1,
+    APP_V1,
+    NATIVE_V1,
+    MODULE_PROCESS_V1,
+];
 
 /// Parent of the one doc-snapshot store, relative to `crates/keld-compat`. Every v1
 /// corpus reads its cited pages from `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/<commit>/<page>`
@@ -771,15 +807,25 @@ impl Corpus {
         }
         check_targets(reg)?;
         for cell in &cells {
-            if !reg
+            let target = reg
                 .targets
                 .iter()
-                .any(|target| target.path == cell.test_path)
-            {
-                return Err(CorpusError::UnregisteredTarget {
+                .find(|target| target.path == cell.test_path)
+                .ok_or_else(|| CorpusError::UnregisteredTarget {
                     corpus_id: id.clone(),
                     cell: cell.key.operation_id.clone(),
                     test_path: cell.test_path.clone(),
+                })?;
+            if let Runner::ExactLibtest { case, .. } = target.runner
+                && case != cell.test_name
+            {
+                return Err(CorpusError::InvalidTarget {
+                    corpus_id: id.clone(),
+                    path: target.path.to_owned(),
+                    reason: format!(
+                        "registered exact case {case} differs from cell {}",
+                        cell.test_name
+                    ),
                 });
             }
         }
@@ -1248,16 +1294,27 @@ fn cell_platforms(
     Ok(platforms)
 }
 
-/// Validates every registered target of `reg` (C3): a libtest target is a keld-compat
-/// integration file that exists and does not include this owner; a Bun target is an
-/// existing `*.test.ts` under `packages/`.
+/// Validates registered target paths and direct-root owner includes (C3). Legacy
+/// libtest targets remain in keld-compat; exact targets name a workspace integration
+/// case. The direct-root guard does not inspect an arbitrary transitive module graph;
+/// each trusted exact registration needs independent review of its actual closure.
+/// Bun targets are existing `*.test.ts` files under `packages/`.
 pub fn check_targets(reg: &Registration) -> Result<(), CorpusError> {
     let invalid = |path: &str, reason: String| CorpusError::InvalidTarget {
         corpus_id: reg.corpus_id.to_owned(),
         path: path.to_owned(),
         reason,
     };
-    for target in reg.targets {
+    for (index, target) in reg.targets.iter().enumerate() {
+        if reg.targets[..index]
+            .iter()
+            .any(|prior| prior.path == target.path)
+        {
+            return Err(invalid(
+                target.path,
+                "duplicate target path is ambiguous".to_owned(),
+            ));
+        }
         let file = join_rel(&workspace_root(), target.path);
         match target.runner {
             Runner::Libtest { target: name } => {
@@ -1279,6 +1336,13 @@ pub fn check_targets(reg: &Registration) -> Result<(), CorpusError> {
                     ));
                 }
             }
+            Runner::ExactLibtest {
+                package,
+                target: name,
+                case,
+            } => {
+                check_exact_target(reg, target, &file, package, name, case)?;
+            }
             Runner::Bun => {
                 if !target.path.starts_with("packages/") || !target.path.ends_with(".test.ts") {
                     return Err(invalid(
@@ -1292,6 +1356,98 @@ pub fn check_targets(reg: &Registration) -> Result<(), CorpusError> {
             }
         }
     }
+    Ok(())
+}
+
+fn check_exact_target(
+    reg: &Registration,
+    target: &TestTarget,
+    file: &Path,
+    package: &str,
+    name: &str,
+    case: &str,
+) -> Result<(), CorpusError> {
+    let invalid = |path: &str, reason: String| CorpusError::InvalidTarget {
+        corpus_id: reg.corpus_id.to_owned(),
+        path: path.to_owned(),
+        reason,
+    };
+
+    let simple = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    if !simple(package) || !simple(name) || case.is_empty() || !case.split("::").all(simple) {
+        return Err(invalid(
+            target.path,
+            "invalid package, target or exact case".to_owned(),
+        ));
+    }
+    let expected = format!("crates/{package}/tests/{name}.rs");
+    if target.path != expected {
+        return Err(invalid(
+            target.path,
+            format!("exact target must be {expected}"),
+        ));
+    }
+    let metadata = std::process::Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1",
+        ])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|error| invalid(target.path, format!("cargo metadata failed: {error}")))?;
+    if !metadata.status.success() {
+        return Err(invalid(target.path, "cargo metadata failed".to_owned()));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)
+        .map_err(|error| invalid(target.path, format!("invalid cargo metadata: {error}")))?;
+    let packages = metadata["packages"]
+        .as_array()
+        .ok_or_else(|| invalid(target.path, "missing metadata packages".to_owned()))?;
+    let members = metadata["workspace_members"]
+        .as_array()
+        .ok_or_else(|| invalid(target.path, "missing metadata members".to_owned()))?;
+    let manifest = workspace_root().join(format!("crates/{package}/Cargo.toml"));
+    let valid = packages.iter().any(|item| {
+        item["name"] == package
+            && item["manifest_path"]
+                .as_str()
+                .is_some_and(|path| Path::new(path) == manifest)
+            && members.contains(&item["id"])
+            && item["targets"].as_array().is_some_and(|targets| {
+                targets.iter().any(|entry| {
+                    entry["name"] == name
+                        && entry["kind"]
+                            .as_array()
+                            .is_some_and(|kind| kind.iter().any(|k| k == "test"))
+                        && entry["src_path"]
+                            .as_str()
+                            .is_some_and(|path| Path::new(path) == file)
+                })
+            })
+    });
+    if !valid {
+        return Err(invalid(
+            target.path,
+            "package or integration target is not a workspace member".to_owned(),
+        ));
+    }
+    let text = fs::read_to_string(file)
+        .map_err(|error| invalid(target.path, format!("cannot read it: {error}")))?;
+    if text.contains(OWNER_INCLUDE) {
+        return Err(invalid(
+            target.path,
+            "it includes the corpus owner, so admitting it would recurse".to_owned(),
+        ));
+    }
+
     Ok(())
 }
 
