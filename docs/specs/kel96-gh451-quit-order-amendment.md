@@ -149,12 +149,10 @@ Check that the failed generation admits no later work.
 Test D-2's failed-write accounting independently in the existing nonshipping
 writer and lease fixture. Observe the recorded write failure before lease
 release and verify that release does not count it as successful settlement.
-In a separate run, defer only the failure record until after lease release;
-keep exact-generation retirement enabled. The test goes RED if it observes
-lease release before the failure record, even when retirement still completes.
+In a separate run, defer only the failure record until after lease release. Keep exact-generation retirement enabled.
+The test goes RED if it observes lease release before the failure record, even when retirement still completes.
 
-Run distinct viable-held-drain and actual-failed-writer cases, plus successful Reply and successfully delivered typed Err
-controls. An in-flight count of zero alone cannot establish write success or a live role.
+Run distinct viable-held-drain and actual-failed-writer cases. Include successful Reply and successfully delivered typed Err controls. An in-flight count of zero alone cannot establish write success or a live role.
 In both failure cases, also check the original error and attempt custody.
 Check that new work cannot start without proved settlement on a viable link.
 In both invalidation checks hold an unrelated FS reply and lease. Before Draining, refuse without pausing, draining or reserving.
@@ -203,11 +201,16 @@ After settlement, verify each eligible reservation order independently in both c
 
 Separately from failed cleanup, withhold exact acceptance after final reservation.
 Remove only winner retention on delivery failure. The test goes RED on winner erasure or a second terminal effect.
-The intact control preserves cause and code and runs one tail; missing acknowledgement is not proof of noncommit.
+The intact control preserves cause and code and runs one tail. Missing acknowledgement is not proof of noncommit.
 With the exact writer and prerequisites available, reuse the [IPC Accepted-before-EOF witness](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L321-L347).
 Withhold terminal Consume and Status. Observe one existing cleanup tail complete without either confirmation.
 Add only a success-path wait for either confirmation. The bounded owner-level tail oracle must go RED.
 Hold terminal retirement after consumption and no-late proof. Omit only the retirement requirement. The test goes RED on early release. Prove exact retirement without Consume in a separate control.
+For each D-2 failure, inject only that failure after conditional reservation and run the same fixture without the fault. At the owning seam, check unchanged cause and code, the exact primary error, no fabricated Accepted, no false clean exit and no second tail.
+- Guardian preparation: reuse the [Core owner failure fixture](https://github.com/gyldlab/keld/blob/070a20525896c4603fe153d9707d8b02c4953b48/crates/keld-core/src/app_session/tests/terminal_cleanup_and_windows_shutdown.rs#L1-L53) with conditional reservation. Observe fatal attribution and preserved error.
+- Echo retirement: reuse the [Core Echo error observer](https://github.com/gyldlab/keld/blob/e3a45811fa8ffa82a07bcd5e22e8dfb68cc7a0c4/crates/keld-core/src/app_session/auth_router_tests.rs#L851-L909). Induce only Echo retirement failure on the conditional path and observe the exact retirement error.
+- Reply and cleanup: use the controls above. Local fence: reuse the [API fence fixture](https://github.com/gyldlab/keld/blob/070a20525896c4603fe153d9707d8b02c4953b48/packages/@keld/api/fixtures/gh451-retained-link-draft/candidate.test.ts#L675-L744) for direct and recovered Accepted with the original error. Check custody and one tail in conditional integration.
+Existing fixtures are component evidence only. T-2 owns the conditional checks. Native mechanism and cleanup qualification remain under T-3 and B-4.
 
 ### AC-7: Legacy order stays unchanged
 
@@ -336,13 +339,11 @@ A zero in-flight count alone does not prove successful terminal writes or a
 current live generation. Check actual write failure and identity at the cut.
 Preserve unresolved work and exact errors. Do not invent a timeout or exit code.
 
-Keep committed decisions immutable after reservation. A lost reply does not prove noncommit.
-Reconcile only the original attempt using the negotiated GH-451 contract.
+Keep committed decisions immutable after reservation. A lost reply does not prove noncommit. Reconcile only the original attempt using the negotiated GH-451 contract.
 Reclaim nonterminal effect identities only after exact consumption and proven no-late delivery.
 Keep known terminal effect identities until definitive old-link retirement, per #1432 `docs/engineering/gh451-conditional-quit-ipc-amendment.md:280@6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3`.
 Retirement ends local reservations, not historical winner or unknown custody.
-Never require post-EOF Status or Host exit before the terminal reply.
-Do not delay the existing terminal tail for a receipt-consumption confirmation.
+Never require post-EOF Status or Host exit before the terminal reply. Do not delay the existing terminal tail for a receipt-consumption confirmation.
 Keep a known committed decision and exact primary failure if Guardian preparation,
 echo retirement, correlated reply, local fence or cleanup fails. Do not synthesize
 acceptance or repeat the tail. Never transfer an old identity to a successor.
@@ -410,9 +411,9 @@ a prerequisite for the reversible design decision.
 | AC-1 | Exact facade veto, Save retry, post-Prepare Cancel and retained receipt with each missing proof, and B-3 surviving-Prepare recovery |
 | AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption, combined retirement check and isolated generation check |
 | AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
-| AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls; exact error custody; successful Reply/Err |
+| AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls, exact error custody and successful Reply/Err |
 | AC-5 | Separate held-reply and held-lease races, both reservation orders in each, code-only control, queued reader contender and one tail |
-| AC-6 | Conditional Accepted before EOF with no confirmation wait; independent progress, lost-reply rollback and cleanup-failure controls |
+| AC-6 | Conditional Accepted before EOF, independent progress with no confirmation wait, and separate D-2 failure witnesses and controls |
 | AC-7 | Four peer dispositions and destroy orders, held Bind refusal, legacy Quit bytes, listener policy, replacement window and independent no-fallback controls |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
