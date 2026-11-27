@@ -202,12 +202,12 @@ After settlement, verify each eligible reservation order independently in both c
   - **At-risk precondition:** A held owned cleanup operation returns failure.
   - **Expected RED:** Success appears without the required cleanup receipt.
 
-Test lost correlated acceptance separately from cleanup failure.
-Withhold the exact acceptance after a final reservation.
-Remove only the rule that retains the committed winner when delivery fails.
-The test goes RED if the owner erases that winner or admits another terminal effect.
-With the rule intact, retain the original cause and code and run one cleanup tail.
-Do not treat a missing caller acknowledgement as proof of noncommit.
+Separately from failed cleanup, withhold exact acceptance after final reservation.
+Remove only winner retention on delivery failure. The test goes RED on winner erasure or a second terminal effect.
+The intact control preserves cause and code and runs one tail; missing acknowledgement is not proof of noncommit.
+With the exact writer and prerequisites available, reuse the [IPC Accepted-before-EOF witness](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L321-L347).
+Withhold terminal Consume and Status. Observe one existing cleanup tail complete without either confirmation.
+Add only a success-path wait for either confirmation. The bounded owner-level tail oracle must go RED.
 
 ### AC-7: Legacy order stays unchanged
 
@@ -412,7 +412,7 @@ a prerequisite for the reversible design decision.
 | AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
 | AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls; exact error custody; successful Reply/Err |
 | AC-5 | Separate held-reply and held-lease races, both reservation orders in each, code-only control, queued reader contender and one tail |
-| AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
+| AC-6 | Conditional Accepted before EOF with no confirmation wait; independent progress, lost-reply rollback and cleanup-failure controls |
 | AC-7 | Four peer dispositions and destroy orders, held Bind refusal, legacy Quit bytes, listener policy, replacement window and independent no-fallback controls |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
