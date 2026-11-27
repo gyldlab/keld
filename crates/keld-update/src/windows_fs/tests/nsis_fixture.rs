@@ -432,8 +432,9 @@ fn receive_owned_smoke_output(
     Ok(())
 }
 
-// Only the ordinary smoke child, which does not start descendants or write the
-// fixture, is sent through this runner. The budget starts after process spawn;
+// Only fixed read-only fixture children, which do not start descendants or
+// write the fixture, are sent through this runner. The budget starts after
+// process spawn;
 // on failure we allow a separate, bounded grace for direct-child reaping.
 fn run_owned_smoke_child(
     command: &mut std::process::Command,

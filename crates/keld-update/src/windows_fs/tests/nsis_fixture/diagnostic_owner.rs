@@ -8,7 +8,7 @@ use crate::windows_fs::tests::support::{
 use crate::windows_fs::{EntryKind, create_directory_relative, create_file_relative_with_profile};
 use cap_fs_ext::MetadataExt as _;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Read as _, Write as _};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::Path;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -54,6 +54,9 @@ const FILES: &[&str] = &[
     "compiler-parent/pre-publication/keld-v2-peruserdirect-UNSIGNED.exe",
     "compiler-parent/alias-target/keld-v2-peruserdirect-UNSIGNED.exe",
 ];
+
+const ALIAS_PAYLOAD: &[u8] = &[0x4d, 0x5a, 0x01];
+const ALIAS_MARKER: &[u8] = b"KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS_REFUSED read_only=true";
 
 struct OwnedDirectory {
     relative: &'static str,
@@ -103,6 +106,10 @@ impl DiagnosticOwner {
     }
 
     fn new() -> Self {
+        Self::new_with_alias_payload(None)
+    }
+
+    fn new_with_alias_payload(alias_payload: Option<&[u8]>) -> Self {
         let mut tree = Self {
             fixture: Fixture::new(),
             directories: Vec::new(),
@@ -130,7 +137,7 @@ impl DiagnosticOwner {
         for &relative in FILES {
             let (parent_name, name) = split_relative(relative);
             let parent = parent_name.map(|value| tree.directory_index(value));
-            let created = create_file_relative_with_profile(
+            let mut created = create_file_relative_with_profile(
                 tree.parent(parent),
                 name,
                 keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
@@ -139,6 +146,14 @@ impl DiagnosticOwner {
             let path = tree.fixture.path.join(relative);
             let owner = OwnedFixtureEntry::capture(&created, &path, EntryKind::File)
                 .expect("pin diagnostic file at creation");
+            if let Some(alias_payload) = alias_payload
+                && relative == "compiler-parent/alias-target/keld-v2-peruserdirect-UNSIGNED.exe"
+            {
+                created
+                    .write_all(alias_payload)
+                    .expect("write alias control through original creation handle");
+                created.sync_all().expect("flush alias control");
+            }
             let pin = OpenOptions::new()
                 .read(true)
                 .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
@@ -189,6 +204,64 @@ impl DiagnosticOwner {
 
     fn path(&self) -> &Path {
         &self.fixture.path
+    }
+
+    fn alias_target(&self) -> &OwnedFile {
+        let parent = self.directory_index("compiler-parent/alias-target");
+        self.files
+            .iter()
+            .find(|file| file.parent == Some(parent))
+            .expect("owned alias target file")
+    }
+
+    fn pin_alias_target(&self) -> File {
+        let target = self.alias_target();
+        let path = self
+            .path()
+            .join("compiler-parent/alias-target")
+            .join(target.name);
+        let pin = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .expect("pin original alias target against data writes");
+        target.owner.require_same(&pin).expect("same target");
+        pin
+    }
+
+    fn retire_alias_members_after_child(
+        &mut self,
+        read_pin: File,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+    ) -> io::Result<()> {
+        // A reaped child alone does not establish a successful diagnostic.
+        // Refuse ambiguous transcripts before any native retirement effect.
+        if exit_code != Some(0)
+            || !stderr.is_empty()
+            || stdout
+                .strip_suffix(b"\r\n")
+                .or_else(|| stdout.strip_suffix(b"\n"))
+                != Some(ALIAS_MARKER)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected diagnostic child exit or markers; retain fixture",
+            ));
+        }
+        self.alias_target().owner.require_same(&read_pin)?;
+        let mut actual = Vec::new();
+        (&read_pin).take(4).read_to_end(&mut actual)?;
+        if actual.as_slice() != ALIAS_PAYLOAD {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "retained alias target bytes differ; retain fixture",
+            ));
+        }
+        drop(read_pin);
+        self.retire_members()
     }
 
     // This test-only census never conveys ownership. A name is expected
@@ -282,6 +355,127 @@ fn owned_diagnostic_inventory_retires_original_fixed_objects() {
     let root = tree.path().to_owned();
     tree.retire()
         .expect("retire exact owned diagnostic inventory");
+    assert!(!root.exists(), "owned diagnostic root remains");
+}
+
+#[test]
+fn owned_diagnostic_alias_child_reads_then_retires_native_inventory() {
+    let mut tree = DiagnosticOwner::new_with_alias_payload(Some(ALIAS_PAYLOAD));
+    let root = tree.path().to_owned();
+    // The creation token and no-delete pin remain live. A second same-object
+    // read pin also excludes data writers during the read-only child.
+    let read_pin = tree.pin_alias_target();
+    // Independent positive control: the intentional alias really resolves to
+    // the same fixed bytes before the child must reject it as publication.
+    let alias_file = root
+        .join("compiler-parent/published-alias")
+        .join(tree.alias_target().name);
+    assert_eq!(
+        std::fs::read(alias_file)
+            .expect("alias control bytes")
+            .as_slice(),
+        ALIAS_PAYLOAD
+    );
+    let runner =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/windows_v2_nsis_build_test.ps1");
+    let mut command =
+        std::process::Command::new(super::windows_powershell().expect("Windows PowerShell path"));
+    command
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(runner)
+        .arg("-OwnedDiagnosticAliasRoot")
+        .arg(&root);
+    // No retirement on a runner error: child quiescence may be unproven.
+    let output = super::run_owned_smoke_child(&mut command, std::time::Duration::from_secs(15))
+        .expect("bounded read-only diagnostic child completed");
+    let retirement = tree.retire_alias_members_after_child(
+        read_pin,
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    );
+    assert!(
+        retirement.is_ok(),
+        "read-only diagnostic outcome or retirement failed: {retirement:?}; {output:?}"
+    );
+    tree.fixture.finish();
+    assert!(!root.exists(), "owned diagnostic root remains");
+}
+
+#[test]
+fn owned_diagnostic_alias_child_ambiguous_transcripts_refuse_before_retirement() {
+    let mut tree = DiagnosticOwner::new_with_alias_payload(Some(ALIAS_PAYLOAD));
+    let root = tree.path().to_owned();
+    let accepted: &[u8] = b"KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS_REFUSED read_only=true\r\n";
+    let cases: &[(Option<i32>, &[u8], &[u8])] = &[
+        (Some(1), accepted, b""),
+        (None, accepted, b""),
+        (Some(0), b"", b""),
+        (Some(0), b"wrong marker\r\n", b""),
+        (Some(0), accepted, b"unexpected stderr"),
+        (
+            Some(0),
+            b"KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS_REFUSED read_only=true\r\nextra\r\n",
+            b"",
+        ),
+    ];
+    for &(exit_code, stdout, stderr) in cases {
+        let read_pin = tree.pin_alias_target();
+        let error = tree
+            .retire_alias_members_after_child(read_pin, exit_code, stdout, stderr)
+            .expect_err("ambiguous transcript must refuse retirement");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_alias_inventory_retained(&tree, &[0x4d, 0x5a, 0x01]);
+    }
+    // The test author still owns the untouched fixture; retire it separately
+    // after proving that each fabricated transcript conveyed no authority.
+    tree.retire().expect("retire independently checked fixture");
+    assert!(!root.exists(), "owned diagnostic root remains");
+}
+
+fn assert_alias_inventory_retained(tree: &DiagnosticOwner, expected: &[u8]) {
+    assert_eq!(tree.directories.len(), DIRECTORIES.len());
+    assert_eq!(tree.files.len(), FILES.len());
+    tree.require_fixed_inventory()
+        .expect("original inventory remains");
+    for relative in ["alias", "compiler-parent/published-alias"] {
+        let directory = &tree.directories[tree.directory_index(relative)];
+        let junction = directory
+            .junction
+            .as_ref()
+            .expect("original junction handle");
+        assert_eq!(
+            entry_kind(junction).expect("retained junction"),
+            EntryKind::Link
+        );
+    }
+    let mut observed = tree.pin_alias_target();
+    let mut bytes = Vec::new();
+    observed
+        .read_to_end(&mut bytes)
+        .expect("original retained target");
+    assert_eq!(bytes.as_slice(), expected);
+}
+
+#[test]
+fn owned_diagnostic_alias_child_requires_identity_and_bytes_before_retirement() {
+    let bytes = [0x4d, 0x5a, 0x02];
+    let mut tree = DiagnosticOwner::new_with_alias_payload(Some(&bytes));
+    let root = tree.path().to_owned();
+    let accepted = b"KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS_REFUSED read_only=true\r\n";
+    let wrong = tree.files[0].pin.try_clone().expect("different owned file");
+    let error = tree
+        .retire_alias_members_after_child(wrong, Some(0), accepted, b"")
+        .expect_err("valid transcript must not grant ownership of a different file");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_alias_inventory_retained(&tree, &bytes);
+    let read_pin = tree.pin_alias_target();
+    let error = tree
+        .retire_alias_members_after_child(read_pin, Some(0), accepted, b"")
+        .expect_err("valid transcript must not retire changed target bytes");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_alias_inventory_retained(&tree, &bytes);
+    tree.retire().expect("retire independently checked fixture");
     assert!(!root.exists(), "owned diagnostic root remains");
 }
 
