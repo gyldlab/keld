@@ -48,7 +48,8 @@ GH-451 and GH-523 remain drafts. This document does not approve them.
 - **When:** The existing facade applies the correlated ReplyApplied Veto for the exact current window, document,
   generation and close sequence.
 - **Then:** Public last-window suppression resets. The Host retains ordered
-  window facts. The selected sweep finishes without terminal reservation.
+  window facts. The vetoed Quit attempt finishes without terminal reservation.
+  An independently eligible Exit can still commit under the shared owner.
   After a matched pre-Prepare veto, a fresh qualified attempt needs no
   conditional receipt if no conditional record exists.
   Any retry with a recorded conditional effect needs confirmed noncommit.
@@ -67,6 +68,12 @@ Withhold receipt consumption and no-late proof in separate runs on the live role
 Remove only the corresponding retry guard in each run.
 The test goes RED if a fresh conditional effect starts before both proofs hold.
 The matched pre-Prepare veto with no conditional record remains a valid control.
+
+Test a veto after Prepare separately. Observe the exact successful Cancel and
+the release of its receipt before a fresh conditional effect starts.
+Hold each required proof in a separate check. Omit only the corresponding
+retry guard. The test goes RED if the next attempt starts before settlement.
+The settled case permits a fresh attempt on the same qualified role.
 
 ### AC-2: Prepare and Create share the existing owner
 
@@ -169,6 +176,9 @@ and exactly one cleanup tail. This follows
 [GH-523 AC-7](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/specs/gh523-host-authorized-app-exit.md#L100-L113).
 
 Use a validated Exit fixture for the second contender until GH-523 is approved.
+In a separate check, hold an admitted FS reply or lease during the race.
+Verify that neither contender reserves before the shared obligations settle.
+After settlement, verify each eligible reservation order independently.
 
 ### AC-6: Reply and postcommit failure are distinct
 
@@ -240,6 +250,8 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    after Prepare, the old token cannot reserve even if that Create later fails.
    Test qualified and legacy destroy ordering separately, including an
    admitted replacement window. The legacy write-before-return rule stays.
+   Without a listener, observe entry into the conditional coordinator once.
+   With a registered listener, verify the existing listener policy instead.
 2. Keep the existing lifecycle coordinator Running. Prepare checks the
    authenticated current Ready and subscribed original and its registry under its
    existing admission order. Opening and Closing count as live.
@@ -360,13 +372,13 @@ a prerequisite for the reversible design decision.
 
 | Criteria | Planned witness |
 |---|---|
-| AC-1 | Exact facade veto and Save retry, plus retained receipt with each missing proof |
+| AC-1 | Exact facade veto, Save retry, post-Prepare Cancel and retained receipt with each missing proof |
 | AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption, combined retirement check and isolated generation check |
 | AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
 | AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls; exact error custody; successful Reply/Err |
-| AC-5 | Both reservation orders, code-only control, queued reader contender and one tail |
+| AC-5 | Held FS obligation during the race, both reservation orders, code-only control, queued reader contender and one tail |
 | AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
-| AC-7 | Four peer dispositions, legacy Quit bytes, qualified and legacy destroy order, replacement window and independent no-fallback controls |
+| AC-7 | Four peer dispositions, legacy Quit bytes, qualified and legacy destroy order, listener policy, replacement window and independent no-fallback controls |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
 establish order. Native acceptance uses an independent process witness.
