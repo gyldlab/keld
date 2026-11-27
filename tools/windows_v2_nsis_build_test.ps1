@@ -11,11 +11,35 @@ param(
     [switch]$OrdinaryFixtureCleanup,
 
     [Parameter(Mandatory = $true, ParameterSetName = 'OwnedFixtureSmoke')]
-    [string]$OwnedFixtureSmokeRoot
+    [string]$OwnedFixtureSmokeRoot,
+
+    [Parameter(Mandatory = $true, ParameterSetName = 'OwnedDiagnosticAlias')]
+    [string]$OwnedDiagnosticAliasRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Get-UniqueDiagnosticFunction($Ast, [string]$Name) {
+    $functions = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq $Name
+    }, $true))
+    if ($functions.Count -ne 1) {
+        throw "KEL270_NSIS_TEST_SOURCE: missing unique original $Name function"
+    }
+    return [scriptblock]::Create($functions[0].Extent.Text)
+}
+
+function Assert-PublishedAliasRefusal([string]$AliasPath, [string]$ExpectedDigest) {
+    $aliasError = $null
+    try { Require-PublishedUnsignedCandidate $AliasPath $ExpectedDigest }
+    catch { $aliasError = $_.ToString() }
+    if ($null -eq $aliasError -or $aliasError -notmatch 'reparse-point ancestor') {
+        throw 'KEL270_NSIS_POSTMOVE_ALIAS: same-byte reparse parent was admitted'
+    }
+}
 
 if ($PSCmdlet.ParameterSetName -ceq 'OrdinaryFixtureCleanup') {
     if (-not $OrdinaryFixtureCleanup) {
@@ -57,6 +81,40 @@ if ($PSCmdlet.ParameterSetName -ceq 'OwnedFixtureSmoke') {
         exit 4
     }
     Write-Output 'KEL270_NSIS_OWNED_FIXTURE_SMOKE_PASS read_only=true'
+    return
+}
+
+if ($PSCmdlet.ParameterSetName -ceq 'OwnedDiagnosticAlias') {
+    # Read-only case from the default diagnostic suite. The Rust owner creates
+    # and retires the actual target and junction; this path is only a locator.
+    # No builder override, builder process, compiler, writes or deletion here.
+    if ($OwnedDiagnosticAliasRoot -cnotmatch '^[A-Za-z]:[\\/]' -or
+        [IO.Path]::GetFileName($OwnedDiagnosticAliasRoot) -cnotmatch '^keld-nsis-fixture-[0-9a-f]{32}$') {
+        throw 'KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS: expected an absolute local fixture path'
+    }
+    $parseTokens = $null
+    $parseErrors = $null
+    $builderAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $PSScriptRoot 'windows_v2_nsis_build.ps1'), [ref]$parseTokens, [ref]$parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw 'KEL270_NSIS_TEST_SOURCE: builder must parse before owned alias test'
+    }
+    foreach ($name in @(
+        'Refuse', 'Require-LocalPath', 'Require-File', 'Get-TrustedFileSha256',
+        'Require-ExactHash', 'Require-PublishedUnsignedCandidate'
+    )) {
+        . (Get-UniqueDiagnosticFunction $builderAst $name)
+    }
+    $compilerParent = Join-Path $OwnedDiagnosticAliasRoot 'compiler-parent'
+    $target = Join-Path $compilerParent 'alias-target'
+    $aliasPath = Join-Path $compilerParent 'published-alias'
+    # Independently pinned SHA256 of the fixed three-byte synthetic fixture
+    # 4D 5A 01. The direct target must first pass the real readback helper.
+    $digest = '9F75F952DB3A26E639BB80045842EA59B85DB57177235AB00B659316414A301D'
+    Require-PublishedUnsignedCandidate $target $digest
+    Assert-PublishedAliasRefusal $aliasPath $digest
+    Write-Output 'KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS_REFUSED read_only=true'
     return
 }
 
@@ -293,15 +351,7 @@ try {
         'Remove-OwnedPrivateCandidate', 'Require-ExactHash',
         'Require-PublishedUnsignedCandidate'
     )) {
-        $functions = @($builderAst.FindAll({
-            param($node)
-            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -ceq $name
-        }, $true))
-        if ($functions.Count -ne 1) {
-            throw "KEL270_NSIS_TEST_SOURCE: missing unique original $name function"
-        }
-        . ([scriptblock]::Create($functions[0].Extent.Text))
+        . (Get-UniqueDiagnosticFunction $builderAst $name)
     }
     # Use the exact production hash helpers with a same-scope malicious
     # Get-FileHash function. The independently recorded manifest digest is
@@ -406,12 +456,7 @@ try {
         throw 'KEL270_NSIS_POSTMOVE_ALIAS: independent same-byte control differs'
     }
     $null = New-Item -ItemType Junction -Path $aliasPath -Target $aliasTarget -ErrorAction Stop
-    $aliasError = $null
-    try { Require-PublishedUnsignedCandidate $aliasPath $originalDigest }
-    catch { $aliasError = $_.ToString() }
-    if ($null -eq $aliasError -or $aliasError -notmatch 'reparse-point ancestor') {
-        throw 'KEL270_NSIS_POSTMOVE_ALIAS: same-byte reparse parent was admitted'
-    }
+    Assert-PublishedAliasRefusal $aliasPath $originalDigest
     Write-Output 'KEL270_NSIS_POSTMOVE_ALIAS_REFUSED same_sha256=true native_reparse=true'
 
     # Static source checks: no caller-chosen installation root, persistence

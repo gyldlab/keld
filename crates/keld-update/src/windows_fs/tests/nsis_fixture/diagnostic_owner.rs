@@ -8,7 +8,7 @@ use crate::windows_fs::tests::support::{
 use crate::windows_fs::{EntryKind, create_directory_relative, create_file_relative_with_profile};
 use cap_fs_ext::MetadataExt as _;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write as _};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::Path;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -103,6 +103,10 @@ impl DiagnosticOwner {
     }
 
     fn new() -> Self {
+        Self::new_with_alias_payload(None)
+    }
+
+    fn new_with_alias_payload(alias_payload: Option<&[u8]>) -> Self {
         let mut tree = Self {
             fixture: Fixture::new(),
             directories: Vec::new(),
@@ -130,7 +134,7 @@ impl DiagnosticOwner {
         for &relative in FILES {
             let (parent_name, name) = split_relative(relative);
             let parent = parent_name.map(|value| tree.directory_index(value));
-            let created = create_file_relative_with_profile(
+            let mut created = create_file_relative_with_profile(
                 tree.parent(parent),
                 name,
                 keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
@@ -139,6 +143,14 @@ impl DiagnosticOwner {
             let path = tree.fixture.path.join(relative);
             let owner = OwnedFixtureEntry::capture(&created, &path, EntryKind::File)
                 .expect("pin diagnostic file at creation");
+            if let Some(alias_payload) = alias_payload
+                && relative == "compiler-parent/alias-target/keld-v2-peruserdirect-UNSIGNED.exe"
+            {
+                created
+                    .write_all(alias_payload)
+                    .expect("write alias control through original creation handle");
+                created.sync_all().expect("flush alias control");
+            }
             let pin = OpenOptions::new()
                 .read(true)
                 .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
@@ -283,6 +295,72 @@ fn owned_diagnostic_inventory_retires_original_fixed_objects() {
     tree.retire()
         .expect("retire exact owned diagnostic inventory");
     assert!(!root.exists(), "owned diagnostic root remains");
+}
+
+#[test]
+fn owned_diagnostic_alias_child_reads_then_retires_native_inventory() {
+    let bytes = [0x4d, 0x5a, 0x01];
+    let tree = DiagnosticOwner::new_with_alias_payload(Some(&bytes));
+    let root = tree.path().to_owned();
+    let target_parent = tree.directory_index("compiler-parent/alias-target");
+    let target = tree
+        .files
+        .iter()
+        .find(|file| file.parent == Some(target_parent))
+        .expect("owned alias target file");
+    let target_path = root.join("compiler-parent/alias-target").join(target.name);
+    // The creation token and no-delete pin remain live. A second same-object
+    // read pin also excludes data writers during the read-only child.
+    let read_pin = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&target_path)
+        .expect("pin original alias target against data writes");
+    target.owner.require_same(&read_pin).expect("same target");
+    // Independent positive control: the intentional alias really resolves to
+    // the same fixed bytes before the child must reject it as publication.
+    let alias_file = root
+        .join("compiler-parent/published-alias")
+        .join(target.name);
+    assert_eq!(
+        std::fs::read(alias_file).expect("alias control bytes"),
+        bytes
+    );
+    let runner =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/windows_v2_nsis_build_test.ps1");
+    let mut command =
+        std::process::Command::new(super::windows_powershell().expect("Windows PowerShell path"));
+    command
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(runner)
+        .arg("-OwnedDiagnosticAliasRoot")
+        .arg(&root);
+    // No retirement on a runner error: child quiescence may be unproven.
+    let output = super::run_owned_smoke_child(&mut command, std::time::Duration::from_secs(15))
+        .expect("bounded read-only diagnostic child completed");
+    target
+        .owner
+        .require_same(&read_pin)
+        .expect("same target after child");
+    let mut retained = &read_pin;
+    let mut actual = Vec::new();
+    std::io::Read::read_to_end(&mut retained, &mut actual).expect("read retained alias target");
+    assert_eq!(actual, bytes);
+    drop(read_pin);
+    tree.retire().expect("retire original diagnostic inventory");
+    assert!(!root.exists(), "owned diagnostic root remains");
+    let marker: &[u8] = b"KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS_REFUSED read_only=true";
+    assert!(
+        output.status.success()
+            && output.stderr.is_empty()
+            && output
+                .stdout
+                .strip_suffix(b"\r\n")
+                .or_else(|| output.stdout.strip_suffix(b"\n"))
+                == Some(marker),
+        "read-only diagnostic child outcome: {output:?}"
+    );
 }
 
 #[test]
