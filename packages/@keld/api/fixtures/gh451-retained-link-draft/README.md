@@ -115,7 +115,8 @@ W3/prime composition contract:
 - After applying a resolved disposition, W3 reads the exact
   `pendingReceipt` object (original, disposition, direct/status source)
   and calls `consumeReceipt(receipt)`. A false result leaves the
-  reservation held until independent no-late proof. Never clone a receipt
+  reservation held until independent no-late proof, or definitive old-link
+  retirement for a known terminal outcome. Never clone a receipt
   or interpret delayed release as nonexecution. Reading `pendingReceipt`
   synchronizes a release that the transport subsequently proved.
 - Known Accepted fences the captured current link once, before any
@@ -123,6 +124,14 @@ W3/prime composition contract:
   `fenceError` and never changes `terminalDisposition` to unknown.
   Historical Accepted on a retired link remains evidence and does not
   fence a successor. Cleanup is independent of receipt consumption.
+  Exact definitive old-link retirement ends terminal effect lease custody
+  without any receipt acknowledgement. A delivered result or local fence
+  is not retirement evidence. This does not erase the known outcome.
+- A pre-send Cancel or Commit capacity refusal after Prepared keeps that
+  attempt blocked even if ordinary capacity later returns. No original
+  identity exists for the unsent operation, so no Status or effect is sent.
+  Recovery of a surviving preparation remains outside the fixture; an
+  initial Prepare capacity refusal still leaves no attempt and can be retried.
 - The original link/generation owns the ledger. This fixture does not
   implement the Host's ordered disposition record, actual transport
   quiescence proof, a wire receipt-consumption acknowledgement, automatic
@@ -130,7 +139,7 @@ W3/prime composition contract:
   owners and real tests. The fixture's local lease identity is not a
   Host-minted wire attempt/token.
 
-Current focused validation: 32/32 Bun tests, 708 assertions; 15/15 named
+Historical Q3 focused validation: 32/32 Bun tests, 708 assertions; 15/15 named
 single-fault negative controls detected, including pre-send reservation,
 active-attempt exclusivity, exact receipt consumption, late-alias release,
 capacity, Status identity and fence failure. No dependencies installed.

@@ -13,6 +13,8 @@ type Entry = {
   lease: CorrelationLease;
   consumed: boolean;
   noLate: boolean;
+  terminal: boolean;
+  retired: boolean;
 };
 
 export class DraftCorrelationLedger {
@@ -91,7 +93,13 @@ export class DraftCorrelationLedger {
       this.#next = correlation === this.#max ? 1 : correlation + 1;
       if (this.#entries.has(correlation)) continue;
       const lease = Object.freeze({ correlation, kind });
-      this.#entries.set(correlation, { lease, consumed: false, noLate: false });
+      this.#entries.set(correlation, {
+        lease,
+        consumed: false,
+        noLate: false,
+        terminal: false,
+        retired: false,
+      });
       return lease;
     }
     return undefined;
@@ -141,7 +149,10 @@ export class DraftCorrelationLedger {
   }
 
   #release(entry: Entry): boolean {
-    if (!entry.consumed || !entry.noLate) return false;
+    if (entry.terminal) {
+      // Definitive retirement ends custody; no post-retirement Consume.
+      if (!entry.retired) return false;
+    } else if (!entry.consumed || !entry.noLate) return false;
     this.#entries.delete(entry.lease.correlation);
     if (this.#original === entry.lease) this.#original = undefined;
     if (this.#status === entry.lease) this.#status = undefined;
@@ -163,6 +174,24 @@ export class DraftCorrelationLedger {
   proveNoLate(lease: CorrelationLease): boolean {
     const entry = this.#entry(lease);
     if (!entry) return false;
+    entry.noLate = true;
+    return this.#release(entry);
+  }
+
+  /** Known terminal disposition retains the exact original lease. */
+  retainUntilRetirement(lease: CorrelationLease): void {
+    const entry = this.#entry(lease);
+    if (!entry || lease !== this.#original) return;
+    entry.terminal = true;
+    // Definitive retirement may have been recorded while delivery was held.
+    this.#release(entry);
+  }
+
+  /** Owner-only fixture evidence: the exact old link definitively retired. */
+  proveRetired(lease: CorrelationLease): boolean {
+    const entry = this.#entry(lease);
+    if (!entry || lease !== this.#original) return false;
+    entry.retired = true;
     entry.noLate = true;
     return this.#release(entry);
   }

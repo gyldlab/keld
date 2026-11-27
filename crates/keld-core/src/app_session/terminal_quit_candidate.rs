@@ -531,6 +531,38 @@ mod tests {
     }
 
     #[test]
+    fn final_cut_rejects_stale_generation_before_reservation() {
+        let mut quit = TerminalQuit::new();
+        let current = ready(2);
+        let token = prepared(&mut quit, current);
+        assert_eq!(quit.begin_commit(token, current), Outcome::DrainRequired);
+
+        // Keep the exact token and draining phase. Change only the generation
+        // observed at the final cut; all other admission facts stay valid.
+        let stale = HostFacts {
+            generation: Some(generation(1)),
+            ..current
+        };
+        let reservations = Cell::new(0);
+        let reserve = || {
+            reservations.set(reservations.get() + 1);
+            true
+        };
+        assert_eq!(
+            quit.finish_commit(token, stale, reserve),
+            Outcome::Refused,
+            "stale generation must not reserve at the final cut"
+        );
+        assert_eq!(reservations.get(), 0);
+
+        assert_eq!(
+            quit.finish_commit(token, current, reserve),
+            Outcome::Committed
+        );
+        assert_eq!(reservations.get(), 1);
+    }
+
+    #[test]
     fn competing_shutdown_is_not_a_retryable_retained_outcome() {
         let mut quit = TerminalQuit::new();
         let facts = ready(1);

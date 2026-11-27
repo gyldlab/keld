@@ -115,3 +115,51 @@ test("AC11: terminal acknowledgement captures one callback with its original rec
   });
   expect(x.late).toEqual([]);
 });
+
+for (const operation of ["cancel", "commit"] as const) {
+  test(`AC11: wrong-operation Invalidated on ${operation} never settles or consumes`, async () => {
+    const x = fixture();
+    x.f.will = () => operation === "cancel";
+    const consumed: string[] = [];
+    x.f.consume = (receipt) => {
+      consumed.push(receipt.operation);
+      return { ready: true };
+    };
+    const first = x.coordinator.quit();
+    await x.prepared(0);
+    const queued = operation === "cancel" ? x.coordinator.quit() : undefined;
+    const replies = operation === "cancel" ? x.cancels : x.commits;
+    replies[0]!.reply.resolve({ kind: "invalidated" });
+    await turn();
+
+    expect(x.coordinator.disposition).toBe("unknown");
+    expect(x.coordinator.heldDisposition).toBeUndefined();
+    expect(consumed).toEqual(["prepare"]);
+    expect(x.coordinator.quit()).toBe(first);
+    expect(x.prepares).toHaveLength(1);
+    if (queued) {
+      await expect(first).resolves.toBeUndefined();
+      await expect(queued).rejects.toThrow("unknown");
+    } else {
+      await expect(first).rejects.toThrow("unknown");
+    }
+  });
+}
+
+test("AC11: Invalidated is not a direct Prepare response", async () => {
+  const x = fixture();
+  let consumed = 0;
+  x.f.consume = () => {
+    consumed++;
+    return { ready: true };
+  };
+  const quit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "invalidated" });
+  await turn();
+  expect(x.coordinator.disposition).toBe("unknown");
+  expect(x.coordinator.heldDisposition).toBeUndefined();
+  expect(consumed).toBe(0);
+  expect(x.coordinator.quit()).toBe(quit);
+  expect(x.trace).toEqual(["before", "prepare"]);
+  await expect(quit).rejects.toThrow("unknown");
+});

@@ -190,7 +190,8 @@ function fixture(
       if (ledger.isReserved(mapped.lease) || ledger.status)
         return {
           ready: false,
-          error: new Error("independent no-late proof pending"),
+          pending: true,
+          error: new Error("independent release proof pending"),
         };
       if (delivery.disposition.kind !== "prepared") token = undefined;
       return { ready: true };
@@ -547,6 +548,7 @@ test("composed: known Accepted survives exact local fence failure", async () => 
   expect(await f.coordinator.requestQuit()).toBe("committed");
   expect(f.api.terminalDisposition).toBe("accepted");
   expect(f.api.fenceError).toBe(failure);
+  expectTerminalCustodyUntilRetirement(f);
   expect(f.fences).toBe(1);
   expect(f.sent.map((x) => x.operation)).toEqual(["prepare", "commit"]);
 });
@@ -557,6 +559,7 @@ test("composed: competing terminal winner is never this attempt's acceptance", a
   f.reply({ kind: "competing-terminal" });
   expect(await f.coordinator.requestQuit()).toBe("competing");
   expect(f.api.terminalDisposition).toBe("competing-terminal");
+  expectTerminalCustodyUntilRetirement(f);
   expect(f.fences).toBe(0);
   expect(f.sent.map((x) => x.operation)).toEqual(["prepare", "commit"]);
 });
@@ -568,10 +571,19 @@ test("composed: Accepted with no-late proof held fulfills after local fence", as
   expect(await f.coordinator.quit()).toBeUndefined();
   expect(f.coordinator.disposition).toBe("committed");
   expect(f.api.terminalDisposition).toBe("accepted");
-  expect(f.ledger.original).toBeDefined();
+  expectTerminalCustodyUntilRetirement(f);
   expect(f.fences).toBe(1);
   expect(f.sent.map((x) => x.operation)).toEqual(["prepare", "commit"]);
 });
+
+function expectTerminalCustodyUntilRetirement(f: ReturnType<typeof fixture>) {
+  const lease = f.leases.at(-1)!;
+  expect(f.ledger.original).toBe(lease);
+  expect(f.ledger.proveNoLate(lease)).toBe(false);
+  expect(f.ledger.original).toBe(lease);
+  expect(f.ledger.proveRetired(lease)).toBe(true);
+  expect(f.ledger.isReserved(lease)).toBe(false);
+}
 
 async function awaitObserved(predicate: () => boolean) {
   for (let i = 0; i < 32 && !predicate(); i++) await Promise.resolve();
@@ -630,5 +642,43 @@ test("composed: exact late Status after retirement preserves terminal history", 
     "prepare",
     "commit",
     "status",
+  ]);
+});
+
+test("composed: confirmed Cancel holds one queued retry until independent no-late proof", async () => {
+  const f = fixture();
+  f.veto(true);
+  f.reply({ kind: "prepared", token: "old" });
+  let deliver!: (value: unknown) => void;
+  f.reply(
+    new Promise<unknown>((resolve) => {
+      deliver = resolve;
+    }),
+    false,
+  );
+  const first = f.coordinator.quit();
+  await awaitObserved(() => f.sent.at(-1)?.operation === "cancel");
+  await expect(first).resolves.toBeUndefined();
+  const retry = f.coordinator.quit();
+  expect(retry).not.toBe(first);
+  deliver({ kind: "cancelled" });
+  await awaitObserved(() => f.coordinator.heldDisposition?.kind === "canceled");
+
+  expect(f.coordinator.quit()).toBe(retry);
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.sent.map((x) => x.operation)).toEqual(["prepare", "cancel"]);
+  expect(f.late).toEqual([]);
+
+  f.proveOriginalNoLate();
+  f.veto(false);
+  f.reply({ kind: "prepared", token: "fresh" });
+  f.reply({ kind: "accepted" });
+  expect(await f.coordinator.reconcile()).toBe("vetoed");
+  await expect(retry).resolves.toBeUndefined();
+  expect(f.sent).toEqual([
+    { operation: "prepare" },
+    { operation: "cancel", token: "old" },
+    { operation: "prepare" },
+    { operation: "commit", token: "fresh" },
   ]);
 });

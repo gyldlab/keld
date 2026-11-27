@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
+import terminal_quit_core_owner_probe as probe
 from terminal_quit_core_owner_probe import (
     CLOSING_CASE, DRAIN_CREATE_CASE, OWNER_TEST_PREFIX, run_bounded,
     verify_projection_result,
@@ -58,6 +60,52 @@ class ProjectionRunnerTests(unittest.TestCase):
 
     def test_surviving_descendant_cannot_pass(self):
         self.assertIn("LIVE_DESCENDANT_REJECTED", self.run_isolated("survivor"))
+
+    def test_surviving_descendant_is_disposed_before_reaping_its_leader(self):
+        # Model only the OS boundary: no real process or signal can escape
+        # this check even if the runner drops or reorders cleanup.
+        group, descendant = 101, 102
+        live = {descendant}
+        calls = []
+        child = mock.Mock(pid=group, returncode=0)
+
+        def spawn(_command, *, stdout, stderr, start_new_session):
+            self.assertEqual(stderr, subprocess.STDOUT)
+            self.assertTrue(start_new_session)
+            stdout.write(b"leader exited\n")
+            return child
+
+        def observe(kind, pid, flags):
+            calls.append(("observe", kind, pid, flags))
+
+        def members(pgid):
+            calls.append(("census", pgid))
+            return sorted(live)
+
+        def dispose(pgid, signum):
+            calls.append(("signal", pgid, signum))
+            if (pgid, signum) == (group, signal.SIGKILL):
+                live.clear()
+
+        child.wait.side_effect = lambda: calls.append(("reap", group))
+        with (
+            mock.patch.object(probe.subprocess, "Popen", side_effect=spawn),
+            mock.patch.object(probe.os, "waitid", side_effect=observe),
+            mock.patch.object(probe, "live_group_members", side_effect=members),
+            mock.patch.object(probe.os, "killpg", side_effect=dispose),
+            self.assertRaisesRegex(
+                RuntimeError, r"(?m)^survivor: leader exited with live group members: \[102\]$",
+            ) as rejected,
+        ):
+            run_bounded(["mocked-projection"], "survivor", 1)
+        self.assertIn("leader exited\n", str(rejected.exception))
+        self.assertFalse(live, "a rejected descendant was not disposed")
+        self.assertEqual(calls, [
+            ("observe", os.P_PID, group, os.WEXITED | os.WNOWAIT),
+            ("census", group),
+            ("signal", group, signal.SIGKILL),
+            ("reap", group),
+        ])
 
     def test_normal_exit_and_negative_result_are_preserved(self):
         for status in (0, 101):
@@ -133,7 +181,8 @@ if __name__ == "__main__":
                 sys.executable, "-c",
                 "import subprocess,sys; "
                 "subprocess.Popen([sys.executable, '-c', "
-                "'import threading; threading.Event().wait()']); "
+                # Independent lifetime bound if the runner's cleanup regresses.
+                "'import threading; threading.Event().wait(20)']); "
                 "print('leader exited', flush=True)",
             ]
             expected = "live group members"

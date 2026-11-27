@@ -55,7 +55,8 @@ export type ConsumedDisposition<T> = Readonly<{
   original?: Original<T>;
   disposition: Disposition<T>;
 }>;
-export type Consumption = { ready: true } | { ready: false; error: unknown };
+export type Consumption =
+  { ready: true } | { ready: false; pending?: true; error: unknown };
 export interface DraftHost<T> {
   // Captured negotiated/selected qualification, never inferred from Ready.
   readonly conditionalEligible: boolean;
@@ -70,6 +71,7 @@ export interface DraftHost<T> {
   status?(original: Original<T>): Promise<StatusResult<T>>;
   observedInvalidation?(token: T): boolean;
   // Explicit consumer acknowledgement; true requires receipt release/no-late proof.
+  // Pending means the exact receipt is known but its independent proof is held.
   // An absent callback cannot release a nonterminal recorded disposition.
   consumeDisposition?(receipt: ConsumedDisposition<T>): Consumption;
   // The existing owner retains the exact cause and scope, including legacy

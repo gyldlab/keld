@@ -240,7 +240,15 @@ for (const effect of ["prepare", "cancel", "commit"] as const) {
         expect(recovered.original).toEqual(original);
         expect(recovered.disposition).toEqual(resolved);
         if (failure === "lost") port.ledger.proveNoLate(port.leases.at(-2)!);
-        ack(api);
+        if (effect === "commit") {
+          expect(api.consumeReceipt(recovered)).toBe(false);
+          port.current = false;
+          port.live = false;
+          expect(port.ledger.proveRetired(port.leases.at(-2)!)).toBe(true);
+          expect(api.pendingReceipt).toBeUndefined();
+        } else {
+          ack(api);
+        }
         if (effect === "prepare") {
           port.reply({ kind: "cancelled" });
           await api.cancel();
@@ -592,6 +600,50 @@ test("capacity before first send leaves no effect and no active attempt", async 
   ack(api);
 });
 
+for (const effect of ["cancel", "commit"] as const) {
+  test(
+    "capacity after Prepare blocks " + effect + " even after a slot frees",
+    async () => {
+      const port = new Port(1, 1);
+      const api = new RetainedLinkDraft(port);
+      port.reply({ kind: "prepared", token: "surviving" });
+      expect(await api.prepare()).toEqual({
+        kind: "prepared",
+        token: "surviving",
+      });
+      ack(api);
+      const ordinary = port.ledger.reserveOrdinary()!;
+      expect(await api[effect]()).toEqual({
+        kind: "refused",
+        reason: "capacity",
+      });
+      expect(port.ledger.consume(ordinary)).toBe(false);
+      expect(port.ledger.proveNoLate(ordinary)).toBe(true);
+      expect(
+        await api[effect](),
+        "GH451_MUTATION_ASSERT: surviving-prepare",
+      ).toEqual({
+        kind: "refused",
+        reason: "wrong-phase",
+      });
+      const other = effect === "cancel" ? "commit" : "cancel";
+      for (const result of [
+        await api[other](),
+        await api.prepare(),
+        await api.reconcile(),
+      ])
+        expect(result).toEqual({ kind: "refused", reason: "wrong-phase" });
+      expect(api.pendingReceipt).toBeUndefined();
+      expect(port.ledger.original).toBeUndefined();
+      expect(port.ledger.status).toBeUndefined();
+      expect(port.ledger.active).toBe(true);
+      expect(api.conditionalAvailable).toBe(false);
+      expect(port.ops()).toEqual(["prepare"]);
+      expect(port.fenceCount).toBe(0);
+    },
+  );
+}
+
 test("lost Status occupies its separate bounded slot until independent no-late proof", async () => {
   const port = new Port(2, 1);
   const api = new RetainedLinkDraft(port);
@@ -665,8 +717,23 @@ for (const recovery of [false, true]) {
         kind: "refused",
         reason: "wrong-phase",
       });
-      if (recovery) port.ledger.proveNoLate(port.leases[1]!);
-      ack(api);
+      const terminal = port.leases[1]!;
+      expect(port.current).toBe(true);
+      expect(port.live).toBe(true);
+      expect(Object.isFrozen(receipt)).toBe(true);
+      expect(Object.isFrozen(receipt.disposition)).toBe(true);
+      expect(
+        api.consumeReceipt(receipt),
+        "GH451_MUTATION_ASSERT: retirement-required",
+      ).toBe(false);
+      expect(port.ledger.proveNoLate(terminal)).toBe(false);
+      expect(port.ledger.original).toBe(terminal);
+      expect(api.pendingReceipt).toBe(receipt);
+      expect(port.ledger.proveRetired(port.leases[0]!)).toBe(false);
+      port.current = false;
+      port.live = false;
+      expect(port.ledger.proveRetired(terminal)).toBe(true);
+      expect(api.pendingReceipt).toBeUndefined();
       expect(api.terminalDisposition).toBe("accepted");
       expect(port.fenceCount).toBe(1);
       expect(port.ops()).toEqual(
@@ -697,7 +764,8 @@ test("recovered invalidated Prepare and competing terminal are distinct disposit
   ack(api);
   port.reply({ kind: "competing-terminal" });
   expect(await api.commit()).toEqual({ kind: "competing-terminal" });
-  ack(api);
+  expect(api.consumeReceipt(api.pendingReceipt!)).toBe(false);
+  expect(port.ledger.original).toBe(port.leases.at(-1)!);
   expect(api.terminalDisposition).toBe("competing-terminal");
   expect(api.conditionalAvailable).toBe(false);
   expect(port.fenceCount).toBe(0);
@@ -728,5 +796,46 @@ test("historical Accepted after retirement is known but never fences a successor
   expect(await pending).toEqual({ kind: "accepted" });
   expect(api.terminalDisposition).toBe("accepted");
   expect(port.fenceCount).toBe(0);
+  const terminal = port.leases[1]!;
+  const receipt = api.pendingReceipt!;
+  expect(receipt.disposition).toEqual({ kind: "accepted" });
+  expect(port.ledger.proveRetired(Object.freeze({ ...terminal }))).toBe(false);
+  expect(port.ledger.original).toBe(terminal);
+  expect(port.ledger.proveRetired(terminal)).toBe(true);
+  expect(port.ledger.original).toBeUndefined();
+  expect(api.pendingReceipt).toBeUndefined();
+  expect(api.terminalDisposition).toBe("accepted");
+  expect(port.fenceCount).toBe(0);
+});
+
+test("retirement proof before historical Accepted delivery needs no Consume", async () => {
+  const port = new Port();
+  const api = new RetainedLinkDraft(port);
+  port.reply({ kind: "prepared", token: "token" });
+  expect(await api.prepare()).toEqual({ kind: "prepared", token: "token" });
   ack(api);
+  let resolve!: (reply: unknown) => void;
+  port.script.push(
+    () =>
+      new Promise((complete) => {
+        resolve = complete;
+      }),
+  );
+  const pending = api.commit();
+  const terminal = port.leases[1]!;
+  port.current = false;
+  port.live = false;
+  expect(port.ledger.proveRetired(Object.freeze({ ...terminal }))).toBe(false);
+  expect(port.ledger.proveRetired(terminal)).toBe(false);
+  expect(port.ledger.original).toBe(terminal);
+  resolve({ kind: "accepted" });
+  expect(await pending).toEqual({ kind: "accepted" });
+  expect(
+    port.ledger.original,
+    "GH451_MUTATION_ASSERT: retirement-before-delivery",
+  ).toBeUndefined();
+  expect(api.pendingReceipt).toBeUndefined();
+  expect(api.terminalDisposition).toBe("accepted");
+  expect(port.fenceCount).toBe(0);
+  expect(port.ops()).toEqual(["prepare", "commit"]);
 });

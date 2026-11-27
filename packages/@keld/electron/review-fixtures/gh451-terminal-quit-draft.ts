@@ -420,7 +420,12 @@ export class DraftQuitCoordinator<T> {
     }
   }
 
-  private accept(a: Attempt<T>, p: Pending<T>, d: Disposition<T>): void {
+  private accept(
+    a: Attempt<T>,
+    p: Pending<T>,
+    d: Disposition<T>,
+    source: "effect" | "status" | "held" = "effect",
+  ): void {
     // A captured, validated terminal response from the exact original
     // operation may arrive after local retirement. Record only history;
     // never resettle the original public promise, run listeners or retry.
@@ -484,7 +489,9 @@ export class DraftQuitCoordinator<T> {
       // Cancel needs actual cancellation/nonexecution, not a generic refusal.
       // An adapter's refused Status/Commit is not evidence of nonexecution.
       if (
-        (p.operation === "cancel" && d.kind !== "invalidated") ||
+        p.operation === "cancel" ||
+        (d.kind === "invalidated" &&
+          (p.operation !== "prepare" || source === "effect")) ||
         (d.kind === "refused" && (p.operation !== "prepare" || p.original))
       ) {
         return this.uncertain(a, p, undefined, d.error ?? unknownError());
@@ -502,8 +509,18 @@ export class DraftQuitCoordinator<T> {
       p.held = d;
       const consumed = this.consume(p, d);
       if (this.active !== a || a.pending !== p) return;
-      if (!consumed.ready)
+      if (!consumed.ready) {
+        if (d.kind === "canceled" && consumed.pending) {
+          // Exact Cancel is known. Keep a queued explicit retry pending until
+          // independent proof arrives, without reporting an unknown effect.
+          a.phase = "cancel";
+          const recovery = a.recovery;
+          a.recovery = undefined;
+          recovery?.resolve("unknown"); // reconciliation is not yet complete
+          return;
+        }
         return this.uncertain(a, p, p.original, consumed.error);
+      }
       p.held = undefined;
     }
     if (
@@ -625,7 +642,8 @@ export class DraftQuitCoordinator<T> {
     if (a.recovery) return a.recovery.promise;
     const p = a.pending;
     if (
-      a.phase !== "unknown" ||
+      (a.phase !== "unknown" &&
+        !(a.phase === "cancel" && p?.held?.kind === "canceled")) ||
       !p ||
       !this.current() ||
       (!p.held && (!p.original || !this.host.status))
@@ -641,7 +659,7 @@ export class DraftQuitCoordinator<T> {
     if (p.held) {
       // Already-known disposition: retry only the local release check.
       try {
-        this.accept(a, p, p.held);
+        this.accept(a, p, p.held, "held");
       } catch (error) {
         this.uncertain(a, p, p.original, error);
       }
@@ -671,7 +689,7 @@ export class DraftQuitCoordinator<T> {
           )
             return failed();
           if (retired) {
-            this.accept(a, p, status.disposition);
+            this.accept(a, p, status.disposition, "status");
             return;
           }
           // Exact known terminal receipts remain historical evidence even if
@@ -684,7 +702,7 @@ export class DraftQuitCoordinator<T> {
             return failed();
           if (status.disposition.kind === "unknown")
             return failed(status.disposition.error);
-          this.accept(a, p, status.disposition);
+          this.accept(a, p, status.disposition, "status");
         } catch (error) {
           failed(error);
         }
@@ -772,7 +790,7 @@ export class DraftQuitCoordinator<T> {
         consumed = { ready: false, error: lookupError };
       }
     }
-    if (consumed && !consumed.ready) {
+    if (consumed && !consumed.ready && !consumed.pending) {
       // An accepted reservation and completed local fence do not depend on
       // reclaiming a nonterminal correlation. Retain its custody; report
       // any local diagnostic without rejecting a successful terminal result.

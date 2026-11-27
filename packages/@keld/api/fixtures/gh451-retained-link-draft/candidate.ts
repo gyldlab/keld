@@ -66,6 +66,7 @@ export interface RetainedPort {
 type Phase =
   | { kind: "idle" }
   | { kind: "prepared"; token: Token }
+  | { kind: "blocked-prepared"; token: Token }
   | { kind: "busy" }
   | { kind: "unknown"; original: Original }
   | { kind: "accepted" }
@@ -210,6 +211,8 @@ export class RetainedLinkDraft {
   ): Disposition {
     value = Object.freeze(value);
     this.#receipt = Object.freeze({ original, disposition: value, source });
+    if (value.kind === "accepted" || value.kind === "competing-terminal")
+      this.#ledger.retainUntilRetirement(this.#originalLease!);
     switch (value.kind) {
       case "prepared":
         this.#phase = { kind: "prepared", token: value.token };
@@ -275,7 +278,12 @@ export class RetainedLinkDraft {
     if (!attempt) return { kind: "refused", reason: "wrong-phase" };
     const lease = this.#ledger.reserveEffect(attempt);
     if (!lease) {
-      // No send was attempted. Release a newly claimed empty attempt only.
+      // No send or original identity exists for this refusal. A surviving
+      // Prepare keeps the attempt blocked; neither capacity restoration
+      // nor Status can settle an operation that never had an identity.
+      if (phase.kind === "prepared")
+        this.#phase = { kind: "blocked-prepared", token: phase.token };
+      // Release only a newly claimed empty Prepare attempt.
       this.#syncReleased();
       return { kind: "refused", reason: "capacity" };
     }

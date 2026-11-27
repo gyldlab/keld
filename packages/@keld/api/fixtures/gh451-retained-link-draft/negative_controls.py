@@ -73,6 +73,13 @@ controls = [
         "lost Status occupies its separate bounded slot",
         "status-lease-retained",
     ),
+    (
+        "restore a blocked preparation when capacity frees",
+        '      if (phase.kind === "prepared")\n        this.#phase = { kind: "blocked-prepared", token: phase.token };',
+        '',
+        "capacity after Prepare blocks cancel even after a slot frees",
+        "surviving-prepare",
+    ),
 ]
 ledger_controls = [
     (
@@ -98,15 +105,15 @@ ledger_controls = [
     ),
     (
         "release without consumption",
-        'if (!entry.consumed || !entry.noLate) return false;',
-        'if (!entry.noLate) return false;',
+        'else if (!entry.consumed || !entry.noLate) return false;',
+        'else if (!entry.noLate) return false;',
         "no-late proof alone cannot retire",
         "consumption-required",
     ),
     (
         "release without no-late proof",
-        'if (!entry.consumed || !entry.noLate) return false;',
-        'if (!entry.consumed) return false;',
+        'else if (!entry.consumed || !entry.noLate) return false;',
+        'else if (!entry.consumed) return false;',
         "wrap and capacity preserve unresolved original",
         "no-late-required",
     ),
@@ -116,6 +123,20 @@ ledger_controls = [
         'return entry;',
         "wrap and capacity preserve unresolved original",
         "stale-lease",
+    ),
+    (
+        "reclaim a terminal receipt before definitive retirement",
+        '      if (!entry.retired) return false;',
+        '      if (!entry.consumed || !entry.noLate) return false;',
+        "known Accepted survives local fence failure, recovery=false",
+        "retirement-required",
+    ),
+    (
+        "forget a definitive retirement recorded before terminal delivery",
+        '    entry.terminal = true;\n    // Definitive retirement may have been recorded while delivery was held.\n    this.#release(entry);',
+        '    entry.terminal = true;',
+        "retirement proof before historical Accepted delivery needs no Consume",
+        "retirement-before-delivery",
     ),
 ]
 cases = [("candidate.ts", *control) for control in controls]
