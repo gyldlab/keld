@@ -767,7 +767,9 @@ export class DraftQuitCoordinator<T> {
             !this.current()
           )
             return failed(
-              "error" in status.disposition ? status.disposition.error : undefined,
+              "error" in status.disposition
+                ? status.disposition.error
+                : undefined,
             );
           this.accept(a, p, status.disposition, "status");
         } catch (error) {
