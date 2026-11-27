@@ -125,6 +125,59 @@ test("AC11: recovered typed noncommit reports once independently of receipt rele
   expect(x.prepares).toHaveLength(1);
 });
 
+test("AC11: direct typed Retained survives retirement during receipt consumption", async () => {
+  const x = fixture();
+  const error = new Error("typed Retained during consumption");
+  let consumes = 0;
+  x.f.consume = (receipt) => {
+    expect(receipt.disposition.kind).toBe("retained");
+    consumes++;
+    x.coordinator.retire(g);
+    return { ready: true };
+  };
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "retained", error });
+
+  await expect(publicQuit).rejects.toBe(error);
+  await turn();
+  expect(consumes).toBe(1);
+  expect(await x.coordinator.outcome).toBe("unknown");
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.coordinator.quit()).toBe(publicQuit);
+  expect(x.late).toEqual([]);
+  expect(x.trace).toEqual(["before", "prepare"]);
+});
+
+test("AC11: recovered typed Invalidated survives retirement during receipt consumption", async () => {
+  const x = fixture();
+  const original = { operation: "prepare" as const, correlation: 23 };
+  const lost = new Error("lost Prepare before recovered Invalidated");
+  const error = new Error("typed Invalidated during consumption");
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "unknown", original, error: lost });
+  await expect(publicQuit).rejects.toBe(lost);
+  x.f.consume = (receipt) => {
+    expect(receipt.disposition.kind).toBe("invalidated");
+    x.coordinator.retire(g);
+    return { ready: true };
+  };
+
+  const recovery = x.coordinator.reconcile();
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "invalidated", error },
+  });
+  expect(await recovery).toBe("unknown");
+  await turn();
+  expect(x.late).toEqual([
+    { error, custody: { phase: "prepare", original, generation: g } },
+  ]);
+  await expect(publicQuit).rejects.toBe(lost);
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.statuses).toHaveLength(1);
+  expect(x.trace).toEqual(["before", "prepare", "status:prepare"]);
+});
+
 test("AC11: late typed refusal preserves the actual cause after retirement", async () => {
   const x = fixture();
   const publicQuit = x.coordinator.quit();

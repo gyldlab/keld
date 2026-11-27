@@ -320,7 +320,14 @@ export class DraftQuitCoordinator<T> {
       const outcome =
         a.pending || a.phase === "unknown" ? "unknown" : "retired";
       if (a.pending) this.retiredPending = { attempt: a, pending: a.pending };
-      this.finish(a, outcome, refusal("original role retired"), true);
+      this.finish(
+        a,
+        outcome,
+        a.pending?.noncommitDelivered
+          ? undefined
+          : refusal("original role retired"),
+        true,
+      );
     } else {
       const h = handle();
       this.reject(h, refusal("original role retired"));
@@ -526,6 +533,20 @@ export class DraftQuitCoordinator<T> {
     if (d.kind !== "refused") {
       p.held = d;
       p.awaitingRelease = false;
+      if (
+        (d.kind === "retained" || d.kind === "invalidated") &&
+        d.error !== undefined &&
+        !p.noncommitDelivered
+      ) {
+        // A known typed noncommit error settles independently of private
+        // receipt release. Mark it before the consumer can retire reentrantly.
+        p.noncommitDelivered = true;
+        this.failPublic(a, d.error, {
+          phase: p.operation,
+          original: p.original,
+          generation: this.generation,
+        });
+      }
       const consumed = this.consume(p, d);
       if (this.active !== a || a.pending !== p) return;
       if (!consumed.ready) {
