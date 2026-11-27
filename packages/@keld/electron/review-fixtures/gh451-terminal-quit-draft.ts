@@ -696,7 +696,11 @@ export class DraftQuitCoordinator<T> {
       !this.current() ||
       (!p.held && (!p.original || !this.host.status))
     ) {
-      return a.phase === "unknown" ? Promise.resolve("unknown") : a.h.outcome;
+      // No local release check or Status can run on an unqualified role.
+      // Do not wait on an outcome this reconciliation cannot settle.
+      return a.phase === "unknown" || p?.awaitingRelease
+        ? Promise.resolve("unknown")
+        : a.h.outcome;
     }
     const original = p.original;
     let resolve!: Recovery["resolve"];

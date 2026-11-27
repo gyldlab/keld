@@ -65,6 +65,35 @@ test("AC11: known typed Retained rejects exactly once while release remains pend
   expect(x.prepares).toHaveLength(1);
 });
 
+test("AC11: unselected role cannot reconcile a held Retained receipt or wait on Quit", async () => {
+  const x = fixture();
+  const error = new Error("exact typed Retained");
+  const retained = { kind: "retained" as const, error };
+  let consumes = 0;
+  x.f.consume = () => {
+    consumes++;
+    return { ready: false, pending: true };
+  };
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve(retained);
+  await expect(publicQuit).rejects.toBe(error);
+  expect(x.coordinator.heldDisposition).toBe(retained);
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(consumes).toBe(2); // selected role can try the local check
+
+  x.f.selected = false;
+  const reconciliation = x.coordinator.reconcile();
+  expect(await Promise.race([reconciliation, Promise.resolve("pending")])).toBe(
+    "unknown",
+  );
+  expect(x.coordinator.heldDisposition).toBe(retained);
+  expect(x.coordinator.quit()).toBe(publicQuit);
+  await expect(publicQuit).rejects.toBe(error);
+  expect(consumes).toBe(2);
+  expect(x.statuses).toHaveLength(0);
+  expect(x.trace).toEqual(["before", "prepare"]);
+});
+
 test("AC11: recovered typed noncommit reports once independently of receipt release", async () => {
   const x = fixture();
   const original = { operation: "prepare" as const, correlation: 7 };
