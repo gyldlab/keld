@@ -176,9 +176,10 @@ and exactly one cleanup tail. This follows
 [GH-523 AC-7](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/specs/gh523-host-authorized-app-exit.md#L100-L113).
 
 Use a validated Exit fixture for the second contender until GH-523 is approved.
-In a separate check, hold an admitted FS reply or lease during the race.
-Verify that neither contender reserves before the shared obligations settle.
-After settlement, verify each eligible reservation order independently.
+Run separate race checks for each owed FS obligation.
+Hold an admitted reply in one check. In the other, deliver the reply but hold its lease.
+Verify that neither contender reserves while the selected obligation is outstanding.
+After settlement, verify each eligible reservation order independently in both checks.
 
 ### AC-6: Reply and postcommit failure are distinct
 
@@ -382,7 +383,7 @@ a prerequisite for the reversible design decision.
 | AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption, combined retirement check and isolated generation check |
 | AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
 | AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls; exact error custody; successful Reply/Err |
-| AC-5 | Held FS obligation during the race, both reservation orders, code-only control, queued reader contender and one tail |
+| AC-5 | Separate held-reply and held-lease races, both reservation orders in each, code-only control, queued reader contender and one tail |
 | AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
 | AC-7 | Four peer dispositions, legacy Quit bytes, qualified and legacy destroy order, listener policy, replacement window and independent no-fallback controls |
 
