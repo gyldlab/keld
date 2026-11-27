@@ -743,6 +743,42 @@ for (const recovery of [false, true]) {
   );
 }
 
+test("direct Prepare Invalidated stays Unknown until exact Status Invalidated", async () => {
+  const port = new Port(2, 1);
+  const api = new RetainedLinkDraft(port);
+  port.holdLate = true;
+  port.reply({ kind: "invalidated" });
+  const outcome = await api.prepare();
+  const original: Original = { operation: "prepare", correlation: 1 };
+  expect(outcome).toEqual({ kind: "unknown", original });
+  if (outcome.kind !== "unknown") throw new Error("missing Unknown");
+  const lease = port.leases[0]!;
+  expect(api.pendingReceipt).toBeUndefined();
+  expect(port.ledger.original).toBe(lease);
+  expect(await api.prepare()).toEqual(outcome);
+  expect(port.ops()).toEqual(["prepare"]);
+
+  port.holdLate = false;
+  port.recorded({ kind: "invalidated" }, { ...original, correlation: 2 });
+  expect(await api.reconcile()).toEqual(outcome);
+  expect(api.pendingReceipt).toBeUndefined();
+  expect(port.ledger.original).toBe(lease);
+  port.recorded({ kind: "invalidated" }, original);
+  expect(await api.reconcile()).toEqual({ kind: "invalidated" });
+  expect(port.sent[2]?.request).toEqual({ operation: "status", original });
+  const receipt = api.pendingReceipt!;
+  expect(receipt.original).toBe(outcome.original);
+  expect(receipt.source).toBe("status");
+  expect(api.consumeReceipt(receipt)).toBe(false);
+  expect(api.conditionalAvailable).toBe(false);
+  expect(port.ledger.proveNoLate(lease)).toBe(true);
+  expect(api.conditionalAvailable).toBe(true);
+  port.reply({ kind: "retained" });
+  expect(await api.prepare()).toEqual({ kind: "retained" });
+  ack(api);
+  expect(port.ops()).toEqual(["prepare", "status", "status", "prepare"]);
+});
+
 test("recovered invalidated Prepare and competing terminal are distinct dispositions", async () => {
   const port = new Port();
   const api = new RetainedLinkDraft(port);

@@ -110,7 +110,9 @@ W3/prime composition contract:
   condition for `reconcile()` on an existing indeterminate attempt.
 - `prepare()/cancel()/commit()/reconcile()` return typed outcomes.
   Unknown always contains the original identity, even on synchronous
-  send failure. `invalidated` does not grant Prepared authority;
+  send failure. Direct Prepare cannot return `invalidated`; reject it as
+  Unknown with the exact original identity. Only matching Status can report
+  a revoked Prepare as Invalidated; it never grants Prepared authority.
   `competing-terminal` is distinct from Retained and Accepted.
 - After applying a resolved disposition, W3 reads the exact
   `pendingReceipt` object (original, disposition, direct/status source)
@@ -126,7 +128,10 @@ W3/prime composition contract:
   fence a successor. Cleanup is independent of receipt consumption.
   Exact definitive old-link retirement ends terminal effect lease custody
   without any receipt acknowledgement. A delivered result or local fence
-  is not retirement evidence. This does not erase the known outcome.
+  is not retirement evidence. After release, `historicalTerminalReceipt`
+  keeps one immutable original identity, source, and terminal result for
+  exact historical delivery. It is not a consumable receipt, cannot reopen
+  the link, and does not let a late result fence the successor.
 - A pre-send Cancel or Commit capacity refusal after Prepared keeps that
   attempt blocked even if ordinary capacity later returns. No original
   identity exists for the unsent operation, so no Status or effect is sent.

@@ -33,6 +33,7 @@ function fixture(
   const trace: string[] = [];
   const sent: Request[] = [];
   const leases: CorrelationLease[] = [];
+  const consumed: ResolvedReceipt[] = [];
   const replies: Array<{ run: () => Promise<unknown>; noLate: boolean }> = [];
   const late: Array<{ error: unknown; custody: ErrorCustody<Token> }> = [];
   let current = true;
@@ -78,7 +79,7 @@ function fixture(
     object,
     {
       receipt: ResolvedReceipt;
-      lease: CorrelationLease;
+      lease?: CorrelationLease;
       attempted: boolean;
     }
   >();
@@ -108,8 +109,27 @@ function fixture(
             ? { kind: "accepted", error: api.fenceError }
             : { ...result };
     const receipt = api.pendingReceipt;
+    const expectedSource = source === "effect" ? "direct" : "status";
+    if (!receipt) {
+      const history = api.historicalTerminalReceipt;
+      if (
+        history?.source === expectedSource &&
+        history.disposition === result &&
+        (d.kind === "accepted" || d.kind === "competing")
+      ) {
+        // An active facade may lag transport retirement. Validate the
+        // delivery below without forwarding an acknowledgement to the API.
+        deliveries.set(d, { receipt: history, attempted: false });
+        return d;
+      }
+    }
     const lease = ledger.original;
-    if (!receipt || !lease || receipt.disposition !== result)
+    if (
+      !receipt ||
+      !lease ||
+      receipt.source !== expectedSource ||
+      receipt.disposition !== result
+    )
       throw new Error("missing exact mapped receipt");
     deliveries.set(d, { receipt, lease, attempted: false });
     if (d.kind === "prepared") token = d.token;
@@ -149,7 +169,7 @@ function fixture(
       const actual =
         result.kind === "unknown"
           ? result.original
-          : api.pendingReceipt?.original;
+          : (api.pendingReceipt ?? api.historicalTerminalReceipt)?.original;
       if (!actual || !sameOriginal(actual, original))
         return {
           original,
@@ -181,10 +201,12 @@ function fixture(
           error: new Error("consumer receipt identity mismatch"),
         };
       }
+      if (!mapped.lease) return { ready: true };
       if (!mapped.attempted) {
         if (api.pendingReceipt !== mapped.receipt)
           return { ready: false, error: new Error("receipt no longer exact") };
         mapped.attempted = true;
+        consumed.push(mapped.receipt);
         api.consumeReceipt(mapped.receipt);
       }
       if (ledger.isReserved(mapped.lease) || ledger.status)
@@ -221,6 +243,7 @@ function fixture(
     trace,
     sent,
     leases,
+    consumed,
     ledger,
     late,
     reply(value: unknown, noLate = true) {
@@ -603,12 +626,30 @@ test("composed: late exact Commit receipt after retirement is historical only", 
   const publicQuit = f.coordinator.quit();
   await awaitObserved(() => f.sent.at(-1)?.operation === "commit");
   const first = f.coordinator.outcome;
+  const lease = f.ledger.original!;
+  const original = f.original();
   f.retire();
+  expect(f.ledger.proveRetired(lease)).toBe(false);
+  expect(f.api.historicalTerminalReceipt).toBeUndefined();
   await expect(publicQuit).rejects.toThrow("retired");
   expect(await first).toBe("unknown");
   deliver({ kind: "accepted" });
   await awaitObserved(() => f.coordinator.disposition === "committed");
   expect(f.api.terminalDisposition).toBe("accepted");
+  expect(f.api.pendingReceipt).toBeUndefined();
+  const history = f.api.historicalTerminalReceipt!;
+  expect(history).toEqual({
+    original,
+    disposition: { kind: "accepted" },
+    source: "direct",
+  });
+  expect(f.api.consumeReceipt(history)).toBe(false);
+  expect(f.ledger.isReserved(lease)).toBe(false);
+  expect(f.ledger.original).toBeUndefined();
+  expect(f.consumed.map((receipt) => receipt.original.operation)).toEqual([
+    "prepare",
+  ]);
+  expect(f.late).toEqual([]);
   expect(await first).toBe("unknown");
   await expect(publicQuit).rejects.toThrow("retired");
   expect(f.fences).toBe(0);
@@ -631,11 +672,29 @@ test("composed: exact late Status after retirement preserves terminal history", 
   );
   const recovery = f.coordinator.reconcile();
   await awaitObserved(() => f.sent.at(-1)?.operation === "status");
+  const lease = f.ledger.original!;
   f.retire();
+  expect(f.ledger.proveRetired(lease)).toBe(false);
+  expect(f.api.historicalTerminalReceipt).toBeUndefined();
   expect(await recovery).toBe("unknown");
+  const reportsAtRetirement = [...f.late];
   deliver({ kind: "recorded", original, disposition: { kind: "accepted" } });
   await awaitObserved(() => f.coordinator.disposition === "committed");
   expect(f.api.terminalDisposition).toBe("accepted");
+  expect(f.api.pendingReceipt).toBeUndefined();
+  const history = f.api.historicalTerminalReceipt!;
+  expect(history).toEqual({
+    original,
+    disposition: { kind: "accepted" },
+    source: "status",
+  });
+  expect(f.api.consumeReceipt(history)).toBe(false);
+  expect(f.ledger.isReserved(lease)).toBe(false);
+  expect(f.ledger.original).toBeUndefined();
+  expect(f.consumed.map((receipt) => receipt.original.operation)).toEqual([
+    "prepare",
+  ]);
+  expect(f.late).toEqual(reportsAtRetirement);
   await expect(publicQuit).rejects.toBe(lost);
   expect(f.fences).toBe(0);
   expect(f.sent.map((x) => x.operation)).toEqual([
@@ -681,4 +740,73 @@ test("composed: confirmed Cancel holds one queued retry until independent no-lat
     { operation: "prepare" },
     { operation: "commit", token: "fresh" },
   ]);
+});
+
+test("composed: direct Invalidated is unknown until exact Prepare Status", async () => {
+  const f = fixture();
+  f.reply({ kind: "invalidated" }, false);
+  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const original = f.original();
+  const lease = f.ledger.original!;
+  expect(await f.api.prepare()).toEqual({ kind: "unknown", original });
+  expect(f.api.pendingReceipt).toBeUndefined();
+  expect(f.consumed).toEqual([]);
+
+  f.recorded({ kind: "invalidated" }, { ...original, correlation: 99 });
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.ledger.original).toBe(lease);
+  expect(f.consumed).toEqual([]);
+
+  f.recorded({ kind: "invalidated" }, original);
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.consumed).toEqual([
+    { original, disposition: { kind: "invalidated" }, source: "status" },
+  ]);
+  expect(f.api.conditionalAvailable).toBe(false);
+  expect(f.ledger.original).toBe(lease);
+  f.proveOriginalNoLate();
+  expect(await f.coordinator.reconcile()).toBe("retained");
+  expect(f.api.conditionalAvailable).toBe(true);
+  expect(f.ledger.isReserved(lease)).toBe(false);
+  expect(f.sent).toEqual([
+    { operation: "prepare" },
+    { operation: "status", original },
+    { operation: "status", original },
+  ]);
+
+  f.reply({ kind: "prepared", token: "fresh" });
+  f.reply({ kind: "accepted" });
+  expect(await f.coordinator.requestQuit()).toBe("committed");
+  expect(f.sent.slice(3)).toEqual([
+    { operation: "prepare" },
+    { operation: "commit", token: "fresh" },
+  ]);
+});
+
+test("composed: definitive proof can precede facade retirement notice", async () => {
+  const f = fixture();
+  f.reply({ kind: "prepared", token: "old" });
+  let deliver!: (value: unknown) => void;
+  f.reply(
+    new Promise<unknown>((resolve) => {
+      deliver = resolve;
+    }),
+    false,
+  );
+  const first = f.coordinator.requestQuit();
+  await awaitObserved(() => f.sent.at(-1)?.operation === "commit");
+  const lease = f.ledger.original!;
+  expect(f.ledger.proveRetired(lease)).toBe(false);
+  deliver({ kind: "accepted" });
+  expect(await first).toBe("committed");
+  expect(f.api.historicalTerminalReceipt?.disposition).toEqual({
+    kind: "accepted",
+  });
+  expect(f.api.pendingReceipt).toBeUndefined();
+  expect(f.ledger.isReserved(lease)).toBe(false);
+  expect(f.fences).toBe(0);
+  expect(f.consumed.map((receipt) => receipt.original.operation)).toEqual([
+    "prepare",
+  ]);
+  expect(f.late).toEqual([]);
 });

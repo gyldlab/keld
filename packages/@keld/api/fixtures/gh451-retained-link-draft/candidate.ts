@@ -88,6 +88,7 @@ function sameOriginal(value: unknown, expected: Original): boolean {
 function disposition(
   operation: Effect,
   value: unknown,
+  source: ResolvedReceipt["source"],
 ): Disposition | undefined {
   const r = record(value);
   if (!r) return undefined;
@@ -99,7 +100,12 @@ function disposition(
   ) {
     return { kind: "prepared", token: r.token };
   }
-  if (operation === "prepare" && r.kind === "invalidated")
+  // Revocation of a recorded Prepared is a Status projection, not an ACK.
+  if (
+    source === "status" &&
+    operation === "prepare" &&
+    r.kind === "invalidated"
+  )
     return { kind: "invalidated" };
   if (r.kind === "competing-terminal") return { kind: "competing-terminal" };
   if (
@@ -125,6 +131,7 @@ export class RetainedLinkDraft {
   #attempt?: AttemptLease;
   #originalLease?: CorrelationLease;
   #receipt?: ResolvedReceipt;
+  #terminalReceipt?: ResolvedReceipt;
   #effectError: unknown;
   #statusError: unknown;
   #fenceError: unknown;
@@ -178,6 +185,12 @@ export class RetainedLinkDraft {
     return this.#receipt;
   }
 
+  /** Exact terminal evidence, not a consumable receipt or an allocation lease. */
+  get historicalTerminalReceipt(): ResolvedReceipt | undefined {
+    this.#syncReleased();
+    return this.#originalLease ? undefined : this.#terminalReceipt;
+  }
+
   /** Acknowledgement alone never permits correlation reuse. */
   consumeReceipt(receipt: ResolvedReceipt): boolean {
     this.#syncReleased();
@@ -211,8 +224,11 @@ export class RetainedLinkDraft {
   ): Disposition {
     value = Object.freeze(value);
     this.#receipt = Object.freeze({ original, disposition: value, source });
-    if (value.kind === "accepted" || value.kind === "competing-terminal")
+    if (value.kind === "accepted" || value.kind === "competing-terminal") {
+      this.#terminalReceipt = this.#receipt;
       this.#ledger.retainUntilRetirement(this.#originalLease!);
+      this.#syncReleased();
+    }
     switch (value.kind) {
       case "prepared":
         this.#phase = { kind: "prepared", token: value.token };
@@ -235,7 +251,8 @@ export class RetainedLinkDraft {
         // if local fencing throws; cleanup never waits for receipt consumption.
         // An old link's historical receipt cannot fence its successor.
         try {
-          if (this.#port.isCurrent()) this.#port.fenceAccepted();
+          if (this.#originalLease && this.#port.isCurrent())
+            this.#port.fenceAccepted();
         } catch (error) {
           this.#fenceError = error;
         }
@@ -299,7 +316,7 @@ export class RetainedLinkDraft {
     this.#phase = { kind: "busy" };
     try {
       const reply = await this.#port.send(lease, request);
-      const outcome = disposition(operation, reply);
+      const outcome = disposition(operation, reply, "direct");
       // A late nonterminal response cannot authorize a retired role or
       // claim the ended link remains usable. A verified terminal response
       // is historical evidence, even if the original role has retired.
@@ -355,7 +372,11 @@ export class RetainedLinkDraft {
         !sameOriginal(reply.original, original)
       )
         return this.#unknown(original);
-      const outcome = disposition(original.operation, reply.disposition);
+      const outcome = disposition(
+        original.operation,
+        reply.disposition,
+        "status",
+      );
       if (
         outcome?.kind !== "accepted" &&
         outcome?.kind !== "competing-terminal" &&
