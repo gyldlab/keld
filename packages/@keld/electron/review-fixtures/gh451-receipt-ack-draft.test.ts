@@ -274,6 +274,39 @@ test("AC11: recovered typed Invalidated selection loss skips stale consumption",
   await expect(publicQuit).rejects.toBe(lost);
 });
 
+for (const mode of ["return", "throw"] as const) {
+  test(`AC11: retired receipt consumer ${mode} failure preserves exact cause`, async () => {
+    const x = fixture();
+    const original = { operation: "prepare" as const, correlation: 26 };
+    const lost = new Error("lost Prepare before consumer failure");
+    const error = new Error(`exact receipt ${mode} failure`);
+    const t = token();
+    const publicQuit = x.coordinator.quit();
+    x.prepares[0]!.resolve({ kind: "unknown", original, error: lost });
+    await expect(publicQuit).rejects.toBe(lost);
+    x.f.consume = () => {
+      x.coordinator.retire(g);
+      if (mode === "throw") throw error;
+      return { ready: false, error };
+    };
+
+    const recovery = x.coordinator.reconcile();
+    x.statuses[0]!.reply.resolve({
+      original,
+      disposition: { kind: "prepared", token: t },
+    });
+    expect(await recovery).toBe("unknown");
+    await turn();
+    expect(x.late.filter((item) => item.error === error)).toEqual([
+      { error, custody: { phase: "prepare", original, generation: g } },
+    ]);
+    expect(x.coordinator.disposition).toBe("unknown");
+    expect(await x.coordinator.reconcile()).toBe("unknown");
+    expect(x.statuses).toHaveLength(1);
+    await expect(publicQuit).rejects.toBe(lost);
+  });
+}
+
 test("AC11: late typed refusal preserves the actual cause after retirement", async () => {
   const x = fixture();
   const publicQuit = x.coordinator.quit();

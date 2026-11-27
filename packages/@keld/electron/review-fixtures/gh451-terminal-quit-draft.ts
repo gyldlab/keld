@@ -554,7 +554,21 @@ export class DraftQuitCoordinator<T> {
         }
       }
       const consumed = this.consume(p, d);
-      if (this.active !== a || a.pending !== p) return;
+      if (this.active !== a || a.pending !== p) {
+        if (
+          !consumed.ready &&
+          !consumed.pending &&
+          this.retiredPending?.attempt === a &&
+          this.retiredPending.pending === p
+        ) {
+          this.report(consumed.error, {
+            phase: p.operation,
+            original: p.original,
+            generation: this.generation,
+          });
+        }
+        return;
+      }
       if (!consumed.ready) {
         if (consumed.pending) {
           // Pending proof is not an effect failure. Keep private effects blocked.
