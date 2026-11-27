@@ -29,6 +29,7 @@ function fixture(
   negotiated = true,
   ledger = new DraftCorrelationLedger(),
   onWill?: () => void,
+  onMappedTerminal?: (source: "effect" | "status") => Promise<void>,
 ) {
   const trace: string[] = [];
   const sent: Request[] = [];
@@ -162,7 +163,13 @@ function fixture(
     },
     async commit(t) {
       if (t !== token || token === undefined) return { kind: "unknown" };
-      return map(await api.commit(), "effect");
+      const disposition = map(await api.commit(), "effect");
+      if (
+        onMappedTerminal &&
+        (disposition.kind === "accepted" || disposition.kind === "competing")
+      )
+        await onMappedTerminal("effect");
+      return disposition;
     },
     async status(original) {
       const result = await api.reconcile();
@@ -175,7 +182,13 @@ function fixture(
           original,
           disposition: { kind: "unknown", original, error: api.statusError },
         };
-      return { original: actual, disposition: map(result, "status") };
+      const disposition = map(result, "status");
+      if (
+        onMappedTerminal &&
+        (disposition.kind === "accepted" || disposition.kind === "competing")
+      )
+        await onMappedTerminal("status");
+      return { original: actual, disposition };
     },
     observedInvalidation(t) {
       return invalidated && t === token;
@@ -202,6 +215,13 @@ function fixture(
         };
       }
       if (!mapped.lease) return { ready: true };
+      // The lease can retire across the async handoff after a live mapping.
+      // Only the exact terminal history can settle this delivery without Consume.
+      if (
+        !ledger.isReserved(mapped.lease) &&
+        api.historicalTerminalReceipt === mapped.receipt
+      )
+        return { ready: true };
       if (!mapped.attempted) {
         if (api.pendingReceipt !== mapped.receipt)
           return { ready: false, error: new Error("receipt no longer exact") };
@@ -810,3 +830,56 @@ test("composed: definitive proof can precede facade retirement notice", async ()
   ]);
   expect(f.late).toEqual([]);
 });
+
+for (const source of ["effect", "status"] as const) {
+  test(`composed: retirement between ${source} mapping and consumption stays exact`, async () => {
+    const mapped = Promise.withResolvers<"effect" | "status">();
+    const handoff = Promise.withResolvers<void>();
+    const f = fixture([], true, undefined, undefined, (observed) => {
+      mapped.resolve(observed);
+      return handoff.promise;
+    });
+    f.reply({ kind: "prepared", token: "old" });
+    const lost = source === "status" ? f.lose() : undefined;
+    if (!lost) f.reply({ kind: "accepted" }, false);
+    const first = f.coordinator.quit();
+    let recovered: ReturnType<typeof f.coordinator.reconcile> | undefined;
+    if (lost) {
+      await expect(first).rejects.toBe(lost);
+      f.recorded({ kind: "accepted" }, f.original());
+      recovered = f.coordinator.reconcile();
+    }
+    expect(await mapped.promise).toBe(source);
+    const lease = f.ledger.original!;
+    const receipt = f.api.pendingReceipt!;
+    const before = [...f.late];
+    try {
+      expect(receipt.disposition.kind).toBe("accepted");
+      expect(f.api.historicalTerminalReceipt).toBeUndefined();
+      expect(f.api.terminalDisposition).toBe("accepted");
+      expect(f.coordinator.disposition).not.toBe("committed");
+      expect(f.fences).toBe(1);
+      expect(f.ledger.proveRetired(lease)).toBe(true);
+      expect(f.ledger.isReserved(lease)).toBe(false);
+    } finally {
+      handoff.resolve();
+    }
+    if (lost) {
+      expect(await recovered).toBe("committed");
+      await expect(first).rejects.toBe(lost);
+    } else {
+      await expect(first).resolves.toBeUndefined();
+    }
+    expect(f.coordinator.disposition).toBe("committed");
+    expect(f.api.historicalTerminalReceipt).toBe(receipt);
+    expect(f.api.pendingReceipt).toBeUndefined();
+    expect(f.consumed.map((x) => x.original.operation)).toEqual(["prepare"]);
+    expect(f.late).toEqual(before);
+    expect(f.fences).toBe(1);
+    expect(f.sent.map((x) => x.operation)).toEqual(
+      source === "status"
+        ? ["prepare", "commit", "status"]
+        : ["prepare", "commit"],
+    );
+  });
+}
