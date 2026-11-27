@@ -24,10 +24,11 @@ selection, deadline changes, Windows or Linux parity, signing or release.
 - FACT: [Approved KEL-96 section 4.5](https://github.com/gyldlab/keld/blob/2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a/docs/specs/kel96-no-flag-host-boot.md#L452-L480)
   owns the correlated reply, retirement and cleanup order. Its blob is
   `179353fa4a2fcbd8ec294d85ca6e804afe14db40`.
-- FACT: [GH-451 conditional contract at historical #1432 revision](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/specs/gh451-cancelable-two-phase-quit.md)
-  selects conditional behavior. GH-451 Q-2 and GH-451 Q-8 are separate gates.
-- FACT: [Historical proposed IPC contract](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/engineering/gh451-conditional-quit-ipc-amendment.md)
-  defines the receipt consumption and transport proof proposed for review.
+- FACT: Historical #1432 separates the
+  [GH-451 Q-2 lifecycle amendment](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/specs/gh451-cancelable-two-phase-quit.md#L415-L417)
+  from [GH-451 Q-8 native qualification](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/specs/gh451-cancelable-two-phase-quit.md#L444-L448).
+- FACT: The [historical #1432 IPC proposal](https://github.com/gyldlab/keld/blob/ce9ba6e9d2d2fe46954201f58f251754602b5c06/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L159-L186)
+  defines the proposed receipt consumption and transport proof.
 - FACT: #1432 `docs/specs/gh523-host-authorized-app-exit.md:100@c779aa2ac08270911b86cdbe3ebcb4e5f6dbcf2a`
   proposes one terminal winner and a shared filesystem drain.
 - FACT: GH-531 `docs/specs/gh531-window-registry-close-state-machine.md:389@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`
@@ -88,7 +89,10 @@ The successor has subscribed and has an adoptable Open survivor.
 The test goes RED if Prepare grants a token while that survivor exists.
 Verify that a genuine successor adopts the survivor without a new build.
 Reject an old-generation token even after the successor's registry becomes empty.
-Mutate only the generation check at the final cut for that stale-token test.
+This end-to-end control proves the combined retirement and final-cut checks.
+Test the final generation check separately in a nonshipping owner-level fixture.
+Keep all other final-cut predicates valid. Compare a matching generation with a stale generation.
+Remove only the generation check. The test goes RED if the stale generation passes that check.
 
 ### AC-3: Owed filesystem replies precede reservation
 
@@ -173,6 +177,11 @@ Do not treat a missing caller acknowledgement as proof of noncommit.
   - **Single fault:** Route a legacy Quit through conditional Prepare.
   - **At-risk precondition:** A legacy fixture requests Quit with a live window.
   - **Expected RED:** The previously accepted legacy operation is refused.
+
+Test the opposite direction separately on a qualified session.
+Use distinct refused and unresolved conditional attempts.
+Retain each original disposition. Observe no legacy Quit frame, terminal reservation or cleanup tail.
+Mutate only conditional-to-legacy fallback. The test goes RED if any of those legacy effects occur.
 
 ## 4. Design
 
@@ -308,12 +317,12 @@ a prerequisite for the reversible design decision.
 | Criteria | Planned witness |
 |---|---|
 | AC-1 | Exact facade veto and Save retry, plus retained receipt with each missing proof |
-| AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption and old-token rejection |
+| AC-2 | Same-role failed Create and CreateWithPreload, Open-survivor refusal, successor adoption, combined retirement check and isolated generation check |
 | AC-3 | Authenticated FS Reply and Err, held lease, pause and reserve counters |
 | AC-4 | Independent viable-drain and failed-writer mutations, exact error custody, successful Reply/Err controls |
 | AC-5 | Both eligible reservation orders, queued reader contender and one tail |
 | AC-6 | Independent lost-reply rollback and cleanup-failure mutations, immutable winner and one tail |
-| AC-7 | Existing legacy Quit bytes, live-window behavior and old-peer refusal |
+| AC-7 | Existing legacy Quit bytes, live-window behavior, old-peer refusal and independent no-fallback controls |
 
 Use explicit barriers and the existing test owners. Do not use sleeps to
 establish order. Native acceptance uses an independent process witness.
