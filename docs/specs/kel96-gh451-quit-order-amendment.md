@@ -158,6 +158,10 @@ Run distinct viable-held-drain and actual-failed-writer cases, plus successful R
 controls. An in-flight count of zero alone cannot establish write success or a live role.
 In both failure cases, also check the original error and attempt custody.
 Check that new work cannot start without proved settlement on a viable link.
+In both invalidation checks hold an unrelated FS reply and lease. Before Draining, refuse without pausing, draining or reserving.
+After Draining begins, hold the same obligations and verify no early Retained, resume or reservation.
+Observe the authoritative invalidation without admitting work behind the pause.
+After actual reply and lease settlement, verify eligible resumption under D-2.
 
 ### AC-5: One committed terminal decision
 
@@ -236,6 +240,10 @@ Observe the unavailable disposition and normal Destroy return, without either Qu
 Observe no conditional close sweep, Prepare or terminal reservation.
 In separate controls, test the actual legacy, unselected and qualified bound roles.
 Remove only the selected-but-unbound refusal. The test goes RED on either Quit path.
+Complete the same authenticated Bind and its release proof after Destroy returns.
+Observe no replay of the refused intent: no before-quit, close sweep, Prepare, legacy Quit, reservation or cleanup.
+On the same still-current qualified bound original, create and destroy a fresh sole window with no listener.
+Observe exactly one new coordinator entry in D-1's event order before this Destroy returns.
 
 ## 4. Design
 
@@ -285,8 +293,11 @@ Step 1 also defines the default-intent refusal before binding.
    GH-531 adoption needs an existing Open survivor. Such a survivor prevents
    Prepare. Generation retirement revokes the old token before successor adoption.
 3. Cancel revokes the exact preparation without terminal reservation.
-   Commit pauses further reader dispatch. Drain all admitted FS terminal
-   replies and leases while Running. Do not hold required locks during drain.
+   If the owner finds the token invalidated before Draining, refuse Commit without
+   pausing reader dispatch or draining unrelated FS work. Otherwise, Commit pauses
+   further reader dispatch. Drain all admitted FS terminal replies and leases while
+   Running, even if invalidation is learned after Draining begins.
+   Apply D-2 before resume or retryable Retained. Do not hold required locks during drain.
    Prove that no other admission path can add owed work behind the pause.
 4. Recheck the current role, token, registry and drain at the final existing
    serialized cut. Reserve the terminal decision once. A successful terminal
