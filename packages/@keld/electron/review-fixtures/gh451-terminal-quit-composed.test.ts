@@ -24,13 +24,17 @@ import {
 const generation = 1n;
 const window = { id: 1, incarnation: 11n, document: 101n };
 
-function fixture(initial: readonly WindowIdentity[] = [], negotiated = true) {
+function fixture(
+  initial: readonly WindowIdentity[] = [],
+  negotiated = true,
+  ledger = new DraftCorrelationLedger(),
+  onWill?: () => void,
+) {
   const trace: string[] = [];
   const sent: Request[] = [];
   const leases: CorrelationLease[] = [];
   const replies: Array<{ run: () => Promise<unknown>; noLate: boolean }> = [];
   const late: Array<{ error: unknown; custody: ErrorCustody<Token> }> = [];
-  const ledger = new DraftCorrelationLedger();
   let current = true;
   let live = true;
   let fenceCount = 0;
@@ -201,6 +205,7 @@ function fixture(initial: readonly WindowIdentity[] = [], negotiated = true) {
       },
       willQuit() {
         trace.push("will");
+        onWill?.();
         return veto;
       },
       lastWindowClosed() {
@@ -355,6 +360,47 @@ test("composed: missing Commit receipt stops replay without fencing the link", a
   expect(f.fences).toBe(0);
   expect(f.live).toBe(true);
 });
+
+for (const operation of ["cancel", "commit"] as const) {
+  test(`composed: ${operation} allocation refusal preserves preparation without a new identity`, async () => {
+    const ledger = new DraftCorrelationLedger(1);
+    let ordinary: CorrelationLease | undefined;
+    const f = fixture([], true, ledger, () => {
+      ordinary = ledger.reserveOrdinary();
+    });
+    f.veto(operation === "cancel");
+    f.reply({ kind: "prepared", token: "held" });
+    const publicQuit = f.coordinator.quit();
+    if (operation === "cancel")
+      await expect(publicQuit).resolves.toBeUndefined();
+    else await expect(publicQuit).rejects.toThrow("draft refusal: capacity");
+    expect(await f.coordinator.requestQuit()).toBe("unknown");
+    expect(ordinary).toBeDefined();
+    expect(ledger.active).toBe(true);
+    expect(ledger.original).toBeUndefined();
+    expect(ledger.status).toBeUndefined();
+    expect(f.api.pendingReceipt).toBeUndefined();
+    expect(f.sent).toEqual([{ operation: "prepare" }]);
+    expect(f.trace).toEqual(["before", "prepare", "will"]);
+    // Reclaim only the ordinary slot, not the surviving preparation.
+    expect(ledger.consume(ordinary!)).toBe(false);
+    expect(ledger.proveNoLate(ordinary!)).toBe(true);
+    expect(ledger.reservedCount).toBe(0);
+    expect(await f.api.prepare()).toEqual({
+      kind: "refused",
+      reason: "wrong-phase",
+    });
+    expect(await f.coordinator.reconcile()).toBe("unknown");
+    expect(await f.coordinator.requestQuit()).toBe("unknown");
+    expect(ledger.active).toBe(true);
+    expect(ledger.original).toBeUndefined();
+    expect(ledger.status).toBeUndefined();
+    expect(f.sent).toEqual([{ operation: "prepare" }]);
+    expect(f.trace).toEqual(["before", "prepare", "will"]);
+    expect(f.live).toBe(true);
+    expect(f.fences).toBe(0);
+  });
+}
 
 test("composed: old peer with a live window has no conditional close/effect/fallback", async () => {
   const f = fixture([window], false);
