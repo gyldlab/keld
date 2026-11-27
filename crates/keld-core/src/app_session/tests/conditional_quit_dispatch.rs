@@ -139,9 +139,9 @@ fn exited_leader_has_live_peer(census: &str, group: i32) -> io::Result<Option<bo
             .and_then(|value| value.parse::<i32>().ok())
             .filter(|&pid| pid > 0)
             .ok_or_else(invalid)?;
-        let pgid = fields.next().and_then(|value| value.parse::<i32>().ok());
+        let process_group = fields.next().and_then(|value| value.parse::<i32>().ok());
         let state = fields.next().ok_or_else(invalid)?;
-        if pgid != Some(group) || fields.next().is_some() {
+        if process_group != Some(group) || fields.next().is_some() {
             return Err(invalid());
         }
         let zombie = state.starts_with('Z');

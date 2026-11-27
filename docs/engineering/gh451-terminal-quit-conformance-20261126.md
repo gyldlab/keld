@@ -19,6 +19,7 @@ Historical failures apply only to their recorded source and system. All full-fea
 - A: `packages/@keld/api/fixtures/gh451-retained-link-draft/candidate.test.ts`.
 - B: `packages/@keld/electron/review-fixtures/gh451-terminal-quit-draft.test.ts`.
 - D: `packages/@keld/electron/review-fixtures/gh451-d2-recovery-draft.test.ts`.
+- E: `packages/@keld/electron/review-fixtures/gh451-receipt-ack-draft.test.ts` (receipt acknowledgement and terminal settlement regressions).
 - C: `packages/@keld/electron/review-fixtures/gh451-terminal-quit-composed.test.ts`.
 - S: `packages/@keld/electron/review-fixtures/gh451-actual-facade-source.test.ts` (actual facade/API/Source modules with scripted link boundary; no authenticated Host or native window).
 - H: `crates/keld-core/src/app_session/tests/conditional_quit_dispatch.rs` (actual authenticated reader, explicitly armed legacy test carrier and out-of-band result, not a production conditional wire or terminal tail).
@@ -37,7 +38,7 @@ Historical failures apply only to their recorded source and system. All full-fea
 | AC-8 Opening/replacement | R, O, W, B, D, H | Pending-fail historical hidden Opening gap. H observes an actual transient Create with injected build failure. Current production unrun; hold Prepare/Status response across actual Create/preload/adoption and verify invalidated Commit. |
 | AC-9 Terminal/Create cut | R, O, B, H | Unrun full feature. H observes test-only drain and later Create queued at WorkerLink, not a proved later socket write. Actual same-turn Create/Commit serialization and no orphan native window remain. |
 | AC-10 One terminal winner | R, F | Unrun. Shared terminal reservation model passes. Real eligible Exit/Quit orders, invalid input, immutable receipt/tail and actual parent status remain. |
-| AC-11 Retained link/status | A, D, C, H | Unrun full feature. H observes same-link Echo after a retained test-carrier result. Actual negotiated old/new peers, allocator reservation, Host record, ordered Status and receipt-consumption/no-late proof remain. |
+| AC-11 Retained link/status | A, D, C, E, H | Unrun full feature. H observes same-link Echo after a retained test-carrier result. Actual negotiated old/new peers, allocator reservation, Host record, ordered Status and receipt-consumption/no-late proof remain. |
 | AC-12 FS drain | F, R, H | Unrun full feature. Actual guarded Reply and Err plus held lease pass at component seam. H pauses the actual reader inside the armed test carrier. Production conditional reader pause and no additional admissions remain. |
 | AC-13 Native reply and exit | Earlier generic native failure evidence | Pending-fail historical generic native cancellation/retained family. Current original unrun; actual pre-reply cleanup, one correlated reply and independent natural exit. |
 
@@ -60,6 +61,7 @@ cargo test --locked -p keld-core --lib authenticated_reader_ -- --test-threads=1
 cargo clippy --locked -p keld-core --lib --tests -- -D warnings
 bun test packages/@keld/api/fixtures/gh451-retained-link-draft/candidate.test.ts packages/@keld/electron/review-fixtures/gh451-terminal-quit-draft.test.ts packages/@keld/electron/review-fixtures/gh451-d2-recovery-draft.test.ts packages/@keld/electron/review-fixtures/gh451-terminal-quit-composed.test.ts packages/@keld/electron/src/gh451-original-quit-lifecycle.adversarial.test.ts
 bun test packages/@keld/electron/review-fixtures/gh451-actual-facade-source.test.ts
+bun test packages/@keld/electron/review-fixtures/gh451-receipt-ack-draft.test.ts
 ```
 
 The wider 86 registry and 45 router tests passed before the final helper refinement. The final initial candidate passed 26 terminal cases, the release/Opening regression and strict Core Clippy. The 104 Bun tests passed after the strict fixture type corrections. The additional S fixture passed independently with actual source imports and a scripted link. At `c5e7d06a05f0137ef60b45932fe82fb760c5bf28`, 105 Bun tests and two authenticated reader tests passed locally. The subsequent local review correction passed 110 focused Bun tests (1,300 assertions) before formatting; the final revision requires its own checks. These counts are not full-product acceptance.
