@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent
 SOURCE_HASHES = {}
 COMPILE_TIMEOUT_SECONDS = 60
 PROJECTION_TIMEOUT_SECONDS = 30
+CLEANUP_TIMEOUT_SECONDS = 5
 OWNER_TEST_PREFIX = (
     "app_session::window_registry::tests::terminal_quit_candidate::core_owner_integration::"
 )
@@ -60,8 +61,11 @@ def run_bounded(command, label, timeout, *, check=False):
             finally:
                 observed.set()
 
-        threading.Thread(target=observe_exit, daemon=True).start()
+        observer = threading.Thread(target=observe_exit, daemon=True)
+        observer_started = False
         try:
+            observer.start()
+            observer_started = True
             if not observed.wait(timeout):
                 raise TimeoutError(f"timed out after {timeout}s")
             if failures:
@@ -76,8 +80,17 @@ def run_bounded(command, label, timeout, *, check=False):
                 os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            observed.wait(5)
-            child.wait()
+            if observer_started:
+                observed.wait(CLEANUP_TIMEOUT_SECONDS)
+            try:
+                child.wait(timeout=CLEANUP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as cleanup_error:
+                diagnostics.seek(0)
+                output = diagnostics.read().decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"{label}: {error}; cleanup timed out after "
+                    f"{CLEANUP_TIMEOUT_SECONDS}s\n{output}"
+                ) from cleanup_error
             diagnostics.seek(0)
             output = diagnostics.read().decode("utf-8", errors="replace")
             if isinstance(error, Exception):

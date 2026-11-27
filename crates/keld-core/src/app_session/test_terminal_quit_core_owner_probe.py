@@ -87,7 +87,7 @@ class ProjectionRunnerTests(unittest.TestCase):
             if (pgid, signum) == (group, signal.SIGKILL):
                 live.clear()
 
-        child.wait.side_effect = lambda: calls.append(("reap", group))
+        child.wait.side_effect = lambda timeout=None: calls.append(("reap", group))
         with (
             mock.patch.object(probe.subprocess, "Popen", side_effect=spawn),
             mock.patch.object(probe.os, "waitid", side_effect=observe),
@@ -106,6 +106,24 @@ class ProjectionRunnerTests(unittest.TestCase):
             ("signal", group, signal.SIGKILL),
             ("reap", group),
         ])
+
+    def test_observer_start_failure_disposes_process_group(self):
+        child = mock.Mock(pid=101, returncode=None)
+        child.wait.return_value = -signal.SIGKILL
+        with (
+            mock.patch.object(probe.subprocess, "Popen", return_value=child),
+            mock.patch.object(
+                probe.threading.Thread, "start",
+                side_effect=RuntimeError("observer start failed"),
+            ),
+            mock.patch.object(probe.os, "killpg") as killpg,
+            self.assertRaisesRegex(
+                RuntimeError, r"(?m)^observer-start: observer start failed$",
+            ),
+        ):
+            run_bounded(["mocked-projection"], "observer-start", 1)
+        killpg.assert_called_once_with(child.pid, signal.SIGKILL)
+        child.wait.assert_called_once_with(timeout=probe.CLEANUP_TIMEOUT_SECONDS)
 
     def test_normal_exit_and_negative_result_are_preserved(self):
         for status in (0, 101):
