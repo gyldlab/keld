@@ -451,6 +451,13 @@ export class DraftQuitCoordinator<T> {
             original: p.original,
             generation: this.generation,
           });
+      } else if (d.kind === "unknown" && d.error !== undefined) {
+        this.rememberOriginal(p, d.original);
+        this.report(d.error, {
+          phase: source === "status" ? "status" : p.operation,
+          original: p.original,
+          generation: this.generation,
+        });
       }
       return;
     }
@@ -510,10 +517,13 @@ export class DraftQuitCoordinator<T> {
       const consumed = this.consume(p, d);
       if (this.active !== a || a.pending !== p) return;
       if (!consumed.ready) {
-        if (d.kind === "canceled" && consumed.pending) {
-          // Exact Cancel is known. Keep a queued explicit retry pending until
-          // independent proof arrives, without reporting an unknown effect.
-          a.phase = "cancel";
+        if (
+          (d.kind === "canceled" || d.kind === "prepared") &&
+          consumed.pending
+        ) {
+          // A known reply awaiting an independent proof is not an effect
+          // failure. Keep both public settlement and effects blocked.
+          a.phase = p.operation;
           const recovery = a.recovery;
           a.recovery = undefined;
           recovery?.resolve("unknown"); // reconciliation is not yet complete
@@ -610,7 +620,31 @@ export class DraftQuitCoordinator<T> {
     original: Original<T> | undefined,
     error: unknown,
   ): void {
+    if (
+      this.retiredPending?.attempt === a &&
+      this.retiredPending.pending === p
+    ) {
+      this.rememberOriginal(p, original);
+      this.report(error, {
+        phase: p.operation,
+        original: p.original,
+        generation: this.generation,
+      });
+      return;
+    }
     if (this.active !== a || a.pending !== p) return;
+    this.rememberOriginal(p, original);
+    a.phase = "unknown";
+    this.publish(a, "unknown");
+    this.rejectQueued(a, error, "unknown");
+    this.failPublic(a, error, {
+      phase: p.operation,
+      original: p.original,
+      generation: this.generation,
+    });
+  }
+
+  private rememberOriginal(p: Pending<T>, original?: Original<T>): void {
     if (
       original &&
       original.operation === p.operation &&
@@ -622,14 +656,6 @@ export class DraftQuitCoordinator<T> {
     ) {
       p.original ??= Object.freeze({ ...original });
     }
-    a.phase = "unknown";
-    this.publish(a, "unknown");
-    this.rejectQueued(a, error, "unknown");
-    this.failPublic(a, error, {
-      phase: p.operation,
-      original: p.original,
-      generation: this.generation,
-    });
   }
 
   /** One ordered read-only Status for the same original operation; never replay. */
@@ -643,6 +669,7 @@ export class DraftQuitCoordinator<T> {
     const p = a.pending;
     if (
       (a.phase !== "unknown" &&
+        !(a.phase === "prepare" && p?.held?.kind === "prepared") &&
         !(a.phase === "cancel" && p?.held?.kind === "canceled")) ||
       !p ||
       !this.current() ||
@@ -666,6 +693,18 @@ export class DraftQuitCoordinator<T> {
       return promise;
     }
     const failed = (error?: unknown): void => {
+      if (
+        this.retiredPending?.attempt === a &&
+        this.retiredPending.pending === p
+      ) {
+        if (error !== undefined)
+          this.report(error, {
+            phase: "status",
+            original,
+            generation: this.generation,
+          });
+        return;
+      }
       if (this.active !== a || a.pending !== p) return;
       this.publish(a, "unknown");
       if (error !== undefined)
@@ -692,6 +731,8 @@ export class DraftQuitCoordinator<T> {
             this.accept(a, p, status.disposition, "status");
             return;
           }
+          if (status.disposition.kind === "unknown")
+            return failed(status.disposition.error);
           // Exact known terminal receipts remain historical evidence even if
           // the current census changes while Status is outstanding.
           if (
@@ -700,8 +741,6 @@ export class DraftQuitCoordinator<T> {
             !this.current()
           )
             return failed();
-          if (status.disposition.kind === "unknown")
-            return failed(status.disposition.error);
           this.accept(a, p, status.disposition, "status");
         } catch (error) {
           failed(error);
@@ -828,7 +867,20 @@ export class DraftQuitCoordinator<T> {
       return;
     }
     const queued = a.queued;
+    if (!queued) return;
+    try {
+      if (!this.current())
+        return this.rejectQueued(
+          a,
+          refusal("original role retired"),
+          "retired",
+        );
+    } catch (cause) {
+      return this.rejectQueued(a, cause, "unknown");
+    }
+    if (this.stopped || this.active || this.reportFailure)
+      return this.rejectQueued(a, refusal(outcome), outcome);
     a.queued = undefined;
-    if (queued) this.start(queued); // only on proved Cancel/Retained
+    this.start(queued); // proved Cancel/Retained on the still-current role
   }
 }

@@ -853,6 +853,46 @@ mod tests {
     }
 
     #[test]
+    fn invalidated_quit_keeps_draining_until_reply_and_lease_settle() {
+        for reply_first in [false, true] {
+            let fs = OwedFs::default();
+            let mut quit = TerminalQuit::new();
+            let token = prepared(&mut quit, fs.facts());
+            assert_eq!(quit.begin_commit(token, fs.facts()), Outcome::DrainRequired);
+            assert!(quit.admit_create());
+            // The admitted Create has failed by the final cut; the registry is
+            // empty, but the original invalidation and drain custody both remain.
+            let pending = State::Pending(Pending {
+                token,
+                phase: Phase::Draining,
+                invalidated: true,
+            });
+            assert_eq!(quit.state, pending);
+            for first_settled in [false, true] {
+                fs.reply_written.set(reply_first && first_settled);
+                fs.lease_retired.set(!reply_first && first_settled);
+                assert_eq!(
+                    quit.finish_commit(token, fs.facts(), || fs.reserve()),
+                    Outcome::AwaitingDrain,
+                    "reply_first={reply_first}, first_settled={first_settled}"
+                );
+                assert_eq!(quit.state, pending);
+                assert_eq!(fs.reserves.get(), 0);
+            }
+
+            fs.reply_written.set(true);
+            fs.lease_retired.set(true);
+            assert_eq!(
+                quit.finish_commit(token, fs.facts(), || fs.reserve()),
+                Outcome::Retained
+            );
+            assert_eq!(quit.state, State::Idle { cancelled: None });
+            assert_eq!(fs.reserves.get(), 0);
+            assert_ne!(prepared(&mut quit, fs.facts()), token);
+        }
+    }
+
+    #[test]
     fn shared_quit_final_cut_waits_for_owed_reply_and_lease() {
         let fs = OwedFs::default();
         let mut quit = TerminalQuit::new();

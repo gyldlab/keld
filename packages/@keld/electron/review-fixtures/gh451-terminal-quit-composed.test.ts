@@ -45,6 +45,8 @@ function fixture(
   let veto = false;
   let fenceError: Error | undefined;
   let invalidated = false;
+  let currentGeneration = generation;
+  let onConsumedCancel: (() => void) | undefined;
   const port: RetainedPort = {
     negotiated,
     selected: true,
@@ -87,14 +89,13 @@ function fixture(
   function map(
     result: LinkOutcome,
     source: "effect" | "status",
+    statusError?: unknown,
   ): Disposition<Token> {
     if (result.kind === "unknown")
       return {
         kind: "unknown",
         original: result.original,
-        error:
-          (source === "status" ? api.statusError : api.effectError) ??
-          new Error("draft effect unknown"),
+        error: source === "status" ? statusError : api.effectError,
       };
     if (result.kind === "refused")
       return {
@@ -145,7 +146,12 @@ function fixture(
   }
   const host: DraftHost<Token> = {
     conditionalEligible: api.conditionalAvailable,
-    census: () => ({ generation, ready: current, selected: current, windows }),
+    census: () => ({
+      generation: currentGeneration,
+      ready: current,
+      selected: current,
+      windows,
+    }),
     requestClose(w, dispatch) {
       trace.push("close:" + w.id);
       dispatch(7n);
@@ -172,7 +178,11 @@ function fixture(
       return disposition;
     },
     async status(original) {
+      const previousFailure = api.statusFailure;
       const result = await api.reconcile();
+      const failure = api.statusFailure;
+      const statusError =
+        failure !== previousFailure ? failure?.error : undefined;
       const actual =
         result.kind === "unknown"
           ? result.original
@@ -180,9 +190,9 @@ function fixture(
       if (!actual || !sameOriginal(actual, original))
         return {
           original,
-          disposition: { kind: "unknown", original, error: api.statusError },
+          disposition: { kind: "unknown", original, error: statusError },
         };
-      const disposition = map(result, "status");
+      const disposition = map(result, "status", statusError);
       if (
         onMappedTerminal &&
         (disposition.kind === "accepted" || disposition.kind === "competing")
@@ -236,6 +246,7 @@ function fixture(
           error: new Error("independent release proof pending"),
         };
       if (delivery.disposition.kind !== "prepared") token = undefined;
+      if (delivery.disposition.kind === "canceled") onConsumedCancel?.();
       return { ready: true };
     },
   };
@@ -272,6 +283,16 @@ function fixture(
     lose(error = new Error("missing terminal receipt")) {
       replies.push({ run: () => Promise.reject(error), noLate: false });
       return error;
+    },
+    holdFailure() {
+      const { promise, reject } = Promise.withResolvers<unknown>();
+      replies.push({ run: () => promise, noLate: false });
+      return reject;
+    },
+    replaceRoleOnCancelConsumption() {
+      onConsumedCancel = () => {
+        currentGeneration = generation + 1n;
+      };
     },
     original() {
       const lease = ledger.original;
@@ -570,12 +591,28 @@ test("composed: stale original Status cannot authorize a new effect", async () =
 test("composed: known Prepare held until independent no-late proof permits continuation", async () => {
   const f = fixture();
   f.reply({ kind: "prepared", token: "held" }, false);
-  expect(await f.coordinator.requestQuit()).toBe("unknown");
+  const originalQuit = f.coordinator.quit();
+  let settlement = "pending";
+  void originalQuit.then(
+    () => {
+      settlement = "fulfilled";
+    },
+    () => {
+      settlement = "rejected";
+    },
+  );
+  await awaitObserved(() => f.coordinator.heldDisposition?.kind === "prepared");
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(settlement).toBe("pending");
+  expect(f.coordinator.quit()).toBe(originalQuit);
+  expect(f.late).toEqual([]);
   expect(f.trace).toEqual(["before", "prepare"]);
   expect(f.ledger.original).toBeDefined();
   f.proveOriginalNoLate();
   f.reply({ kind: "accepted" });
   expect(await f.coordinator.reconcile()).toBe("committed");
+  await expect(originalQuit).resolves.toBeUndefined();
+  expect(settlement).toBe("fulfilled");
   expect(f.sent.map((x) => x.operation)).toEqual(["prepare", "commit"]);
   expect(f.fences).toBe(1);
 });
@@ -761,6 +798,94 @@ test("composed: confirmed Cancel holds one queued retry until independent no-lat
     { operation: "commit", token: "fresh" },
   ]);
 });
+
+test("composed: role change during Cancel consumption blocks queued callbacks", async () => {
+  const f = fixture();
+  f.veto(true);
+  f.reply({ kind: "prepared", token: "old" });
+  const cancel = Promise.withResolvers<unknown>();
+  f.reply(cancel.promise);
+  const first = f.coordinator.quit();
+  await awaitObserved(() => f.sent.at(-1)?.operation === "cancel");
+  const queued = f.coordinator.quit();
+  expect(queued).not.toBe(first);
+  f.replaceRoleOnCancelConsumption();
+  cancel.resolve({ kind: "cancelled" });
+  await expect(first).resolves.toBeUndefined();
+  await expect(queued).rejects.toThrow("original role retired");
+  expect(f.trace).toEqual(["before", "prepare", "will", "cancel"]);
+});
+
+test("composed: a no-send Status never re-reports prior failure custody", async () => {
+  const f = fixture();
+  const effect = f.lose();
+  await expect(f.coordinator.quit()).rejects.toBe(effect);
+  const original = f.original();
+  const status = f.lose();
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  const held = f.ledger.status!;
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.sent).toEqual([
+    { operation: "prepare" },
+    { operation: "status", original },
+  ]);
+  expect(f.api.statusError).toBe(status);
+  expect(f.late).toEqual([
+    { error: status, custody: { phase: "status", original, generation } },
+  ]);
+  f.ledger.proveNoLate(held);
+  const next = f.lose();
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.late.map(({ error }) => error)).toEqual([status, next]);
+  expect(f.sent).toHaveLength(3);
+  f.ledger.proveNoLate(f.ledger.status!);
+  f.lose(next); // A new dispatch may reject with the same object.
+  expect(await f.coordinator.reconcile()).toBe("unknown");
+  expect(f.late.map(({ error }) => error)).toEqual([status, next, next]);
+  expect(f.sent).toHaveLength(4);
+});
+
+for (const source of ["effect", "status"] as const) {
+  test(`composed: exact late ${source} error transfers custody once after retirement`, async () => {
+    const f = fixture();
+    f.reply({ kind: "prepared", token: "retired" });
+    const firstFailure = source === "status" ? f.lose() : undefined;
+    const rejectLate = f.holdFailure();
+    const publicQuit = f.coordinator.quit();
+    await awaitObserved(() => f.sent.at(-1)?.operation === "commit");
+    const original = f.original();
+    if (firstFailure) {
+      await expect(publicQuit).rejects.toBe(firstFailure);
+      void f.coordinator.reconcile();
+      await awaitObserved(() => f.sent.at(-1)?.operation === "status");
+    }
+    f.retire();
+    const error = new Error("held exact late failure");
+    rejectLate(error);
+    await awaitObserved(() => f.late.some((item) => item.error === error));
+    expect(f.late.filter((item) => item.error === error)).toEqual([
+      {
+        error,
+        custody: {
+          phase: source === "status" ? "status" : "commit",
+          original,
+          generation,
+        },
+      },
+    ]);
+    if (firstFailure) await expect(publicQuit).rejects.toBe(firstFailure);
+    else await expect(publicQuit).rejects.toThrow("original role retired");
+    expect(f.coordinator.quit()).toBe(publicQuit);
+    expect(await f.coordinator.reconcile()).toBe("unknown");
+    expect(f.coordinator.disposition).toBe("unknown");
+    expect(f.fences).toBe(0);
+    expect(f.sent.map((request) => request.operation)).toEqual(
+      source === "status"
+        ? ["prepare", "commit", "status"]
+        : ["prepare", "commit"],
+    );
+  });
+}
 
 test("composed: direct Invalidated is unknown until exact Prepare Status", async () => {
   const f = fixture();

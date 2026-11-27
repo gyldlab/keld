@@ -134,6 +134,7 @@ export class RetainedLinkDraft {
   #terminalReceipt?: ResolvedReceipt;
   #effectError: unknown;
   #statusError: unknown;
+  #statusFailure?: Readonly<{ error: unknown }>;
   #fenceError: unknown;
 
   constructor(port: RetainedPort) {
@@ -168,6 +169,10 @@ export class RetainedLinkDraft {
   }
   get statusError(): unknown {
     return this.#statusError;
+  }
+  /** Identity changes only when a new Status dispatch actually rejects. */
+  get statusFailure(): Readonly<{ error: unknown }> | undefined {
+    return this.#statusFailure;
   }
   get fenceError(): unknown {
     return this.#fenceError;
@@ -388,6 +393,7 @@ export class RetainedLinkDraft {
         : this.#unknown(original);
     } catch (error) {
       this.#statusError = error;
+      this.#statusFailure = Object.freeze({ error });
       return this.#unknown(original);
     } finally {
       // Status itself is consumed here. A timed-out Status still occupies
