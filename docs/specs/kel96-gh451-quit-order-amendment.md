@@ -238,6 +238,10 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    Outside an active attempt, retain the existing listener policy. For a
    qualified original with no listener, default Quit enters the same
    conditional coordinator as an explicit Quit.
+   Before automatic intent, preserve the [existing facade eligibility check](https://github.com/gyldlab/keld/blob/d8e8859afbc0ac603da45d9739052548c7bccfd2/packages/@keld/electron/src/app.ts#L234-L263).
+   If the current snapshot already shows a live replacement, do not enter
+   automatic Quit. The later authoritative checks remain necessary.
+   Do not apply this default-intent restriction to explicit Quit.
    For this qualified path only, B-1 must record precedence over the
    default-Quit write-before-return clause of
    [GH-531 criterion 32](https://github.com/gyldlab/keld/blob/2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a/docs/specs/gh531-window-registry-close-state-machine.md#L389-L406).
@@ -251,6 +255,8 @@ unconditional admission sequence in existing section 4.5 steps 1–4.
    Test qualified and legacy destroy ordering separately, including an
    admitted replacement window. The legacy write-before-return rule stays.
    Without a listener, observe entry into the conditional coordinator once.
+   For an already-known live replacement, observe no automatic entry,
+   before-quit callback or replacement close request.
    With a registered listener, verify the existing listener policy instead.
 2. Keep the existing lifecycle coordinator Running. Prepare checks the
    authenticated current Ready and subscribed original and its registry under its
