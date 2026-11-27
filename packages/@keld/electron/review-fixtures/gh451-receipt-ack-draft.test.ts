@@ -1,6 +1,6 @@
 // Review-only facade receipt guards, not authenticated transport evidence.
 import { expect, test } from "bun:test";
-import { fixture, token, turn } from "./gh451-terminal-quit-draft-fixture";
+import { fixture, g, token, turn } from "./gh451-terminal-quit-draft-fixture";
 
 test("AC11: missing Prepare consumption holds authorization until explicit release", async () => {
   const x = fixture();
@@ -262,4 +262,48 @@ test("AC11: Invalidated is not a direct Prepare response", async () => {
   expect(x.coordinator.quit()).toBe(quit);
   expect(x.trace).toEqual(["before", "prepare"]);
   await expect(quit).rejects.toThrow("unknown");
+});
+
+test("AC11: unselected direct refusal preserves the pending public error", async () => {
+  const x = fixture();
+  const error = new Error("typed Prepare refusal");
+  const quit = x.coordinator.quit();
+  x.f.selected = false;
+  x.prepares[0]!.resolve({ kind: "refused", error });
+
+  await expect(quit).rejects.toBe(error);
+  expect(await x.coordinator.outcome).toBe("unknown");
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.coordinator.quit()).toBe(quit);
+  expect(x.trace).toEqual(["before", "prepare"]);
+  expect(x.late).toEqual([]);
+});
+
+test("AC11: unselected exact Status preserves the late error with its original identity", async () => {
+  const x = fixture();
+  const original = { operation: "prepare" as const, correlation: 22 };
+  const lost = new Error("lost Prepare response");
+  const error = new Error("typed Invalidated status");
+  const quit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "unknown", original, error: lost });
+  await expect(quit).rejects.toBe(lost);
+  const recovery = x.coordinator.reconcile();
+
+  x.f.selected = false;
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "invalidated", error },
+  });
+  expect(await recovery).toBe("unknown");
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.coordinator.quit()).toBe(quit);
+  await expect(quit).rejects.toBe(lost);
+  expect(x.trace).toEqual(["before", "prepare", "status:prepare"]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "status",
+    original,
+    generation: g,
+  });
 });

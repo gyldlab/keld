@@ -496,7 +496,8 @@ export class DraftQuitCoordinator<T> {
         a,
         p,
         undefined,
-        refusal("original role is no longer current"),
+        ("error" in d ? d.error : undefined) ??
+          refusal("original role is no longer current"),
       );
     if (
       d.kind === "retained" ||
@@ -765,7 +766,9 @@ export class DraftQuitCoordinator<T> {
             status.disposition.kind !== "competing" &&
             !this.current()
           )
-            return failed();
+            return failed(
+              "error" in status.disposition ? status.disposition.error : undefined,
+            );
           this.accept(a, p, status.disposition, "status");
         } catch (error) {
           failed(error);
