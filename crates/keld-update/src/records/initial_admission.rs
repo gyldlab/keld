@@ -117,6 +117,40 @@ pub(crate) enum AdmissionInspection {
     RetainedTerminalDiagnostic,
 }
 
+impl InitialAdmissionPhase {
+    /// Classifies an exact pointed D-64 phase for read-only recovery.
+    ///
+    /// The caller must first authenticate the D-68 pointer and journal. Every
+    /// result is diagnostic: even a terminal record still requires independent
+    /// native coherence and no-effect proof before retirement.
+    pub(crate) const fn pointed_inspection(self) -> AdmissionInspection {
+        match self {
+            Self::Admitted => AdmissionInspection::AdmittedUnarmed,
+            Self::CreationArmed => AdmissionInspection::CreationArmedOperatorDispositionRequired,
+            Self::BootstrapOwned | Self::ProvenancePublished => {
+                AdmissionInspection::BoundRecoveryRequired
+            }
+            Self::Complete | Self::Aborted => AdmissionInspection::TerminalCoherenceProofRequired,
+        }
+    }
+
+    /// Classifies an unpointed journal after the bounded local member check.
+    /// A phase with possible effects cannot lose its D-68 fence and become a
+    /// fresh enrollment. A second retained terminal is never silently rotated.
+    fn unpointed_inspection(
+        self,
+        no_retained_terminal: bool,
+    ) -> Result<AdmissionInspection, UpdateError> {
+        match self {
+            Self::Admitted => Ok(AdmissionInspection::OrphanAdmittedNeedsIndependentNoEffectProof),
+            Self::Complete | Self::Aborted if no_retained_terminal => {
+                Ok(AdmissionInspection::RetainedTerminalDiagnostic)
+            }
+            _ => Err(invalid("unpointed effectful or excess terminal journal")),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WireAdmission {
@@ -294,18 +328,7 @@ pub(crate) fn inspect_initial_admission(
         if pending.attempt_id != journal.attempt_id {
             return Err(invalid("pending pointer and journal attempt differ"));
         }
-        return Ok(match journal.phase {
-            InitialAdmissionPhase::Admitted => AdmissionInspection::AdmittedUnarmed,
-            InitialAdmissionPhase::CreationArmed => {
-                AdmissionInspection::CreationArmedOperatorDispositionRequired
-            }
-            InitialAdmissionPhase::BootstrapOwned | InitialAdmissionPhase::ProvenancePublished => {
-                AdmissionInspection::BoundRecoveryRequired
-            }
-            InitialAdmissionPhase::Complete | InitialAdmissionPhase::Aborted => {
-                AdmissionInspection::TerminalCoherenceProofRequired
-            }
-        });
+        return Ok(journal.phase.pointed_inspection());
     }
     let Some(journal) = record else {
         return Ok(if retained_terminals.is_empty() {
@@ -314,17 +337,9 @@ pub(crate) fn inspect_initial_admission(
             AdmissionInspection::RetainedTerminalDiagnostic
         });
     };
-    match journal.phase {
-        InitialAdmissionPhase::Admitted => {
-            Ok(AdmissionInspection::OrphanAdmittedNeedsIndependentNoEffectProof)
-        }
-        InitialAdmissionPhase::Complete | InitialAdmissionPhase::Aborted
-            if retained_terminals.is_empty() =>
-        {
-            Ok(AdmissionInspection::RetainedTerminalDiagnostic)
-        }
-        _ => Err(invalid("unpointed effectful or excess terminal journal")),
-    }
+    journal
+        .phase
+        .unpointed_inspection(retained_terminals.is_empty())
 }
 
 fn validate_for_anchor(
@@ -447,5 +462,7 @@ fn decode_bounded<T: serde::de::DeserializeOwned + Serialize>(
     decode(bytes)
 }
 
+#[cfg(test)]
+mod fresh_v2_leaf;
 #[cfg(test)]
 mod tests;

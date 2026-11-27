@@ -34,6 +34,11 @@ mod baseline;
 mod error;
 mod full;
 mod manifest;
+// T-20 admission remains closed until patched tough and T-82 owner grants.
+// Private source only: no Host route or updater writer consumes this module.
+#[cfg(any(windows, test))]
+#[allow(dead_code)]
+mod metadata_client;
 mod provenance;
 #[cfg(any(windows, test, feature = "fuzzing"))]
 mod records;

@@ -10,7 +10,7 @@ mod fixture;
 mod malformed;
 mod platform;
 mod reader;
-#[cfg(feature = "kel270-dwire-v2")]
+mod signing_relation;
 mod v2;
 mod writer;
 

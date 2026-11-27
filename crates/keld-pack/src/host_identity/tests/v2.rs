@@ -6,9 +6,12 @@ use super::fixture::{
     container_section, data, get_u32, header_at, optional_of, put_u32, text, two_section_spec,
     two_sections,
 };
-use crate::expected_identity_v2::{ExpectedAppIdentityV2, V2IdentityFields};
+use crate::expected_identity_v2::{ExpectedAppIdentityV2, V2IdentityFields, V2SigningProfile};
 use crate::host_identity::v2::{embed_ordinary_v2, read_ordinary_v2_bytes};
 use crate::{ExpectedAppIdentityPayload, PackError, embed_host_identity, read_host_identity_bytes};
+
+mod dev;
+mod recovery;
 
 fn payload() -> ExpectedAppIdentityV2 {
     ExpectedAppIdentityV2::new(V2IdentityFields {
@@ -16,7 +19,7 @@ fn payload() -> ExpectedAppIdentityV2 {
         channel: "stable",
         target: "windows-x64",
         update_public_key: [0x11; 32],
-        profile_oid: "1.2.840.113556.1.8000.2554",
+        signing_profile: V2SigningProfile::PublicTrustOid("1.2.840.113556.1.8000.2554"),
         issuer_policy_sha256: [0x22; 32],
         repository_id: [0x33; 32],
         repository_policy_sha256: [0x44; 32],
@@ -254,6 +257,31 @@ fn signed_pe_shape_is_readable_but_never_claimed_to_be_authenticated() {
         payload()
     );
     assert!(embed_ordinary_v2(&image, &payload()).is_err());
+}
+
+#[test]
+fn half_present_certificate_table_directory_refuses_before_payload_decoding() {
+    // A nonzero certificate offset with zero size is not an unsigned image
+    // (both fields zero) or a complete signed-image directory (both nonzero).
+    // The offset-only case at EOF previously passed the ordinary v2 reader.
+    let mut offset_only = canonical();
+    let certificate = optional_of(&offset_only) + CERTIFICATE_TABLE;
+    let image_end = u32::try_from(offset_only.len()).expect("bounded synthetic PE");
+    put_u32(&mut offset_only, certificate, image_end);
+    valid_pe_fixture(&offset_only);
+    assert_eq!(
+        container_detail(read_ordinary_v2_bytes(&offset_only)),
+        "v2 certificate directory has only one of offset and size"
+    );
+
+    let mut size_only = canonical();
+    let certificate = optional_of(&size_only) + CERTIFICATE_TABLE;
+    put_u32(&mut size_only, certificate + 4, 16);
+    valid_pe_fixture(&size_only);
+    assert_eq!(
+        container_detail(read_ordinary_v2_bytes(&size_only)),
+        "v2 certificate directory has only one of offset and size"
+    );
 }
 
 #[test]

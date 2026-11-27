@@ -13,6 +13,10 @@ authors.workspace = true
 profile-test-hooks = ["keld-core/profile-test-hooks"]
 # A debug-only signed fixture probe; release use fails in the forwarded KEL-135 feature.
 kel135-profile-test-root = ["keld-core/kel135-profile-test-root"]
+# Original KEL-270 Host-owner gates, reconciled from the independently pinned
+# 7ff41173 product implementation. Neither grants installer authorization.
+windows-qualified-launch = []
+windows-initial-install = ["windows-qualified-launch"]
 
 [[bin]]
 name = "keld-host"
@@ -32,6 +36,7 @@ keld-runtime = { workspace = true }
 keld-cli = { workspace = true }
 keld-wv = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 # GH-1188 A23: top-level window census and fixtures only, on this test line and never on
 # the workspace line, so no production crate's feature set changes. windows-sys has no

@@ -634,6 +634,19 @@ fn wait_for_launcher_ready(
     let deadline = std::time::Instant::now() + BUBBLEWRAP_READY_TIMEOUT;
     let mut record = Vec::new();
     loop {
+        // Observe exit before reading the pipe. A short-lived target may exit
+        // immediately after the launcher published its Landlock record; in
+        // that case the pipe must be drained before classifying the exit.
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(source) => {
+                terminate_failed_start(child);
+                return Err(LinuxStrictError::new(
+                    "launcher readiness",
+                    source.to_string(),
+                ));
+            }
+        };
         let mut chunk = [0_u8; LAUNCHER_READY_MAX];
         match readiness.read(&mut chunk) {
             Ok(0) => {
@@ -648,6 +661,9 @@ fn wait_for_launcher_ready(
                         format!("record exceeds {LAUNCHER_READY_MAX} bytes"),
                     ));
                 }
+                // A complete record is valid only after pipe EOF. In
+                // particular, an exited target may leave unread bytes here.
+                continue;
             }
             Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(source) if source.kind() == std::io::ErrorKind::Interrupted => {}
@@ -655,16 +671,6 @@ fn wait_for_launcher_ready(
                 return Err(failed_readiness(child, source.to_string()));
             }
         }
-        let status = match child.try_wait() {
-            Ok(status) => status,
-            Err(source) => {
-                terminate_failed_start(child);
-                return Err(LinuxStrictError::new(
-                    "launcher readiness",
-                    source.to_string(),
-                ));
-            }
-        };
         if let Some(status) = status {
             let stderr = failed_child_stderr(child);
             return Err(LinuxStrictError::new(
@@ -1243,10 +1249,54 @@ fn seccomp_programs() -> Result<[BpfProgram; 2], LinuxStrictError> {
 
 #[cfg(test)]
 mod readiness_tests {
+    use std::fs::File;
+    use std::io::Write as _;
+    use std::process::Command;
+
+    use nix::fcntl::OFlag;
+    use nix::unistd::pipe2;
+
     use super::{
         LAUNCHER_READY_FULL, LAUNCHER_READY_PARTIAL, LAUNCHER_READY_UNAVAILABLE,
-        LinuxLandlockStatus, parse_launcher_ready,
+        LinuxLandlockStatus, parse_launcher_ready, wait_for_launcher_ready,
     };
+
+    #[test]
+    fn clean_fast_exit_drains_real_pipe_before_readiness_decision() {
+        // This tests only the readiness race. Bubblewrap and Landlock are
+        // qualified separately by Linux strict-boundary integration tests.
+        for (record, valid) in [
+            (LAUNCHER_READY_FULL, true),
+            (b"KLS1 landlock=fully-enforced\ntrailing".as_slice(), false),
+            (b"".as_slice(), false),
+        ] {
+            let (reader, writer) = pipe2(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)
+                .expect("isolated nonblocking readiness pipe");
+            let mut readiness = File::from(reader);
+            let mut publisher = File::from(writer);
+            publisher
+                .write_all(record)
+                .expect("publish exact readiness bytes");
+            drop(publisher);
+
+            let mut child = Command::new("/bin/true")
+                .spawn()
+                .expect("short-lived process fixture");
+            assert!(child.wait().expect("process exited").success());
+            let observed = wait_for_launcher_ready(&mut child, &mut readiness);
+            if valid {
+                assert_eq!(
+                    observed.expect("valid buffered readiness survives clean exit"),
+                    LinuxLandlockStatus::FullyEnforced
+                );
+            } else {
+                assert!(
+                    observed.is_err(),
+                    "invalid or missing readiness is never accepted"
+                );
+            }
+        }
+    }
 
     #[test]
     fn readiness_records_map_to_the_exact_landlock_state() {

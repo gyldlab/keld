@@ -18,14 +18,16 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 use windows_sys::Win32::Security::Cryptography::{
+    CERT_CHAIN_CONTEXT, CERT_CHAIN_ELEMENT, CERT_CONTEXT, CERT_PUBLIC_KEY_INFO, CERT_SIMPLE_CHAIN,
     CRYPT_INTEGER_BLOB, CryptDecodeObjectEx, CryptEncodeObjectEx, PKCS_7_ASN_ENCODING,
     X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
 };
 use windows_sys::Win32::Security::WinTrust::{
-    CRYPT_PROVIDER_SGNR, SPC_SP_OPUS_INFO, SPC_SP_OPUS_INFO_OBJID, SPC_SP_OPUS_INFO_STRUCT,
-    WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
-    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CHOICE_FILE,
-    WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
+    CRYPT_PROVIDER_DATA, CRYPT_PROVIDER_SGNR, SPC_SP_OPUS_INFO, SPC_SP_OPUS_INFO_OBJID,
+    SPC_SP_OPUS_INFO_STRUCT, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0,
+    WINTRUST_FILE_INFO, WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT,
+    WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+    WTD_REVOCATION_CHECK_NONE, WTD_REVOKE_NONE, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
     WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
     WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
 };
@@ -34,6 +36,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 mod refusals;
+// Pure D-45 issuer/profile/role predicates only. The owning native producer
+// remains closed until T-82 grants the exact certificate/PE observations.
+mod d45_role_policy;
 pub use refusals::WindowsAuthenticodeError;
 use refusals::{parse_windows_signed_program_name, windows_identity_error};
 
@@ -42,6 +47,85 @@ const WINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS: usize = WINDOWS_SIGNED_APP_ID_PREFI
 const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.windows/v1\0";
 const WINDOWS_SIGNER_SPKI_MAX_BYTES: u32 = 64 * 1024;
 const WINDOWS_OPUS_INFO_MAX_BYTES: u32 = 4 * 1024;
+const WINDOWS_D45_MAX_CHAIN_ELEMENTS: u32 = 32;
+const WINDOWS_D45_MIN_ROOT_DER_BYTES: u32 = 64;
+const WINDOWS_D45_MAX_ROOT_DER_BYTES: u32 = 64 * 1024;
+
+/// Read-only D-45 certificate facts, not a trust, issuer-policy or role permit.
+/// Both values come from the one live `WinTrust` chain before CLOSE. The Pack
+/// D-WIRE and signed leaf EKU owners remain T-82-gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsD45ChainFacts {
+    _root_certificate_sha256: [u8; 32],
+    _leaf_issuer_spki_sha256: [u8; 32],
+}
+
+/// An operator-only test observes an unrelated, publicly signed executable
+/// after verified signer selection but before the required Keld app-ID
+/// attribute refusal. No test state or captured fact exists in release code.
+#[cfg(test)]
+enum WindowsD45TestProbe {
+    Disabled,
+    Armed,
+    Captured(Result<WindowsD45ChainFacts, WindowsAuthenticodeError>),
+}
+
+#[cfg(test)]
+thread_local! {
+    static WINDOWS_D45_TEST_PROBE: std::cell::RefCell<WindowsD45TestProbe> =
+        const { std::cell::RefCell::new(WindowsD45TestProbe::Disabled) };
+}
+
+#[cfg(test)]
+fn windows_d45_capture_chain_for_test(signer: *mut CRYPT_PROVIDER_SGNR) {
+    // A test-only borrow conflict must not panic between WinTrust VERIFY and
+    // CLOSE. An absent capture fails the independent native test instead.
+    let armed = WINDOWS_D45_TEST_PROBE
+        .try_with(|probe| {
+            probe
+                .try_borrow()
+                .is_ok_and(|state| matches!(*state, WindowsD45TestProbe::Armed))
+        })
+        .unwrap_or(false);
+    if armed {
+        let result = windows_d45_chain_facts_from_signer(signer);
+        let _ = WINDOWS_D45_TEST_PROBE.try_with(|probe| {
+            if let Ok(mut state) = probe.try_borrow_mut()
+                && matches!(*state, WindowsD45TestProbe::Armed)
+            {
+                *state = WindowsD45TestProbe::Captured(result);
+            }
+        });
+    }
+}
+
+/// The legacy identity is unchanged; D-45 chain facts are observed only for
+/// offline discovery and never participate in an authorization conversion.
+struct WindowsTrustObservation {
+    identity: WindowsAuthenticodeIdentity,
+    d45_chain_facts: Option<WindowsD45ChainFacts>,
+}
+
+/// Hash one retained file in fixed chunks. Host size is never an allocation size.
+const WINDOWS_HOST_DIGEST_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Convert ABI structure sizes without truncating values on wider targets.
+fn windows_checked_abi_size<T>(structure: &str) -> Result<u32, WindowsAuthenticodeError> {
+    u32::try_from(std::mem::size_of::<T>()).map_err(|_| {
+        windows_identity_error(
+            format!("the {structure} structure size does not fit the 32-bit WinTrust ABI length"),
+            "Use a supported 64-bit Windows Keld build.",
+        )
+    })
+}
+
+/// Two distinct trust policies over the same retained, read-only image handle.
+/// Cache-only observation never substitutes for full revocation verification.
+#[derive(Clone, Copy)]
+enum WindowsTrustPolicy {
+    Full,
+    OfflinePreflight,
+}
 
 /// An executable image held open for KEL-135 Authenticode verification.
 ///
@@ -88,6 +172,196 @@ impl WindowsAuthenticodeImage {
             identity,
         })
     }
+
+    /// Observes a signed image using only cached local trust data, before any
+    /// discovery/network decision. Retains the original file handle and returns
+    /// a distinct, non-authority type; it does not check revocation status.
+    ///
+    /// # Errors
+    /// Refuses an absent or untrusted local chain, ambiguous signatures, missing
+    /// or invalid signed program-name facts, and any `WinTrust` CLOSE failure.
+    pub fn observe_preflight(self) -> Result<WindowsPreflightImage, WindowsAuthenticodeError> {
+        let observed = windows_identity_from_image_with_policy(
+            &self.path,
+            &self.image,
+            WindowsTrustPolicy::OfflinePreflight,
+        )?;
+        Ok(WindowsPreflightImage {
+            source: self,
+            observed_publisher_scope: observed.identity.publisher_scope,
+            observed_app_id: observed.identity.app_id,
+            _d45_chain_facts: observed.d45_chain_facts.ok_or_else(|| {
+                windows_identity_error(
+                    "the offline WinTrust chain facts were not observed",
+                    "Restore the original signed Host and repeat read-only discovery.",
+                )
+            })?,
+        })
+    }
+}
+
+/// A D-45 cache-only signed-image observation retaining the exact source file.
+///
+/// The observed values are for local read-only Direct/Managed discovery only.
+/// Neither the type nor its fields can mint `VerifiedWindowsImage`, bypass
+/// revocation, or grant installation authority. A later approved Direct-decision
+/// adapter must independently perform full verification on this retained file.
+#[derive(Debug)]
+pub struct WindowsPreflightImage {
+    source: WindowsAuthenticodeImage,
+    observed_publisher_scope: [u8; 32],
+    observed_app_id: Box<str>,
+    // An unavailable or ambiguous chain refuses offline discovery; a
+    // successful preflight cannot carry unresolved native chain facts.
+    // T-82 must commission authenticated D-WIRE and signed leaf EKU producers.
+    _d45_chain_facts: WindowsD45ChainFacts,
+}
+
+/// Native D-43 Direct-discovery eligibility required before D-45 full verification.
+///
+/// KEL-53/T-82 has not qualified an issuer for authenticated publisher,
+/// profile OID, issuer policy, repository census, or old-reader evidence.
+/// This type has no production constructor and does not accept a caller
+/// Boolean, pathname, or digest as an authority grant.
+#[allow(dead_code)] // T-82 has not commissioned a native Direct-discovery issuer.
+struct WindowsD45DirectDiscoveryEligibility {
+    original_host_sha256: [u8; 32],
+    // Exact signed-catalogue host.bytes, never from the filesystem or request.
+    expected_host_bytes: u64,
+    // These private nonconstructible requirements are independent of the
+    // source digest and the D-43 Direct observation. The Pack D-WIRE decoder
+    // must bind issuer membership to authenticated canonical policy bytes,
+    // and Guard must inspect the native signer's EKUs/issuer chain before any
+    // D-45 v2 fully verified image can be returned. Neither producer exists
+    // on this T-82-gated implementation base.
+    _dwire_issuer_membership: d45_role_policy::WindowsD45DWireMembershipBinding,
+    _native_role_policy: d45_role_policy::WindowsD45RolePolicyMatch,
+}
+
+impl WindowsPreflightImage {
+    /// Locally observed publisher scope. No current revocation status is implied.
+    #[must_use]
+    pub const fn observed_publisher_scope(&self) -> &[u8; 32] {
+        &self.observed_publisher_scope
+    }
+
+    /// Locally observed legacy `keld.app-id/v1:` signed program-name app ID.
+    /// The v2 D-WIRE policy/role check is a separate pending Guard boundary.
+    #[must_use]
+    pub fn observed_app_id(&self) -> &str {
+        &self.observed_app_id
+    }
+
+    /// The retained file supplying read-only discovery bytes. No path reopen.
+    /// Only the future Direct-decision owner may promote this observation.
+    #[must_use]
+    pub const fn file(&self) -> &File {
+        &self.source.image
+    }
+
+    /// Revalidate the exact same retained image using full chain revocation.
+    ///
+    /// Kept private and requires a non-forgeable, current-lease Direct-discovery
+    /// witness. No production witness constructor exists before T-82 grants
+    /// the native issuer/profile/role checks and the KEL-53 repository census.
+    /// Neither a preflight value nor a caller Boolean can authorize conversion.
+    #[allow(dead_code)] // T-82 pending: no production Direct-discovery witness exists yet.
+    fn verify_full_bound(
+        self,
+        direct: &WindowsD45DirectDiscoveryEligibility,
+    ) -> Result<VerifiedWindowsImage, WindowsAuthenticodeError> {
+        // The Direct witness must bind an exact authenticated byte count and
+        // digest before any full-file read; preflight performs no such scan.
+        require_retained_host_source(
+            &self.source.image,
+            direct.expected_host_bytes,
+            &direct.original_host_sha256,
+        )?;
+        let full = self.source.verify()?;
+        if full.identity.publisher_scope != self.observed_publisher_scope
+            || full.identity.app_id != self.observed_app_id
+        {
+            return Err(windows_identity_error(
+                "the authenticated signer or app ID differs from the retained offline preflight",
+                "Restore the original signed Host and repeat discovery and full verification.",
+            ));
+        }
+        Ok(full)
+    }
+}
+
+/// Compare the exact authenticated Host length and SHA-256 to the original
+/// retained file object. This read-only comparison is NOT a signer, Direct
+/// discovery, D-WIRE issuer-policy, or installation-authorization grant.
+fn require_retained_host_source(
+    image: &File,
+    expected_bytes: u64,
+    expected_sha256: &[u8; 32],
+) -> Result<(), WindowsAuthenticodeError> {
+    let actual = sha256_retained_windows_image(image, expected_bytes)?;
+    if &actual != expected_sha256 {
+        return Err(windows_identity_error(
+            "the Direct discovery source differs from the retained offline Host",
+            "Repeat authenticated owner discovery against the original signed Host.",
+        ));
+    }
+    Ok(())
+}
+
+/// Computes a complete byte digest through one retained file object. No path is
+/// opened or trusted here, and this digest alone cannot authorize a signed Host.
+fn sha256_retained_windows_image(
+    image: &File,
+    expected_bytes: u64,
+) -> Result<[u8; 32], WindowsAuthenticodeError> {
+    use std::os::windows::fs::FileExt as _;
+
+    let length = image
+        .metadata()
+        .map_err(|source| {
+            windows_identity_error(
+                format!("the retained signed Host length cannot be read: {source}"),
+                "Restore the signed Host file and restart read-only verification.",
+            )
+        })?
+        .len();
+    if expected_bytes == 0 || length != expected_bytes {
+        return Err(windows_identity_error(
+            "the retained signed Host byte count differs from the authenticated expected length",
+            "Restore the exact signed Host and repeat authenticated source selection.",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    // Keep the 64-KiB bounded source-read buffer on the heap. A signed Host
+    // cannot force a large stack allocation in this verifier.
+    let mut bytes = vec![0_u8; WINDOWS_HOST_DIGEST_CHUNK_BYTES];
+    let mut offset = 0_u64;
+    while offset < expected_bytes {
+        let remaining = expected_bytes - offset;
+        let take = usize::try_from(remaining)
+            .unwrap_or(WINDOWS_HOST_DIGEST_CHUNK_BYTES)
+            .min(WINDOWS_HOST_DIGEST_CHUNK_BYTES);
+        let count = image
+            .seek_read(&mut bytes[..take], offset)
+            .map_err(|source| {
+                windows_identity_error(
+                    format!("the retained signed Host read failed: {source}"),
+                    "Restore the signed Host file and restart read-only verification.",
+                )
+            })?;
+        if count == 0 {
+            return Err(windows_identity_error(
+                "the retained signed Host ended before its handle-derived length",
+                "Restore the signed Host file and restart read-only verification.",
+            ));
+        }
+        hasher.update(&bytes[..count]);
+        offset += count as u64;
+    }
+    let digest = hasher.finalize();
+    let mut exact = [0_u8; 32];
+    exact.copy_from_slice(&digest);
+    Ok(exact)
 }
 
 /// A pinned executable image and the identity that verifying that handle proved.
@@ -178,11 +452,31 @@ fn open_windows_trust_image(executable: &Path) -> Result<File, WindowsAuthentico
     Ok(image)
 }
 
-#[allow(unsafe_code, clippy::too_many_lines)] // one linear VERIFY/extract/CLOSE state owner avoids a leaked trust handle
 fn verified_windows_identity_from_image(
     executable: &Path,
     image: &File,
 ) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
+    windows_identity_from_image_with_policy(executable, image, WindowsTrustPolicy::Full)
+        .map(|observation| observation.identity)
+}
+
+#[allow(unsafe_code, clippy::too_many_lines)] // one shared VERIFY/extract/CLOSE state owner for full and offline policies
+fn windows_identity_from_image_with_policy(
+    executable: &Path,
+    image: &File,
+    policy: WindowsTrustPolicy,
+) -> Result<WindowsTrustObservation, WindowsAuthenticodeError> {
+    let offline = matches!(policy, WindowsTrustPolicy::OfflinePreflight);
+    let (revocation_checks, provider_flags) = match policy {
+        WindowsTrustPolicy::Full => (
+            WTD_REVOKE_WHOLECHAIN,
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        ),
+        WindowsTrustPolicy::OfflinePreflight => (
+            WTD_REVOKE_NONE,
+            WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL,
+        ),
+    };
     let mut executable_wide: Vec<u16> = executable.as_os_str().encode_wide().collect();
     if executable_wide.contains(&0) {
         return Err(windows_identity_error(
@@ -231,7 +525,7 @@ fn verified_windows_identity_from_image(
         pPolicyCallbackData: std::ptr::null_mut(),
         pSIPClientData: std::ptr::null_mut(),
         dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_WHOLECHAIN,
+        fdwRevocationChecks: revocation_checks,
         dwUnionChoice: WTD_CHOICE_FILE,
         Anonymous: WINTRUST_DATA_0 {
             pFile: &raw mut file_info,
@@ -239,7 +533,7 @@ fn verified_windows_identity_from_image(
         dwStateAction: WTD_STATEACTION_VERIFY,
         hWVTStateData: std::ptr::null_mut(),
         pwszURLReference: std::ptr::null_mut(),
-        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        dwProvFlags: provider_flags,
         dwUIContext: WTD_UICONTEXT_EXECUTE,
         pSignatureSettings: &raw mut signature_settings,
     };
@@ -256,13 +550,23 @@ fn verified_windows_identity_from_image(
         )
     };
     if trust_status != 0 {
-        let primary = windows_identity_error(
+        let failure_detail = if offline {
+            format!(
+                "WinVerifyTrust rejected the current executable with status 0x{:08x} during the cache-only preflight",
+                u32::from_ne_bytes(trust_status.to_ne_bytes())
+            )
+        } else {
             format!(
                 "WinVerifyTrust rejected the current executable with status 0x{:08x}",
                 u32::from_ne_bytes(trust_status.to_ne_bytes())
-            ),
-            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status.",
-        );
+            )
+        };
+        let fix = if offline {
+            "Install a package signed by a locally trusted Authenticode publisher; do not bypass signature verification."
+        } else {
+            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status."
+        };
+        let primary = windows_identity_error(failure_detail, fix);
         if !trust_data.hWVTStateData.is_null() {
             trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
             // SAFETY: this closes only state created by the VERIFY call above
@@ -286,7 +590,7 @@ fn verified_windows_identity_from_image(
         signature_settings.cSecondarySigs,
         signature_settings.dwVerifiedSigIndex,
     )
-    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data));
+    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data, offline));
     trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
     // SAFETY: this is the mandatory CLOSE for the successful VERIFY call;
     // action/data storage and every referenced input remain live here.
@@ -338,7 +642,8 @@ fn windows_trust_close_error(status: i32) -> WindowsAuthenticodeError {
 #[allow(unsafe_code)] // read-only walk of provider memory retained by the live WinTrust state
 fn windows_identity_from_verified_trust_state(
     trust_data: &WINTRUST_DATA,
-) -> Result<WindowsAuthenticodeIdentity, WindowsAuthenticodeError> {
+    observe_d45_chain: bool,
+) -> Result<WindowsTrustObservation, WindowsAuthenticodeError> {
     // SAFETY: the caller invokes this only after a successful VERIFY and
     // before CLOSE, so the state owns the returned provider graph.
     let provider = unsafe { WTHelperProvDataFromStateData(trust_data.hWVTStateData) };
@@ -346,6 +651,15 @@ fn windows_identity_from_verified_trust_state(
         return Err(windows_identity_error(
             "WinTrust returned no verified provider state",
             "Re-sign the package with one supported primary Authenticode signature.",
+        ));
+    }
+    // SAFETY: the provider's first field is its ABI size, read before the
+    // remaining fields of this versioned record.
+    let provider_size = unsafe { (*provider).cbStruct };
+    if provider_size < windows_checked_abi_size::<CRYPT_PROVIDER_DATA>("provider")? {
+        return Err(windows_identity_error(
+            "WinTrust returned a provider record smaller than the supported ABI",
+            "Use a supported Windows Authenticode trust provider.",
         ));
     }
     // SAFETY: `provider` is non-null and owned by the live WinTrust state.
@@ -368,12 +682,30 @@ fn windows_identity_from_verified_trust_state(
             "Re-sign the package with one supported primary Authenticode signature.",
         ));
     }
+    // SAFETY: check the signer's ABI size before reading its tail fields.
+    let signer_size = unsafe { (*signer).cbStruct };
+    if signer_size < windows_checked_abi_size::<CRYPT_PROVIDER_SGNR>("primary signer")? {
+        return Err(windows_identity_error(
+            "WinTrust returned a primary signer record smaller than the supported ABI",
+            "Use a supported Windows Authenticode signer provider.",
+        ));
+    }
     let publisher_scope = windows_publisher_scope_from_signer(signer)?;
+    #[cfg(test)]
+    windows_d45_capture_chain_for_test(signer);
     let signed_program_name = windows_signed_program_name_from_signer(signer)?;
     let app_id = parse_windows_signed_program_name(&signed_program_name)?;
-    Ok(WindowsAuthenticodeIdentity {
-        publisher_scope,
-        app_id: app_id.into(),
+    let d45_chain_facts = if observe_d45_chain {
+        Some(windows_d45_chain_facts_from_signer(signer)?)
+    } else {
+        None
+    };
+    Ok(WindowsTrustObservation {
+        identity: WindowsAuthenticodeIdentity {
+            publisher_scope,
+            app_id: app_id.into(),
+        },
+        d45_chain_facts,
     })
 }
 
@@ -400,6 +732,19 @@ fn windows_publisher_scope_from_signer(
         ));
     }
     // SAFETY: `certificate` is non-null and owned by the live provider graph.
+    // SAFETY: only the ABI size header is read from the live provider-owned certificate.
+    let certificate_size = unsafe { (*certificate).cbStruct };
+    if certificate_size
+        < windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(
+            "primary leaf certificate",
+        )?
+    {
+        return Err(windows_identity_error(
+            "WinTrust returned a primary leaf certificate record smaller than the supported ABI",
+            "Use a supported Windows Authenticode certificate provider.",
+        ));
+    }
+    // SAFETY: size and provider-owned lifetime are checked before other fields.
     let certificate_ref = unsafe { &*certificate };
     if certificate_ref.dwError != 0 || certificate_ref.pCert.is_null() {
         return Err(windows_identity_error(
@@ -417,14 +762,31 @@ fn windows_publisher_scope_from_signer(
     }
     // SAFETY: `pCertInfo` is non-null and remains owned by the provider.
     let certificate_info = unsafe { &*certificate_context.pCertInfo };
+    let spki_der = windows_encoded_spki(&certificate_info.SubjectPublicKeyInfo, "leaf")?;
+    let mut publisher_hasher = Sha256::new();
+    publisher_hasher.update(WINDOWS_PUBLISHER_SCOPE_DOMAIN);
+    publisher_hasher.update(&spki_der);
+    let publisher_digest = publisher_hasher.finalize();
+    let mut publisher_scope = [0_u8; 32];
+    publisher_scope.copy_from_slice(&publisher_digest);
+    Ok(publisher_scope)
+}
+
+/// Encode a *certificate-provided* public key as DER using the already approved
+/// Crypt32 primitive. Both the leaf and its immediate issuer use the same bound.
+#[allow(unsafe_code)] // the certificate's key lives in the verified WinTrust state
+fn windows_encoded_spki(
+    key: &CERT_PUBLIC_KEY_INFO,
+    certificate_role: &str,
+) -> Result<Vec<u8>, WindowsAuthenticodeError> {
     let mut spki_size = 0_u32;
-    // SAFETY: the public-key-info value belongs to the live certificate; this
-    // call supplies no output buffer and asks Crypt32 for the size.
+    // SAFETY: the public-key-info value belongs to a live certificate; the
+    // first call requests only the exact output size.
     let sized = unsafe {
         CryptEncodeObjectEx(
             X509_ASN_ENCODING,
             X509_PUBLIC_KEY_INFO,
-            std::ptr::from_ref(&certificate_info.SubjectPublicKeyInfo).cast(),
+            std::ptr::from_ref(key).cast(),
             0,
             std::ptr::null(),
             std::ptr::null_mut(),
@@ -433,19 +795,21 @@ fn windows_publisher_scope_from_signer(
     };
     if sized == 0 || spki_size == 0 || spki_size > WINDOWS_SIGNER_SPKI_MAX_BYTES {
         return Err(windows_identity_error(
-            "the Authenticode leaf public key cannot be encoded within the bounded SPKI limit",
+            format!(
+                "the Authenticode {certificate_role} public key cannot be encoded within the bounded SPKI limit"
+            ),
             "Use a supported Authenticode signing certificate and re-sign the package.",
         ));
     }
     let mut spki_der = vec![0_u8; spki_size as usize];
     let mut encoded_size = spki_size;
-    // SAFETY: `spki_der` is writable for `spki_size` bytes, and the input
-    // public-key-info remains live in the provider graph.
+    // SAFETY: the allocated output buffer is exactly spki_size bytes and the
+    // source key remains live until WinVerifyTrust CLOSE.
     let encoded = unsafe {
         CryptEncodeObjectEx(
             X509_ASN_ENCODING,
             X509_PUBLIC_KEY_INFO,
-            std::ptr::from_ref(&certificate_info.SubjectPublicKeyInfo).cast(),
+            std::ptr::from_ref(key).cast(),
             0,
             std::ptr::null(),
             spki_der.as_mut_ptr().cast(),
@@ -454,18 +818,277 @@ fn windows_publisher_scope_from_signer(
     };
     if encoded == 0 || encoded_size == 0 || encoded_size > spki_size {
         return Err(windows_identity_error(
-            "the Authenticode leaf public key DER encoding failed",
+            format!("the Authenticode {certificate_role} public key DER encoding failed"),
             "Use a supported Authenticode signing certificate and re-sign the package.",
         ));
     }
     spki_der.truncate(encoded_size as usize);
-    let mut publisher_hasher = Sha256::new();
-    publisher_hasher.update(WINDOWS_PUBLISHER_SCOPE_DOMAIN);
-    publisher_hasher.update(&spki_der);
-    let publisher_digest = publisher_hasher.finalize();
-    let mut publisher_scope = [0_u8; 32];
-    publisher_scope.copy_from_slice(&publisher_digest);
-    Ok(publisher_scope)
+    Ok(spki_der)
+}
+
+/// Validate count before reading any chain slot or constructing a pointer slice.
+fn windows_d45_bounded_chain_count(count: u32) -> Result<usize, WindowsAuthenticodeError> {
+    if !(2..=WINDOWS_D45_MAX_CHAIN_ELEMENTS).contains(&count) {
+        return Err(windows_identity_error(
+            "the D-45 verified certificate chain has fewer than two or too many elements",
+            "Use a single trusted signer chain with a bounded, explicit immediate issuer and root.",
+        ));
+    }
+    Ok(count as usize)
+}
+
+/// Bound the original root certificate's DER length before reading raw bytes.
+fn windows_d45_bounded_root_der_len(length: u32) -> Result<usize, WindowsAuthenticodeError> {
+    if !(WINDOWS_D45_MIN_ROOT_DER_BYTES..=WINDOWS_D45_MAX_ROOT_DER_BYTES).contains(&length) {
+        return Err(windows_identity_error(
+            "the D-45 root certificate DER length is below its minimum or exceeds its 64-KiB limit",
+            "Re-sign the Host with a supported trusted X.509 root certificate.",
+        ));
+    }
+    Ok(length as usize)
+}
+
+/// Observe two hashes from one selected chain, without a role or trust permit.
+/// All provider pointers are consumed before `WinVerifyTrust` CLOSE.
+fn windows_d45_chain_facts_from_signer(
+    signer: *mut CRYPT_PROVIDER_SGNR,
+) -> Result<WindowsD45ChainFacts, WindowsAuthenticodeError> {
+    let (simple_chain, count) = windows_d45_single_selected_chain(signer)?;
+    let (issuer, root) = windows_d45_selected_cert_contexts(signer, simple_chain, count)?;
+    windows_d45_hash_cert_contexts(issuer, root)
+}
+
+/// Reject CTLs, alternate paths and missing native chain status before index
+/// selection. This deliberately accepts only one error-free simple chain.
+#[allow(unsafe_code)] // reads the selected live WinTrust provider chain context
+fn windows_d45_single_selected_chain(
+    signer: *mut CRYPT_PROVIDER_SGNR,
+) -> Result<(*mut CERT_SIMPLE_CHAIN, usize), WindowsAuthenticodeError> {
+    // SAFETY: the caller owns the primary signer from a successful VERIFY.
+    let signer_ref = unsafe { &*signer };
+    let count = windows_d45_bounded_chain_count(signer_ref.csCertChain)?;
+    if signer_ref.dwError != 0 || signer_ref.pChainContext.is_null() {
+        return Err(windows_identity_error(
+            "the D-45 signer has no error-free native certificate chain context",
+            "Restore the original signed Host and repair its Windows certificate trust chain.",
+        ));
+    }
+    // SAFETY: the pointer belongs to the live provider. Check the ABI size
+    // header before reading its remaining fields.
+    let context_size = unsafe { (*signer_ref.pChainContext).cbSize };
+    if context_size < windows_checked_abi_size::<CERT_CHAIN_CONTEXT>("chain context")? {
+        return Err(windows_identity_error(
+            "the D-45 certificate chain context is smaller than the supported ABI",
+            "Use a supported Windows certificate chain provider.",
+        ));
+    }
+    // SAFETY: its ABI size is checked above and the provider remains live.
+    let chain_context = unsafe { &*signer_ref.pChainContext };
+    if chain_context.TrustStatus.dwErrorStatus != 0
+        || chain_context.cChain != 1
+        || chain_context.cLowerQualityChainContext != 0
+        || chain_context.rgpChain.is_null()
+    {
+        return Err(windows_identity_error(
+            "the D-45 signer chain is invalid or has ambiguous connected/alternate chains",
+            "Use exactly one verified simple X.509 chain with a trusted self-signed root.",
+        ));
+    }
+    // SAFETY: cChain==1 and rgpChain is a live array of one pointer.
+    let simple_chain = unsafe { *chain_context.rgpChain };
+    if simple_chain.is_null() {
+        return Err(windows_identity_error(
+            "the D-45 signer has no selected simple certificate chain",
+            "Repair the signed Host certificate chain and retry.",
+        ));
+    }
+    Ok((simple_chain, count))
+}
+
+/// Return only provider-owned certificate pointers. The caller must consume
+/// them before `WinVerifyTrust` CLOSE; no pointer enters an owned result.
+#[allow(unsafe_code)] // bounds a live WinTrust simple chain and matches all provider slots
+fn windows_d45_selected_cert_contexts(
+    signer: *mut CRYPT_PROVIDER_SGNR,
+    simple_chain: *mut CERT_SIMPLE_CHAIN,
+    count: usize,
+) -> Result<(*const CERT_CONTEXT, *const CERT_CONTEXT), WindowsAuthenticodeError> {
+    // SAFETY: WinTrust owns the selected chain; inspect the size header first.
+    let chain_size = unsafe { (*simple_chain).cbSize };
+    if chain_size < windows_checked_abi_size::<CERT_SIMPLE_CHAIN>("simple chain")? {
+        return Err(windows_identity_error(
+            "the D-45 selected simple chain is smaller than the supported ABI",
+            "Repair the signed Host certificate chain and retry.",
+        ));
+    }
+    // SAFETY: size and state lifetime are checked by this caller.
+    let chain = unsafe { &*simple_chain };
+    if chain.TrustStatus.dwErrorStatus != 0
+        || chain.cElement as usize != count
+        || chain.rgpElement.is_null()
+        || !chain.pTrustListInfo.is_null()
+    {
+        return Err(windows_identity_error(
+            "the D-45 selected chain has invalid elements or a CTL-linked trust list",
+            "Use exactly one consistent trusted certificate chain without CTL transitions.",
+        ));
+    }
+    // SAFETY: cElement==count (2..=32) bounds the live pointer array.
+    let elements = unsafe { std::slice::from_raw_parts(chain.rgpElement, count) };
+    let mut issuer_context = None;
+    let mut root_context = None;
+    for (index, &element_ptr) in elements.iter().enumerate() {
+        if element_ptr.is_null() {
+            return Err(windows_identity_error(
+                "the D-45 native chain contains a null certificate element",
+                "Repair the signed Host certificate chain and retry.",
+            ));
+        }
+        // SAFETY: the selected WinTrust element is non-null; check the size
+        // header before accessing its decoded certificate pointer.
+        let element_size = unsafe { (*element_ptr).cbSize };
+        if element_size < windows_checked_abi_size::<CERT_CHAIN_ELEMENT>("chain element")? {
+            return Err(windows_identity_error(
+                "the D-45 native chain element is smaller than the supported ABI",
+                "Use a supported Windows certificate chain provider.",
+            ));
+        }
+        // SAFETY: the element has a valid ABI size and live provider owner.
+        let element = unsafe { &*element_ptr };
+        if element.TrustStatus.dwErrorStatus != 0 || element.pCertContext.is_null() {
+            return Err(windows_identity_error(
+                "the D-45 native chain contains an invalid certificate element",
+                "Repair the signed Host certificate chain and retry.",
+            ));
+        }
+        let cert_index = u32::try_from(index).map_err(|_| {
+            windows_identity_error(
+                "the D-45 selected chain index does not fit a WinTrust certificate index",
+                "Repair the signed Host certificate chain and retry.",
+            )
+        })?;
+        windows_d45_match_provider_element(
+            signer,
+            cert_index,
+            element_ptr,
+            element.pCertContext,
+            index + 1 == count,
+        )?;
+        if index == 1 {
+            issuer_context = Some(element.pCertContext);
+        }
+        if index + 1 == count {
+            root_context = Some(element.pCertContext);
+        }
+    }
+    let issuer = issuer_context.ok_or_else(|| {
+        windows_identity_error(
+            "the D-45 selected chain has no immediate issuer",
+            "Sign the Host with an explicit leaf issuer certificate.",
+        )
+    })?;
+    let root = root_context.ok_or_else(|| {
+        windows_identity_error(
+            "the D-45 selected chain has no trusted root",
+            "Sign the Host with a chain ending at one trusted self-signed root.",
+        )
+    })?;
+    Ok((issuer, root))
+}
+
+/// Check each selected native element against the corresponding `WinTrust`
+/// provider slot and require terminal-root trust and self-signing.
+#[allow(unsafe_code)] // approved helper and provider fields under one live state
+fn windows_d45_match_provider_element(
+    signer: *mut CRYPT_PROVIDER_SGNR,
+    index: u32,
+    element_ptr: *mut CERT_CHAIN_ELEMENT,
+    certificate_ptr: *const CERT_CONTEXT,
+    is_terminal_root: bool,
+) -> Result<(), WindowsAuthenticodeError> {
+    // SAFETY: index is within the verified csCertChain and <=31; the helper
+    // returns a provider-owned certificate before WinVerifyTrust CLOSE.
+    let provider_certificate = unsafe { WTHelperGetProvCertFromChain(signer, index) };
+    if provider_certificate.is_null() {
+        return Err(windows_identity_error(
+            "WinTrust has no D-45 certificate at a selected native chain index",
+            "Repair the signed Host certificate chain and retry.",
+        ));
+    }
+    // SAFETY: check the versioned provider certificate's size header before
+    // its tail chain-element and root-trust fields are read.
+    let provider_size = unsafe { (*provider_certificate).cbStruct };
+    if provider_size
+        < windows_checked_abi_size::<windows_sys::Win32::Security::WinTrust::CRYPT_PROVIDER_CERT>(
+            "provider certificate",
+        )?
+    {
+        return Err(windows_identity_error(
+            "the D-45 provider certificate is smaller than the supported ABI",
+            "Use a supported Windows certificate chain provider.",
+        ));
+    }
+    // SAFETY: the sized provider record is owned by the live WinTrust state.
+    let provider = unsafe { &*provider_certificate };
+    if provider.dwError != 0
+        || provider.fIsCyclic != 0
+        || provider.pChainElement != element_ptr
+        || provider.pCert != certificate_ptr
+    {
+        return Err(windows_identity_error(
+            "the D-45 WinTrust provider certificate differs from the selected chain",
+            "Restore the signed Host and repair its Windows certificate trust chain.",
+        ));
+    }
+    if is_terminal_root && (provider.fTrustedRoot == 0 || provider.fSelfSigned == 0) {
+        return Err(windows_identity_error(
+            "the D-45 terminal certificate is not a trusted self-signed root",
+            "Sign the Host with a chain ending at one trusted self-signed root.",
+        ));
+    }
+    Ok(())
+}
+
+/// Hash original certificate encoding and Crypt32's DER SPKI of the immediate
+/// issuer. Both contexts are selected from one verified live native chain.
+#[allow(unsafe_code)] // bounded WinTrust-owned certificate reads before CLOSE
+fn windows_d45_hash_cert_contexts(
+    issuer_context: *const CERT_CONTEXT,
+    root_context: *const CERT_CONTEXT,
+) -> Result<WindowsD45ChainFacts, WindowsAuthenticodeError> {
+    // SAFETY: pointers were selected from checked non-null chain elements,
+    // and no WinVerifyTrust CLOSE has occurred.
+    let (issuer, root) = unsafe { (&*issuer_context, &*root_context) };
+    if issuer.dwCertEncodingType & X509_ASN_ENCODING == 0
+        || root.dwCertEncodingType & X509_ASN_ENCODING == 0
+        || issuer.pCertInfo.is_null()
+        || root.pbCertEncoded.is_null()
+    {
+        return Err(windows_identity_error(
+            "the D-45 issuer or trusted root has no bounded X.509 certificate data",
+            "Use supported X.509 issuer and root certificates to sign the Host.",
+        ));
+    }
+    let root_len = windows_d45_bounded_root_der_len(root.cbCertEncoded)?;
+    // SAFETY: the encoded root is WinTrust-owned and root_len is 64..=65536.
+    let root_der = unsafe { std::slice::from_raw_parts(root.pbCertEncoded, root_len) };
+    if root_der[0] != 0x30 {
+        return Err(windows_identity_error(
+            "the D-45 root certificate is not a DER-encoded X.509 sequence",
+            "Use a supported DER-encoded X.509 root certificate.",
+        ));
+    }
+    // SAFETY: the issuer's pCertInfo is non-null and WinTrust retains it.
+    let issuer_info = unsafe { &*issuer.pCertInfo };
+    let issuer_spki = windows_encoded_spki(&issuer_info.SubjectPublicKeyInfo, "immediate issuer")?;
+    let mut root_certificate_sha256 = [0_u8; 32];
+    root_certificate_sha256.copy_from_slice(&Sha256::digest(root_der));
+    let mut leaf_issuer_spki_sha256 = [0_u8; 32];
+    leaf_issuer_spki_sha256.copy_from_slice(&Sha256::digest(&issuer_spki));
+    Ok(WindowsD45ChainFacts {
+        _root_certificate_sha256: root_certificate_sha256,
+        _leaf_issuer_spki_sha256: leaf_issuer_spki_sha256,
+    })
 }
 
 #[allow(unsafe_code)] // bounded decode of the authenticated signer-description attribute
@@ -629,6 +1252,12 @@ mod tests {
 
     use super::*;
 
+    mod d45_host_handle_alias;
+    mod d45_native_chain_oracle;
+    mod d45_source_contract;
+    mod d45_source_lex;
+    mod d45_source_mutations;
+
     /// One isolated trust-image fixture directory under the system temporary directory.
     struct FixtureDirectory(PathBuf);
 
@@ -719,6 +1348,131 @@ mod tests {
     }
 
     #[test]
+    fn d45_retained_host_digest_matches_independent_sha256_literal() {
+        let directory = FixtureDirectory::new("d45-retained-digest");
+        let path = directory.path().join("host-source.exe");
+        fs::write(&path, b"abc").expect("write exact fixed hash vector");
+        let image = WindowsAuthenticodeImage::open(&path)
+            .expect("unsigned synthetic image may be held for read-only hashing");
+        assert_eq!(
+            sha256_retained_windows_image(&image.image, 3)
+                .expect("read all source bytes through the pinned hFile"),
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+                0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+                0xf2, 0x00, 0x15, 0xad,
+            ],
+            "the digest must cover the exact original bytes"
+        );
+        let error = sha256_retained_windows_image(&image.image, 4)
+            .expect_err("a different expected size must refuse before a file scan");
+        assert!(
+            error
+                .detail()
+                .contains("differs from the authenticated expected length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn d45_retained_source_accepts_exact_bytes_and_refuses_equal_length_foreign_host() {
+        // This is a source-byte subcondition, not a fabricated authenticated
+        // Direct or issuer-policy witness. Full D-45 v2 remains T-82-gated.
+        // The independent SHA-256("abc") vector prevents an always-refuse
+        // implementation from making a negative-only test appear to pass.
+        let expected_digest = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
+        ];
+        let directory = FixtureDirectory::new("d45-foreign-source-witness");
+        let original_path = directory.path().join("original-host.exe");
+        let foreign_path = directory.path().join("foreign-host.exe");
+        fs::write(&original_path, b"abc").expect("write original source fixture");
+        fs::write(&foreign_path, b"abd").expect("write same-length foreign source fixture");
+        let original = WindowsAuthenticodeImage::open(&original_path)
+            .expect("retain the original regular file");
+        let foreign =
+            WindowsAuthenticodeImage::open(&foreign_path).expect("retain the foreign regular file");
+        require_retained_host_source(&original.image, 3, &expected_digest)
+            .expect("the original retained Host satisfies the exact source-byte check");
+        let error = require_retained_host_source(&foreign.image, 3, &expected_digest)
+            .expect_err("same-length foreign bytes must refuse before any WinTrust grant");
+        assert!(
+            error
+                .detail()
+                .contains("Direct discovery source differs from the retained offline Host"),
+            "{error}"
+        );
+        assert!(error.close_failure().is_none(), "{error}");
+        let error = require_retained_host_source(&original.image, 2, &expected_digest)
+            .expect_err("a wrong authenticated length must refuse before digest comparison");
+        assert!(
+            error
+                .detail()
+                .contains("differs from the authenticated expected length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn d45_cache_only_preflight_refuses_unsigned_source() {
+        let directory = FixtureDirectory::new("d45-offline-unsigned");
+        let host_path = directory.path().join("unsigned-keld-host.exe");
+        fs::write(&host_path, b"unsigned synthetic source").expect("write unsigned image");
+
+        let error = WindowsAuthenticodeImage::open(&host_path)
+            .expect("a regular unsigned fixture opens for a read-only observation")
+            .observe_preflight()
+            .expect_err("offline preflight must refuse an unsigned image");
+        assert!(
+            error.detail().contains("cache-only preflight"),
+            "preflight must report its separate offline trust policy: {error}"
+        );
+        assert!(error.close_failure().is_none(), "{error}");
+    }
+
+    #[test]
+    fn d45_host_path_copy_substitution_waits_for_image_handle_release() {
+        use std::os::windows::fs::FileExt as _;
+
+        let directory = FixtureDirectory::new("d45-host-copy-substitution");
+        let host_path = directory.path().join("keld-host.exe");
+        let foreign_path = directory.path().join("foreign-host.exe");
+        let original = b"original host image: unsigned custody fixture";
+        let foreign = b"foreign host image: unsigned custody fixture";
+        fs::write(&host_path, original).expect("create the original Host fixture");
+        fs::write(&foreign_path, foreign).expect("create the foreign Host fixture");
+
+        let pinned = WindowsAuthenticodeImage::open(&host_path)
+            .expect("open the original Host image with Guard's production source owner");
+        let error = fs::copy(&foreign_path, &host_path)
+            .expect_err("a foreign image cannot replace a pinned Host pathname");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(32),
+            "Windows must refuse foreign byte replacement through the pinned source"
+        );
+
+        let mut observed = vec![0; original.len()];
+        let bytes_read = pinned
+            .image
+            .seek_read(&mut observed, 0)
+            .expect("read from the retained original image handle");
+        assert_eq!(bytes_read, original.len());
+        assert_eq!(&observed[..], &original[..]);
+        assert_eq!(fs::read(&host_path).unwrap(), &original[..]);
+        assert_eq!(fs::read(&foreign_path).unwrap(), &foreign[..]);
+
+        drop(pinned);
+        assert_eq!(
+            fs::copy(&foreign_path, &host_path).expect("replace the Host path after release"),
+            u64::try_from(foreign.len()).unwrap()
+        );
+        assert_eq!(fs::read(&host_path).unwrap(), &foreign[..]);
+    }
+
+    #[test]
     fn windows_trust_image_refuses_a_leaf_reparse_point() {
         let directory = FixtureDirectory::new("reparse");
         let target = directory.path().join("target.exe");
@@ -741,6 +1495,44 @@ mod tests {
             assert!(
                 error.detail().contains("exactly one signature is required"),
                 "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn d45_native_cert_chain_count_and_root_der_bounds_are_strict() {
+        assert_eq!(
+            windows_d45_bounded_chain_count(2).expect("leaf and one issuer"),
+            2
+        );
+        assert_eq!(
+            windows_d45_bounded_chain_count(32).expect("maximum bounded chain"),
+            32
+        );
+        for invalid_count in [0, 1, 33, u32::MAX] {
+            let error = windows_d45_bounded_chain_count(invalid_count)
+                .expect_err("a missing, rootless or oversized chain must refuse");
+            assert!(
+                error.detail().contains("fewer than two or too many"),
+                "{invalid_count}: {error}"
+            );
+        }
+        assert_eq!(
+            windows_d45_bounded_root_der_len(64).expect("minimum bounded root DER"),
+            64
+        );
+        assert_eq!(
+            windows_d45_bounded_root_der_len(65_536).expect("maximum bounded root DER"),
+            65_536
+        );
+        for invalid_length in [0, 1, 63, 65_537, u32::MAX] {
+            let error = windows_d45_bounded_root_der_len(invalid_length)
+                .expect_err("undersized or oversized certificate data must refuse");
+            assert!(
+                error
+                    .detail()
+                    .contains("DER length is below its minimum or exceeds"),
+                "{invalid_length}: {error}"
             );
         }
     }

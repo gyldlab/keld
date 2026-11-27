@@ -222,15 +222,25 @@ fn initialize_with_authority(
         trust,
         authority,
         observe,
-        |authority| match authority {
-            BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),
-            BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),
-            BaselineAuthority::MachineUac => {
-                keld_guard::require_windows_non_system_token()?;
-                keld_guard::require_windows_machine_uac_owner_token()
-            }
-        },
+        require_native_baseline_authority,
     )
+}
+
+/// Reobserve the existing v1 mode predicates against the current Windows token.
+///
+/// This does not bind an exact `TokenId` or owner SID, supply D-42 worker
+/// admission, or grant D-46 v2 authority. It is repeated at KEL-53's first
+/// write boundary so a stale initial mode result cannot bypass a changed
+/// native SYSTEM/non-SYSTEM or UAC mode predicate at creation time.
+fn require_native_baseline_authority(authority: BaselineAuthority) -> io::Result<()> {
+    match authority {
+        BaselineAuthority::MachineSystem => keld_guard::require_windows_system_token(),
+        BaselineAuthority::PerUser => keld_guard::require_windows_non_system_token(),
+        BaselineAuthority::MachineUac => {
+            keld_guard::require_windows_non_system_token()?;
+            keld_guard::require_windows_machine_uac_owner_token()
+        }
+    }
 }
 
 fn initialize_with_authority_and_token_check(
@@ -260,17 +270,21 @@ fn initialize_with_authority_and_token_check(
         publication::ValidatedBaselineStageSource::open_legacy(verified, archive)?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
-    let update_name = trust
-        .installation
-        .update_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| error("topology", "update name absent"))?;
-    let mut lock = acquire_bootstrap_lock(&roots, update_name)?;
+    // The first token check preceded retained-source and root I/O. This native
+    // second observation is mandatory even for test-only injected initial
+    // token checks, and must precede KEL-53's first FILE_CREATE effect.
+    require_native_baseline_authority(authority)
+        .map_err(|cause| error("bootstrap authority recheck", cause))?;
+    let mut lock = acquire_bootstrap_lock(&roots)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
+    recheck_bootstrap_scaffold(&roots)?;
     seed_activation_lock(&roots)?;
     observe(BaselineBoundary::ActivationLockCreated)
         .map_err(|cause| error("activation lock boundary", cause))?;
+    // A callback or another writer can change a retained directory between
+    // the bootstrap reread and stage creation. Refuse foreign entries before
+    // the next installation effect, preserving the incomplete first attempt.
+    recheck_activation_scaffold(&roots)?;
 
     // Keep the admitted source's read-only share through commit and the exact
     // seed reread. Readback opens the installed copy, not the source pathname.
@@ -295,11 +309,29 @@ fn initialize_with_authority_and_token_check(
 mod publication;
 use publication::{publish_baseline_version, seed_baseline_pointers};
 
-fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, UpdateError> {
-    let profile = roots.profile();
+pub(super) fn acquire_bootstrap_lock(roots: &Roots) -> Result<File, UpdateError> {
+    let prepared = prepare_bootstrap_lock(roots)?;
+    create_prepared_bootstrap_lock(prepared)
+}
+
+struct PreparedBootstrapLock<'a> {
+    update: File,
+    roots: &'a Roots,
+}
+
+// Read-only preparation. Retaining the parent does not reserve a namespace
+// or grant installation authority.
+fn prepare_bootstrap_lock(roots: &Roots) -> Result<PreparedBootstrapLock<'_>, UpdateError> {
     let install = roots
         .install()
         .map_err(|cause| error("install root", cause))?;
+    let update_name = roots
+        .trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("topology", "update name absent"))?;
     exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
     exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
     exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
@@ -308,6 +340,14 @@ fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, Upda
         .try_clone()
         .map_err(|cause| error("exclusive bootstrap parent", cause))?
         .into_std_file();
+    Ok(PreparedBootstrapLock { update, roots })
+}
+
+fn create_prepared_bootstrap_lock(
+    prepared: PreparedBootstrapLock<'_>,
+) -> Result<File, UpdateError> {
+    let PreparedBootstrapLock { update, roots } = prepared;
+    let profile = roots.profile();
     let lock = create_file_relative_exclusive_with_profile(&update, "bootstrap.lock", profile)
         .map_err(|cause| error("exclusive bootstrap lock", cause))?;
     keld_guard::validate_windows_install_file(&lock, profile)
@@ -315,6 +355,56 @@ fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, Upda
     lock.sync_all()
         .map_err(|cause| error("bootstrap lock flush", cause))?;
     Ok(lock)
+}
+
+/// Rereads the retained KEL-53 scaffold immediately after the bootstrap cut.
+///
+/// A new sibling or stage appearing between the pre-create census and the
+/// next effect must stop the transaction as incomplete. This check neither
+/// proves D-90 repository-wide vacancy nor grants an initial-install permit.
+pub(super) fn recheck_bootstrap_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    recheck_scaffold(roots, ScaffoldCut::Bootstrap)
+}
+
+fn recheck_activation_scaffold(roots: &Roots) -> Result<(), UpdateError> {
+    recheck_scaffold(roots, ScaffoldCut::Activation)
+}
+
+#[derive(Clone, Copy)]
+enum ScaffoldCut {
+    Bootstrap,
+    Activation,
+}
+
+fn recheck_scaffold(roots: &Roots, cut: ScaffoldCut) -> Result<(), UpdateError> {
+    let (root_step, install_step, update_step, versions_step, expected) = match cut {
+        ScaffoldCut::Bootstrap => (
+            "bootstrap scaffold root",
+            "bootstrap scaffold install reread",
+            "bootstrap scaffold update reread",
+            "bootstrap scaffold versions reread",
+            &["versions", "bootstrap.lock"][..],
+        ),
+        ScaffoldCut::Activation => (
+            "activation scaffold root",
+            "activation scaffold install reread",
+            "activation scaffold update reread",
+            "activation scaffold versions reread",
+            &["versions", "bootstrap.lock", "activation.lock"][..],
+        ),
+    };
+    let update_name = roots
+        .trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("topology", "update name absent"))?;
+    let install = roots.install().map_err(|cause| error(root_step, cause))?;
+    exact_entries(install, &[update_name]).map_err(|cause| error(install_step, cause))?;
+    exact_entries(&roots.update, expected).map_err(|cause| error(update_step, cause))?;
+    exact_entries(&roots.versions, &[]).map_err(|cause| error(versions_step, cause))?;
+    Ok(())
 }
 
 fn seed_activation_lock(roots: &Roots) -> Result<(), UpdateError> {

@@ -220,12 +220,23 @@ impl RecordSlot {
     }
 }
 
-/// Publishes to an absent sibling under the retained parent HANDLE.
+/// Publishes a directory to an absent sibling under the retained parent HANDLE.
 ///
-/// Unlike a pathname reconstructed from the parent, the source and destination
-/// remain bound to the retained directory even if its live reparse data changes.
+/// This path is for completed version trees and retirement directories. The
+/// source must itself be a real directory, never a reparse entry or file.
 pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io::Result<()> {
-    rename_relative(parent, source, destination, false)
+    rename_relative(parent, source, destination, false, EntryKind::Directory)
+}
+
+/// Publishes a regular protected record to an absent sibling under the same
+/// retained parent. A directory or reparse entry cannot become a journal,
+/// pointer, marker or completion record.
+pub(crate) fn publish_new_record_file(
+    parent: &File,
+    source: &str,
+    destination: &str,
+) -> io::Result<()> {
+    rename_relative(parent, source, destination, false, EntryKind::File)
 }
 
 /// Replaces one fixed activation record slot with a prepared same-parent sibling.
@@ -240,7 +251,7 @@ pub(crate) fn replace_record_slot(parent: &File, source: &str, slot: RecordSlot)
             "replacement source must be a generated pending record sibling",
         ));
     }
-    rename_relative(parent, source, slot.leaf(), true)
+    rename_relative(parent, source, slot.leaf(), true, EntryKind::File)
 }
 
 /// Atomically renames one entry under one retained parent, with no ambient path
@@ -258,6 +269,7 @@ fn rename_relative(
     source: &str,
     destination: &str,
     replace: bool,
+    expected_kind: EntryKind,
 ) -> io::Result<()> {
     if source.eq_ignore_ascii_case(destination) {
         return Err(unsupported(
@@ -271,11 +283,24 @@ fn rename_relative(
     // while any child is open, so after that open the parent cannot be substituted.
     #[cfg(test)]
     run_before_rename_binding();
+    // Keep data-write and delete opens excluded while renaming this handle.
+    // Windows sharing does not exclude attribute-only access, so this is not
+    // proof of immutable metadata or independent repository authority.
     let source =
-        open_units_for_delete_with_options(parent, source_name, DeletePurpose::Remove, true)?
+        open_units_for_delete_with_options(parent, source_name, DeletePurpose::Admit, true)?
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "publication source is absent")
             })?;
+    // The relative open deliberately observes a reparse point as itself.
+    // Require the exact native source kind for the selected operation. A
+    // directory is valid for version publication, but not for record files.
+    if source.kind() != expected_kind {
+        return Err(unsupported(
+            "relative publication source has the wrong native kind or is a reparse point",
+        ));
+    }
+    #[cfg(test)]
+    run_after_rename_source_kind();
 
     // FILE_RENAME_INFORMATION has a trailing, variable-length UTF-16 name. Allocate
     // at least its full struct size, plus the validated name and a terminator.
@@ -313,6 +338,12 @@ fn rename_relative(
             ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
             destination_name.len(),
         );
+    }
+    // Recheck the live source, not its cached classification. This detects a
+    // changed kind before the syscall; it is not an atomic metadata fence.
+    // The protected owner and its lease must still exclude unauthorized effects.
+    if entry_kind(source.file())? != expected_kind {
+        return Err(unsupported("relative publication source kind changed"));
     }
     // SAFETY: source is the live DELETE-access synchronous file handle opened
     // without following a reparse point relative to parent. NtSetInformationFile
@@ -367,6 +398,27 @@ fn before_rename_binding_pending() -> bool {
 #[cfg(test)]
 fn run_before_rename_binding() {
     let action = BEFORE_RENAME_BINDING.with(|slot| slot.borrow_mut().take());
+    if let Some(action) = action {
+        action();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// One-shot probe after source-kind observation and before native rename.
+    /// Data-write and delete access must remain excluded on the retained handle.
+    static AFTER_RENAME_SOURCE_KIND: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_after_rename_source_kind(action: impl FnOnce() + 'static) {
+    AFTER_RENAME_SOURCE_KIND.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn run_after_rename_source_kind() {
+    let action = AFTER_RENAME_SOURCE_KIND.with(|slot| slot.borrow_mut().take());
     if let Some(action) = action {
         action();
     }

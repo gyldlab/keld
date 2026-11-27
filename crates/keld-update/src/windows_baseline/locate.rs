@@ -338,8 +338,8 @@ fn admit_record(
 }
 
 /// Volume serial number and file ID of an open object.
-#[derive(Debug, PartialEq, Eq)]
-struct ObjectIdentity {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ObjectIdentity {
     volume: u64,
     file: u64,
 }
@@ -354,13 +354,13 @@ impl ObjectIdentity {
         })
     }
 
-    fn of_cap_file(file: &File) -> io::Result<Self> {
+    pub(super) fn of_cap_file(file: &File) -> io::Result<Self> {
         Self::of_file(&cap_std::io_lifetimes::AsFilelike::as_filelike_view::<
             std::fs::File,
         >(file))
     }
 
-    fn of_dir(directory: &Dir) -> io::Result<Self> {
+    pub(super) fn of_dir(directory: &Dir) -> io::Result<Self> {
         let metadata = directory.dir_metadata()?;
         Ok(Self {
             volume: metadata.dev(),
