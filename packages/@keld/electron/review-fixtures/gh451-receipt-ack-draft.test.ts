@@ -1,6 +1,6 @@
 // Review-only facade receipt guards, not authenticated transport evidence.
 import { expect, test } from "bun:test";
-import { fixture, g, token, turn } from "./gh451-terminal-quit-draft-fixture";
+import { fixture, g, token, turn, w1 } from "./gh451-terminal-quit-draft-fixture";
 
 test("AC11: missing Prepare consumption holds authorization until explicit release", async () => {
   const x = fixture();
@@ -176,6 +176,102 @@ test("AC11: recovered typed Invalidated survives retirement during receipt consu
   expect(await x.coordinator.reconcile()).toBe("unknown");
   expect(x.statuses).toHaveLength(1);
   expect(x.trace).toEqual(["before", "prepare", "status:prepare"]);
+});
+
+test("AC11: direct typed Retained reporter retirement skips stale consumption", async () => {
+  const x = fixture([w1]);
+  const error = new Error("typed Retained after public handoff");
+  let consumes = 0;
+  const publicQuit = x.coordinator.quit();
+  x.closes[0]!.dispatched(1n);
+  await expect(publicQuit).resolves.toBeUndefined();
+  x.closes[0]!.reply.resolve({ kind: "requested", sequence: 1n });
+  await turn();
+  x.destroy(w1);
+  x.f.consume = () => {
+    consumes++;
+    return { ready: true };
+  };
+  x.f.onLateError = () => {
+    x.f.selected = false;
+    x.coordinator.retire(g);
+  };
+  x.prepares[0]!.resolve({ kind: "retained", error });
+  await turn();
+
+  expect(consumes).toBe(0);
+  expect(x.late).toEqual([
+    { error, custody: { phase: "prepare", original: undefined, generation: g } },
+  ]);
+  expect(x.coordinator.disposition).toBe("unknown");
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.coordinator.quit()).toBe(publicQuit);
+});
+
+test("AC11: recovered typed Invalidated reporter retirement skips stale consumption", async () => {
+  const x = fixture();
+  const original = { operation: "prepare" as const, correlation: 24 };
+  const lost = new Error("lost Prepare before reporter retirement");
+  const error = new Error("typed Invalidated before reporter retirement");
+  let consumes = 0;
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "unknown", original, error: lost });
+  await expect(publicQuit).rejects.toBe(lost);
+  x.f.consume = () => {
+    consumes++;
+    return { ready: true };
+  };
+  x.f.onLateError = () => {
+    x.f.selected = false;
+    x.coordinator.retire(g);
+  };
+
+  const recovery = x.coordinator.reconcile();
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "invalidated", error },
+  });
+  expect(await recovery).toBe("unknown");
+  await turn();
+  expect(consumes).toBe(0);
+  expect(x.late).toEqual([
+    { error, custody: { phase: "prepare", original, generation: g } },
+  ]);
+  await expect(publicQuit).rejects.toBe(lost);
+  expect(x.statuses).toHaveLength(1);
+});
+
+test("AC11: recovered typed Invalidated selection loss skips stale consumption", async () => {
+  const x = fixture();
+  const original = { operation: "prepare" as const, correlation: 25 };
+  const lost = new Error("lost Prepare before reporter selection loss");
+  const error = new Error("typed Invalidated before reporter selection loss");
+  let consumes = 0;
+  const publicQuit = x.coordinator.quit();
+  x.prepares[0]!.resolve({ kind: "unknown", original, error: lost });
+  await expect(publicQuit).rejects.toBe(lost);
+  x.f.consume = () => {
+    consumes++;
+    return { ready: true };
+  };
+  x.f.onLateError = () => {
+    x.f.selected = false;
+  };
+
+  const recovery = x.coordinator.reconcile();
+  x.statuses[0]!.reply.resolve({
+    original,
+    disposition: { kind: "invalidated", error },
+  });
+  expect(await recovery).toBe("unknown");
+  expect(consumes).toBe(0);
+  expect(x.coordinator.heldDisposition?.kind).toBe("invalidated");
+  expect(x.late).toEqual([
+    { error, custody: { phase: "prepare", original, generation: g } },
+  ]);
+  expect(await x.coordinator.reconcile()).toBe("unknown");
+  expect(x.statuses).toHaveLength(1);
+  await expect(publicQuit).rejects.toBe(lost);
 });
 
 test("AC11: late typed refusal preserves the actual cause after retirement", async () => {

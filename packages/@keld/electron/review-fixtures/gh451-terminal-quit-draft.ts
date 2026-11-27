@@ -546,6 +546,12 @@ export class DraftQuitCoordinator<T> {
           original: p.original,
           generation: this.generation,
         });
+        if (this.active !== a || a.pending !== p) return;
+        if (!this.current()) {
+          a.phase = "unknown";
+          this.publish(a, "unknown");
+          return;
+        }
       }
       const consumed = this.consume(p, d);
       if (this.active !== a || a.pending !== p) return;
