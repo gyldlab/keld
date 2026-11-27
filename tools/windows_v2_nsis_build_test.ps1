@@ -94,6 +94,14 @@ if ($PSCmdlet.ParameterSetName -ceq 'OwnedDiagnosticAlias') {
         [IO.Path]::GetFileName($OwnedDiagnosticAliasRoot) -cnotmatch '^keld-nsis-fixture-[0-9a-f]{32}$') {
         throw 'KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS: expected an absolute local fixture path'
     }
+    # Do not let GetFullPath erase a raw ambiguous component. The only
+    # spelling difference admitted below is a normal Windows 8.3 ancestor.
+    foreach ($component in $OwnedDiagnosticAliasRoot.Substring(3).Split('\')) {
+        if ([string]::IsNullOrEmpty($component) -or $component.EndsWith('.') -or
+            $component.EndsWith(' ')) {
+            throw 'KEL270_NSIS_OWNED_DIAGNOSTIC_ALIAS: ambiguous fixture path component'
+        }
+    }
     # GitHub's Windows runner may give Rust TEMP an 8.3 ancestor (RUNNER~1).
     # .NET Path.GetFullPath expands that spelling, whereas the production
     # Require-LocalPath deliberately refuses non-normalized build locators.
