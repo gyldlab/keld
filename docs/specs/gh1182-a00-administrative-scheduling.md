@@ -28,7 +28,7 @@ Do not credit V3, A24, final CI, or any of the ten authentic workflows.
 - FACT: Open tracker [GH-1183](https://github.com/gyldlab/keld/issues/1183) states “Native OS acceptance remains **BLOCKED** until a verified Windows operator runs it.” (retrieved 2026-11-28). These tracker requirements are not approved specifications.
 - FACT: GH-499 owns the B2 identity check. The [exact Host identity review packet](https://github.com/gyldlab/keld/issues/499#issuecomment-7210114330) says “A qualified new Host image needs a reviewed identity binding followed by rebuilt CLI and native qualification.” (retrieved 2026-11-27).
 - FACT: The [P6 physical preflight](https://github.com/gyldlab/keld/issues/1182#issuecomment-7226623191) pins the reviewed combined driver and replay evidence. It says “These checks establish present empty-state and byte custody, not N2/N3 lifecycle acceptance.” (retrieved 2026-11-27). It does not admit launch.
-- FACT: `MAINTAINERS.md:20@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and `docs/agents/spec-template.md:3@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` require independent review and human sign-off.
+- FACT: `MAINTAINERS.md:20@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and `docs/agents/spec-template.md:8@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` require independent review and human sign-off.
 
 ## 3. Acceptance criteria
 
