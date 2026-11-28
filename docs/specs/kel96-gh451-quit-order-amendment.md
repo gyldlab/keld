@@ -100,7 +100,7 @@ After registry census becomes empty, withhold only the physical-release observat
 Remove only the destruction-complete check. The test goes RED if Prepare succeeds without that observation.
 Verify a genuine successor adopts its Open survivor without a new build.
 Reject the retired role's token after adoption and after the registry later becomes empty.
-Test the final generation check separately. Remove only that check. The stale generation must go RED.
+Test the final generation check in a nonshipping owner fixture. Keep every other final-cut predicate valid. A matching generation must pass. Remove only the generation check. The stale generation must then reserve and make the test RED.
 After terminal reservation, attempt Create, CreateWithPreload, and successor provisioning separately. Refuse each before native build or authority minting.
 Remove only the terminal admission fence. The test goes RED if any post-reservation admission starts.
 
