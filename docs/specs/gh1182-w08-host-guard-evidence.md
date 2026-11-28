@@ -52,7 +52,7 @@ Non-goals:
   - **At-risk precondition:** Producer and consumer evidence otherwise matches.
   - **Expected RED:** The correlator refuses to join the records and leaves A04 UNKNOWN.
 
-### AC-2a: Evidence identifies the exact supervised Bun runtime
+### AC-7: Evidence identifies the exact supervised Bun runtime
 
 - **Given:** B2 has selected and identified the supervised Bun executable for this attempt.
 - **When:** The Host producer creates an observation and the receiver verifies its attempt tuple.
@@ -177,7 +177,7 @@ B2 owns the selected runtime evidence and its admission semantics. W08 MUST cons
 
 The KEL-96 attempt owner MUST name the monotonic clock source, domain, epoch, start, and original cutoff. The same qualified clock MUST timestamp producer observation, receiver receipt, and consumer receipt where the platform permits it.
 
-If any stage uses a different monotonic domain, its owner MUST provide a bounded, measured mapping to the selected attempt domain. The record MUST bind mapping identity, calibration evidence, validity interval, and maximum error. The verifier MUST include that error when deciding whether receipt preceded cutoff.
+A stage with another monotonic domain MUST supply a bounded, measured mapping. The mapping MUST target the selected attempt domain. The record MUST bind mapping identity, calibration evidence, validity interval, and maximum error. The verifier MUST include that error when deciding whether receipt preceded cutoff.
 
 No wall-clock conversion, guessed offset, unmeasured calibration, or fresh timer can make incomparable timestamps valid. A missing, stale, ambiguous, or out-of-bound mapping makes the evidence UNKNOWN and blocks adoption. A timestamp that may fall after cutoff under the mapping error is late and MUST be refused. The original product cutoff remains authoritative.
 
