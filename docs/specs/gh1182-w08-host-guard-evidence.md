@@ -91,6 +91,10 @@ Non-goals:
   - **Single fault:** Change the receiver timestamp epoch or allow one observation after the original cutoff.
   - **At-risk precondition:** Source and generation match, and the record is otherwise valid.
   - **Expected RED:** The verifier refuses the incomparable or late record. Evidence becomes UNKNOWN. The product cutoff remains unchanged.
+- **Negative control:**
+  - **Single fault:** Exclude the terminal frame or terminal bytes from combined admission accounting.
+  - **At-risk precondition:** One attempt approaches its final slot, frame, byte, and opportunity limits.
+  - **Expected RED:** The verifier rejects the over-budget composition. No observation or terminal record exceeds any aggregate ceiling.
 
 ### AC-5: Mismatch, duplication, lateness, and reordering never produce a pass
 
