@@ -6802,6 +6802,28 @@ struct QuitDrainTestHooks {
     // Only the macOS CLI-publication fixture reads this slot.
     #[cfg(target_os = "macos")]
     cli_acceptance: Option<(SyncSender<()>, Receiver<()>)>,
+    // A single explicitly armed test carrier on the exact fixture reader.
+    #[cfg(all(target_os = "macos", not(keld_core_native_renderer_main)))]
+    conditional_dispatch: Option<ConditionalQuitFixtureDispatch>,
+    #[cfg(all(target_os = "macos", not(keld_core_native_renderer_main)))]
+    conditional_dispatch_used: bool,
+}
+
+#[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
+type ConditionalQuitFixtureHandler = Box<
+    dyn FnOnce(
+            &PrimaryRouterHandle,
+            &PrimaryCallerContext,
+            CorrelationId,
+        ) -> Result<bool, HostAppError>
+        + Send,
+>;
+
+#[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
+struct ConditionalQuitFixtureDispatch {
+    caller: PrimaryCallerContext,
+    correlation: CorrelationId,
+    run: ConditionalQuitFixtureHandler,
 }
 
 /// How a post-Quit drain ended (GH-527 §4.9). Every end leads to the same
@@ -9536,6 +9558,18 @@ fn read_primary_frames(
                         handle.subscribe_window(caller, header.corr(), channel)?;
                     }
                     LifecycleRequest::Quit => {
+                        // Only a specifically armed test fixture uses this
+                        // existing frame as a carrier. It never allocates a
+                        // wire tag or synthesizes a successful Quit reply.
+                        #[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
+                        if let Some(stop) =
+                            handle.dispatch_conditional_quit_fixture(caller, header.corr())?
+                        {
+                            if stop {
+                                return Ok(());
+                            }
+                            continue;
+                        }
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
                         handle.lifecycle_quit(attempt, header.corr(), &reply, reader)?;
