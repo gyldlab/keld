@@ -46,11 +46,22 @@ Non-goals:
 
 - **Given:** A Host producer emits one bounded observation for an admitted attempt.
 - **When:** The independent receiver records receipt and the actual consumer records consumption.
-- **Then:** All records bind the same Host image digest, source commit, attempt identifier, run identifier, interface identity, role generation, sequence, and monotonic observation time. Host authentication owns these values. A caller or renderer cannot choose them.
+- **Then:** All records bind one Host image, Bun runtime, attempt, run, interface, and role generation. They also bind sequence and observation time. Existing Host admission owns these values. A caller or renderer cannot choose them.
 - **Negative control:**
   - **Single fault:** Change only the receiver's attempt or generation binding.
   - **At-risk precondition:** Producer and consumer evidence otherwise matches.
   - **Expected RED:** The correlator refuses to join the records and leaves A04 UNKNOWN.
+
+### AC-2a: Evidence identifies the exact supervised Bun runtime
+
+- **Given:** B2 has selected and identified the supervised Bun executable for this attempt.
+- **When:** The Host producer creates an observation and the receiver verifies its attempt tuple.
+- **Then:** The tuple carries the exact runtime identity supplied by B2. It includes the canonical selected executable identity, measured executable digest, and pinned runtime version. The existing Host supervisor binds these facts to the spawned child and generation. Child-reported version text alone is not proof.
+- **Then:** W08 consumes B2's runtime evidence. W08 does not create a signature, publisher, trust pin, or new authenticity claim. Missing or ambiguous B2 identity makes the attempt UNKNOWN and blocks adoption.
+- **Negative control:**
+  - **Single fault:** Swap only the selected Bun executable or its measured digest between otherwise matching attempts.
+  - **At-risk precondition:** Host, attempt, run, interface, and generation identities match.
+  - **Expected RED:** The verifier rejects the runtime mismatch. It cannot accept child-reported version text as a substitute.
 
 ### AC-3: Receiver and consumer evidence are independent
 
@@ -66,22 +77,26 @@ Non-goals:
 
 - **Given:** The owners identify an eligible existing cold scheduling opportunity and measure its cadence on the supported Windows system.
 - **When:** The reporter observes one admitted attempt.
-- **Then:** Observation starts at validated attempt admission. It uses the existing monotonic clock and measured cadence.
+- **Then:** Observation starts at validated attempt admission. It uses one qualified monotonic clock domain and measured cadence.
   It adds no timer or poll loop. It adds no catch-up, retry, or product deadline.
+  The attempt owner binds the original cutoff to that clock domain and epoch.
+  The reporter and receiver compare timestamps only within that domain.
+  A different receiver clock requires an owner-approved, bounded, measured mapping.
+  Missing, ambiguous, expired, or out-of-error-bound mapping makes evidence UNKNOWN.
   It stops at the earliest original cutoff, attempt termination, revocation, refusal, or budget exhaustion.
   At most 66 opportunities are allowed, including the initial sample.
   The limits remain 64 slots, 66 frames, and 887 bytes. Every observation and terminal record counts toward its applicable ceiling.
   Overflow or truncation marks evidence incomplete. It cannot extend the attempt.
 - **Negative control:**
-  - **Single fault:** Permit one extra observation after the existing cutoff or after the 66th opportunity.
-  - **At-risk precondition:** The attempt remains otherwise valid and has remaining slot capacity.
-  - **Expected RED:** The receiver refuses the late record. The product attempt and its original deadline remain unchanged.
+  - **Single fault:** Change the receiver timestamp epoch or allow one observation after the original cutoff.
+  - **At-risk precondition:** Source and generation match, and the record is otherwise valid.
+  - **Expected RED:** The verifier refuses the incomparable or late record. Evidence becomes UNKNOWN. The product cutoff remains unchanged.
 
 ### AC-5: Mismatch, duplication, lateness, and reordering never produce a pass
 
 - **Given:** A bounded set of producer, receiver, and consumer records is available.
 - **When:** An independent verifier correlates them.
-- **Then:** The verifier rejects wrong run, attempt, Host image, runtime, interface, or generation. It also rejects post-cutoff, duplicate, late, missing, or out-of-order evidence. It never repairs identity from a PID, display name, caller label, or log text.
+- **Then:** The verifier rejects wrong run, attempt, Host image, Bun runtime, interface, or generation. It also rejects post-cutoff, duplicate, late, missing, or out-of-order evidence. It never repairs identity from a PID, display name, caller label, or log text.
 - **Negative control:**
   - **Single fault:** Duplicate one otherwise valid sequence number.
   - **At-risk precondition:** A valid producer, receiver, and consumer chain exists.
@@ -105,13 +120,13 @@ Non-goals:
 
 Any accepted reporter MUST run in the native Windows `keld-host` process. This names the required reporter owner, not its source seam or receiver.
 
-Candidates for owner review:
+Candidate for owner review:
 
 1. Existing Host-owned native readiness events and their Core publication path. The owner must show where a sample can be attributed without changing Ready behavior.
-2. Existing authenticated app-link lifecycle delivery and its SDK consumer. The owner must show an independent receiver and consumer receipt. The product lifecycle event alone is insufficient.
-3. An owner-approved diagnostic-only receiver outside the product event path. This is prospective only. It requires a separate approved transport and authority decision before implementation.
 
-The first two candidates are not selected. The third is not permission to add a new endpoint, channel, process, or trust path.
+The existing app-link is NOT a W08 receiver candidate. Its approved contract carries endpoint plus possession secret. Its Host router serves echo and lifecycle traffic. KEL-72 lifecycle exposes Ready, LastWindowClosed, and Quit. No approved contract defines a W08 diagnostic payload or independent W08 consumer. MUST NOT repurpose lifecycle frames, add diagnostic payloads to lifecycle events, or infer W08 delivery from echo. Source: `docs/architecture/02-ipc.md:43-49,72-87,169-178,314-331@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+
+If native readiness cannot provide independent receipt and consumption, record NO-REUSE. A new receiver then requires a separate approved transport and wire contract. This draft does not select or authorize that contract.
 
 Reject inherited stdout, historical logs, producer-side return values, and post-return output as the independent receiver. They cannot prove timely receipt and consumption by the matching generation.
 
@@ -136,30 +151,48 @@ The future record schema MUST bind these values:
 | Host image digest | Host admission owner | Exact measured Host bytes for the attempt |
 | Source commit and source path | Host build owner | Source identity that produced those bytes |
 | Attempt and run identifiers | Existing Host attempt owner | Fresh identity for this diagnostic attempt |
+| Bun runtime identity | B2 runtime owner and Host supervisor | Exact selected canonical executable identity, measured executable digest, and pinned version for this attempt |
 | Interface identity | KEL-96 owner | Exact approved source/receiver contract identity |
 | Role generation | Existing authenticated generation owner | Host-authenticated generation; never caller-selected |
 | Sequence | Producer and receiver | Strictly increasing within the one attempt |
-| Observation time | Existing Host monotonic clock owner | Timestamp from the selected existing schedule |
-| Receive time | Independent receiver | Time the receiver actually accepted the record |
-| Consume time and result | Actual consumer owner | Time and outcome of matching-generation consumption |
+| Clock domain and epoch | Existing Host attempt/clock owner | Qualified monotonic source and epoch for observation and cutoff |
+| Observation time | Existing Host monotonic clock owner | Timestamp from the selected existing schedule in the bound domain |
+| Receive time | Independent receiver | Receipt time in that domain or through a bounded measured mapping |
+| Consume time and result | Actual consumer owner | Consumption time and outcome in that domain or through a bounded measured mapping |
 
 The W08 qualification run and any later A00 run MUST have different run identities. The same W08 result cannot be replayed as A00 evidence.
 
-### D-4: Preserve bounded observation and existing scheduling
+B2 owns the selected runtime evidence and its admission semantics. W08 MUST consume that exact identity without asserting a signature or publisher proof that B2 does not provide. A digest identifies measured bytes. It is not, by itself, proof of publisher or authenticity. A self-reported Bun version cannot override the selected executable identity.
 
-The accepted P1 design limits remain 64 retained slots, 66 emitted frames, and 887 bytes. The total observation opportunity limit is 66, including the first sample.
+### D-3a: Use one comparable monotonic clock and owner-defined cutoff
 
-The implementation owner MUST document slot and frame accounting before approval. The owner MUST identify the exact scope of the 887-byte ceiling. The prior packet does not define that accounting in its published summary. These ceilings MUST NOT be reinterpreted to permit extra buffers, larger records, or more opportunities.
+The KEL-96 attempt owner MUST name the monotonic clock source, domain, epoch, start, and original cutoff. The same qualified clock MUST timestamp producer observation, receiver receipt, and consumer receipt where the platform permits it.
+
+If any stage uses a different monotonic domain, its owner MUST provide a bounded, measured mapping to the selected attempt domain. The record MUST bind mapping identity, calibration evidence, validity interval, and maximum error. The verifier MUST include that error when deciding whether receipt preceded cutoff.
+
+No wall-clock conversion, guessed offset, unmeasured calibration, or fresh timer can make incomparable timestamps valid. A missing, stale, ambiguous, or out-of-bound mapping makes the evidence UNKNOWN and blocks adoption. A timestamp that may fall after cutoff under the mapping error is late and MUST be refused. The original product cutoff remains authoritative.
+
+### D-4: Preserve combined bounded observation and existing scheduling
+
+The accepted P1 ceilings are 64 retained slots, 66 emitted frames, 887 serialized bytes, and at most 66 observation opportunities. They apply together to one attempt. They are not independent allowances that a producer may spend separately.
+
+Before approval, the source owner MUST define one combined worst-case ledger. It MUST enumerate every record kind, observation, receiver receipt, consumer receipt, and terminal frame. It MUST state which retained objects consume slots, which serialized outputs consume frames, and how every byte is counted. The 887-byte ceiling applies to the aggregate serialized evidence for one attempt, including all headers and terminal records. No uncounted side buffer or second terminal path is permitted.
+
+Each observation admission MUST reserve all required slot, frame, byte, and opportunity capacity atomically. A record is refused when any one aggregate ceiling would be exceeded. A partial reservation MUST be rolled back without an observation. Terminal output consumes the same frame and byte budget. If terminal output cannot fit, evidence remains incomplete. It MUST NOT exceed a ceiling to report exhaustion.
+
+The owner MUST provide a worst-case composition that accounts for all 66 opportunities, the retained-slot ceiling, all emitted frames, and the complete 887-byte encoding. The composition MUST demonstrate the maximum combination and remaining headroom, if any. The current P1 summary does not provide this accounting. The exact per-kind encoding and slot ownership remain UNKNOWN until the source owner records them. No new cap or additional allowance is inferred here.
 
 The owner MUST measure the existing cold scheduling cadence on the exact supported Windows build. The measurement must bind the source commit, Host image, schedule, sample count, and raw observations. A synthetic clock or a model cannot qualify the Windows cadence.
 
-Sampling MUST use the selected existing cold scheduling opportunity. It MUST NOT add a timer, poll loop, catch-up, retry, or wait on the product path. It MUST stop on the earliest original cutoff, termination, revocation, refusal, or budget exhaustion.
+Sampling MUST use the selected existing cold scheduling opportunity. It MUST NOT add a timer, poll loop, catch-up, retry, or wait on the product path. It MUST stop on the earliest original cutoff, termination, revocation, refusal, or aggregate budget exhaustion.
+
+Required combined-boundary tests MUST exhaust each resource alone and in combination. They MUST cover a terminal frame at the frame ceiling, aggregate bytes at 887 and 888, the final retained slot combined with the final opportunity, and one additional record that would cross two or more ceilings. They MUST prove atomic refusal and no hidden reservation. They MUST prove terminal output never exceeds the aggregate frame or byte ceiling. A missing worst-case composition or any unclear accounting keeps this draft unapproved.
 
 ### D-5: Keep Guard authorization and transport unchanged
 
 KEL-102 remains the sole owner of policy loading, evaluation, and privileged dispatch. This diagnostic record does not enter `evaluate`, `dispatch_privileged`, or a native handler as authority.
 
-This specification allocates no channel, frame type, message, permission, capability, public API, or authentication method. It does not change the identity or signing rules for Host, CLI, provider, or Bun.
+This specification allocates no channel, frame type, message, permission, capability, public API, or authentication method. It does not change the identity or signing rules for Host, CLI, provider, or Bun. The existing app-link lifecycle frames MUST NOT carry W08 evidence.
 
 If the selected receiver needs a new transport or privilege, work MUST stop. The responsible owners must approve a separate wire and permission specification first. The eventual implementation must retain every existing default-deny and lifecycle check.
 
@@ -211,10 +244,11 @@ The approved implementation MUST map every AC to an independent test. The nonlau
 Required controls include:
 
 - Matched producer, receiver, and consumer records for one attempt and generation.
-- Wrong run, attempt, Host image, runtime, interface, and generation, each changed alone.
-- Evidence after cutoff, after termination, after revocation, and after refusal.
+- Wrong run, attempt, Host image, selected Bun executable, runtime digest, runtime version, interface, and generation, each changed alone.
+- Different clock domains, stale mapping, mapping error that overlaps cutoff, missing cutoff owner, and evidence after cutoff, termination, revocation, or refusal.
 - Missing receiver, missing consumer, delayed receiver, duplicate sequence, and out-of-order sequence.
-- Zero, 64, 65 retained slots; 66 and 67 frames; 887 and 888 encoded bytes; 66 and 67 opportunities.
+- Zero, 64, 65 retained slots; 66 and 67 aggregate frames; 887 and 888 aggregate bytes; 66 and 67 opportunities.
+- Combined exhaustion of slots, frames, bytes, and opportunities, including terminal frames and worst-case composition.
 - Receiver loss and diagnostic overflow while the normal product lifecycle continues unchanged.
 - A second run using the same source but a new attempt and generation; no cross-run correlation is accepted.
 
@@ -265,6 +299,8 @@ Options are the existing native readiness path, the authenticated app-link lifec
 - **Impact:** Producer output cannot prove delivery or matching-generation consumption. A04 remains UNKNOWN.
 - **Check:** Name the receiver and consumer owners. Supply exact source identities, attempt binding, receive evidence, consume evidence, and cleanup responsibility.
 
+The existing authenticated app-link and KEL-72 lifecycle path do not satisfy this blocker. They have no approved W08 receiver payload or independent W08 consumer. Reuse is blocked. The owner must identify a genuinely existing receiver with its own contract, or seek a separately approved transport and wire specification.
+
 ### B-3: Independent Guard disposition is outstanding
 
 - **Status:** open
@@ -279,6 +315,20 @@ Options are the existing native readiness path, the authenticated app-link lifec
 - **Impact:** The numeric limits cannot be implemented or verified without exact accounting and measured schedule evidence.
 - **Check:** Define slot, frame, and byte accounting from the reviewed P1 packet. Measure the existing cold cadence on the exact supported Windows build.
 
+### B-5: Runtime identity and clock-domain proof are incomplete
+
+- **Status:** open
+- **Owner:** B2 runtime owner and KEL-96 Host attempt/clock owner
+- **Impact:** A Bun swap or incomparable timestamps could be accepted as valid evidence. Runtime identity and cutoff ordering remain UNKNOWN.
+- **Check:** Bind the exact selected Bun executable identity, measured digest, and pinned version from B2. Name the monotonic source, domain, epoch, and original cutoff, or provide a bounded measured mapping.
+
+### B-6: Combined resource ledger is incomplete
+
+- **Status:** open
+- **Owner:** KEL-96 Host source owner and future receiver owner
+- **Impact:** Individual ceilings do not prove the combined worst case. A terminal frame or aggregate record could exceed the total budget.
+- **Check:** Publish the complete per-kind slot, frame, opportunity, and aggregate-byte ledger. Prove atomic admission and refusal at every combined boundary, including terminal output.
+
 ### U-1: Actual source, receiver, consumer, and schedule
 
-No owner has selected these elements in the cited records. The exact source identity, receiver identity, consumer mapping, cleanup mechanism, and measured cadence remain UNKNOWN. The owners must provide these facts before this draft can become approved.
+No owner has selected these elements in the cited records. The exact source identity, receiver identity, consumer mapping, cleanup mechanism, measured cadence, runtime identity input, clock mapping, and combined budget ledger remain UNKNOWN. The owners must provide these facts before this draft can become approved.
