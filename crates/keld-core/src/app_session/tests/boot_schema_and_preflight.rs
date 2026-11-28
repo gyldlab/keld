@@ -59,13 +59,15 @@ fn schema_two_strictly_rejects_renderer_auth_profile_unknown_and_duplicate_field
 #[test]
 fn facade_stage_host_preflight_requires_no_renderer_file() {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("private staged root");
-    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).expect("private stage");
-    fs::create_dir(root.path().join("src")).expect("source directory");
-    fs::write(root.path().join("src/main.ts"), "export {};\n").expect("entry");
-    fs::write(root.path().join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
-    fs::write(root.path().join(BOOT_FILE), br#"{"schema":2,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#).expect("facade boot");
-    let selection = validate_from_root(root.path()).expect("exact facade preflight");
+    let temp = tempfile::tempdir().expect("stage parent");
+    let root = temp.path().join("stage");
+    fs::create_dir(&root).expect("private staged root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private stage");
+    fs::create_dir(root.join("src")).expect("source directory");
+    fs::write(root.join("src/main.ts"), "export {};\n").expect("entry");
+    fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+    fs::write(root.join(BOOT_FILE), br#"{"schema":2,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#).expect("facade boot");
+    let selection = validate_from_root(&root).expect("exact facade preflight");
     assert!(matches!(
         selection.app.initial_window,
         ValidatedInitialWindow::None
@@ -73,7 +75,24 @@ fn facade_stage_host_preflight_requires_no_renderer_file() {
     assert!(selection.app.auth_configuration.is_empty());
     assert_eq!(selection.app.name, "Fixture");
     assert_eq!(selection.app.entry_path, Path::new("src/main.ts"));
-    assert!(!root.path().join("index.html").exists());
+    assert!(!root.join("index.html").exists());
+
+    // Unchanged valid boot bytes must be refused if another principal gains
+    // the ability to exchange the entire stage before Host starts Guardian.
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o770))
+        .expect("replaceable outer parent");
+    let error = must_err(
+        validate_from_root(&root),
+        "unsafe ancestry must refuse before consuming a valid descriptor",
+    );
+    assert!(
+        error.to_string().contains("macOS dev-stage ancestry"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("namespace write access"),
+        "{error}"
+    );
 }
 
 #[test]

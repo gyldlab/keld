@@ -465,6 +465,12 @@ fn guardian_bun_command(
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
+    // The verified inode is read again by Bun through a pathname. Refuse any
+    // cross-user-replaceable ancestor on every generation, including after
+    // Host's initial boot validation. Other UIDs cannot change ownership or
+    // directory modes of the accepted chain during the subsequent spawn.
+    keld_core::app_session::validate_macos_dev_stage_ancestry(root)
+        .map_err(|source| guardian_entry_error(format!("macOS dev-stage ancestry: {source}")))?;
     let reopened = reopen_validated_entry(root, entry, expected_dev, expected_ino)?;
     // Advisory same-user dev-boundary check: retain the exact reopened
     // identity until immediately before Supervisor invokes spawn, then
@@ -568,6 +574,16 @@ mod tests {
         reconcile_guardian_result, reopen_validated_entry,
     };
 
+    // Production Host paths are canonical; Darwin temp_dir can spell /var as
+    // an alias to /private/var, so the positive fixtures must do the same.
+    #[allow(clippy::expect_used)] // native test fixture cannot proceed without its scratch root
+    fn canonical_tempdir() -> tempfile::TempDir {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonical macOS temp parent");
+        tempfile::tempdir_in(base).expect("canonical stage fixture")
+    }
+
     #[test]
     fn successful_guardian_report_survives_cleanup_failure() {
         let (report, cleanup_failure) =
@@ -580,7 +596,7 @@ mod tests {
 
     #[test]
     fn failed_stage_validation_refuses_the_bun_command_with_a_valid_entry() {
-        let temp = tempfile::tempdir().expect("stage-gate fixture");
+        let temp = canonical_tempdir();
         let entry = temp.path().join("entry.ts");
         fs::write(&entry, "console.log('must not run');\n").expect("entry fixture");
         let identity = fs::metadata(&entry).expect("entry identity");
@@ -673,7 +689,7 @@ mod tests {
 
     #[test]
     fn guardian_freezes_mode_with_and_without_a_transport_sidecar() {
-        let temp = tempfile::tempdir().expect("boot mode fixture");
+        let temp = canonical_tempdir();
         let entry = temp.path().join("entry.ts");
         fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
         let identity = fs::metadata(&entry).expect("entry identity");
@@ -742,7 +758,7 @@ mod tests {
 
     #[test]
     fn guardian_rejects_runtime_config_without_a_transport_sidecar() {
-        let temp = tempfile::tempdir().expect("config admission fixture");
+        let temp = canonical_tempdir();
         let entry = temp.path().join("entry.ts");
         fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
         let identity = fs::metadata(&entry).expect("entry identity");
@@ -777,7 +793,7 @@ mod tests {
 
     #[test]
     fn guardian_removes_inherited_bun_options_before_the_canonical_preload() {
-        let temp = tempfile::tempdir().expect("inherited preload fixture");
+        let temp = canonical_tempdir();
         let entry = temp.path().join("entry.ts");
         fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
         let identity = fs::metadata(&entry).expect("entry identity");
@@ -801,7 +817,7 @@ mod tests {
 
     #[test]
     fn guardian_inherited_preload_cannot_run_before_qualified_capture() {
-        let temp = tempfile::tempdir().expect("actual Bun inherited preload fixture");
+        let temp = canonical_tempdir();
         fs::create_dir(temp.path().join("src")).expect("sidecar directory");
         fs::write(
             temp.path().join("src/kipc-transport.ts"),
@@ -916,5 +932,109 @@ mod tests {
                 .to_string()
                 .contains("validated regular-file identity")
         );
+    }
+
+    #[test]
+    fn guardian_refuses_cross_principal_replaceable_stage_ancestor() {
+        let temp = canonical_tempdir();
+        let root = temp
+            .path()
+            .join("project/.keld/dev/0123456789abcdef0123456789abcdef");
+        fs::create_dir_all(&root).expect("staged root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private nonce");
+        let entry = root.join("entry.ts");
+        fs::write(&entry, "console.log('original');\n").expect("verified entry");
+        let metadata = fs::metadata(&entry).expect("verified metadata");
+
+        // An attacker who can replace a non-sticky parent can exchange the
+        // entire verified stage after Guardian closes the identity handle.
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o770))
+            .expect("replaceable ancestor");
+        let error = guardian_bun_command(
+            &Ok(root.clone()),
+            &root,
+            std::path::Path::new("entry.ts"),
+            metadata.dev(),
+            metadata.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect_err("a verified entry inode is not enough when its parent is replaceable");
+        assert!(
+            error.to_string().contains("namespace write access"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn guardian_rejects_sticky_ancestor_bun_dependency_and_keeps_private_import_working() {
+        let temp = canonical_tempdir();
+        let root = temp
+            .path()
+            .join("project/.keld/dev/0123456789abcdef0123456789abcdef");
+        fs::create_dir_all(root.join("src")).expect("private stage src");
+        let entry = root.join("src/main.ts");
+        fs::write(
+            &entry,
+            "import 'gh1563_stage_dependency'; console.log('STAGE_ENTRY_OK');\n",
+        )
+        .expect("private stage entry");
+        let foreign = temp.path().join("node_modules/gh1563_stage_dependency");
+        fs::create_dir_all(&foreign).expect("foreign module directory");
+        fs::write(
+            foreign.join("index.js"),
+            "console.log('FOREIGN_EXECUTED');\n",
+        )
+        .expect("foreign package fixture");
+        let metadata = fs::metadata(&entry).expect("entry identity");
+
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o1777))
+            .expect("make only ancestor sticky and writable");
+        let error = guardian_bun_command(
+            &Ok(root.clone()),
+            &root,
+            std::path::Path::new("src/main.ts"),
+            metadata.dev(),
+            metadata.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect_err("Guardian must refuse an ancestor that another UID can populate");
+        assert!(
+            error.to_string().contains("namespace write access"),
+            "{error}"
+        );
+
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+            .expect("restore private ancestor");
+        let private = root.join("node_modules/gh1563_stage_dependency");
+        fs::create_dir_all(&private).expect("private dependency directory");
+        fs::write(
+            private.join("index.js"),
+            "console.log('PRIVATE_EXECUTED');\n",
+        )
+        .expect("private module fixture");
+        let output = guardian_bun_command(
+            &Ok(root.clone()),
+            &root,
+            std::path::Path::new("src/main.ts"),
+            metadata.dev(),
+            metadata.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect("private namespace admission")
+        .output()
+        .expect("run actual Bun entry using private package");
+        assert!(
+            output.status.success(),
+            "private module run failed: {output:?}"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("Bun stdout UTF-8");
+        assert!(
+            stdout.contains("PRIVATE_EXECUTED\nSTAGE_ENTRY_OK"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("FOREIGN_EXECUTED"), "{stdout}");
     }
 }
