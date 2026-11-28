@@ -50,7 +50,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().expect("isolated extraction fixture");
+        Self::from_temp(tempfile::tempdir().expect("isolated extraction fixture"))
+    }
+
+    fn from_temp(temp: TempDir) -> Self {
         let mut identity = expected_identity();
         identity.install_mode = DirectInstallMode::PerUserDirect;
         identity.install_root = temp.path().join("install");
@@ -611,7 +614,15 @@ fn lpac_stage_mutation_child() {
 
 #[test]
 fn real_lpac_role_cannot_mutate_released_protected_stage() {
-    let fixture = Fixture::new();
+    // This per-user fixture exercises the real role in its ordinary Windows
+    // user environment. Do not inherit the workspace runner's scratch choice.
+    // Keep the private control and protected stage together in one fixture;
+    // extraction still performs its normal volume and protection admission.
+    let local =
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("current Windows LocalAppData"));
+    let fixture = Fixture::from_temp(
+        tempfile::tempdir_in(local).expect("isolated per-user extraction fixture"),
+    );
     let source = fixture.source(GOLDEN_TAR);
     let receipt = fixture.receipt(GOLDEN_TAR);
     let mut root = fixture
@@ -647,4 +658,17 @@ fn real_lpac_role_cannot_mutate_released_protected_stage() {
         &File::open(stage_path.join("tree/nest/one")).expect("protected file"),
     )
     .expect("file ACL unchanged");
+
+    // Explicitly verify physical cleanup instead of relying on TempDir's
+    // implicit Drop, which cannot report a failed Windows directory removal.
+    drop(stage_dir);
+    let fixture_path = fixture.temp.path().to_owned();
+    fixture
+        .temp
+        .close()
+        .expect("remove the per-user LPAC fixture after handle release");
+    assert!(
+        !fixture_path.exists(),
+        "LPAC fixture directory remains after successful cleanup"
+    );
 }
