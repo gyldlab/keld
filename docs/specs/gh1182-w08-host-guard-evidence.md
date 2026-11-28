@@ -112,6 +112,7 @@ Non-goals:
   - **Single fault:** Swap only the selected Bun executable or its measured digest between otherwise matching attempts.
   - **At-risk precondition:** Host, attempt, run, interface, and generation identities match.
   - **Expected RED:** The verifier rejects the runtime mismatch. It cannot accept child-reported version text as a substitute.
+
 ### AC-8: All stages use a comparable monotonic clock
 
 - **Given:** The Host attempt owner provides the selected monotonic clock and original cutoff.
