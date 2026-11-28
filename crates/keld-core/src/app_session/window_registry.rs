@@ -51,6 +51,7 @@ pub(super) enum WindowError {
     NotReady,
     WrongOwner,
     PendingDestroyCapacity,
+    PendingDestroySessionCapacity,
     SessionWindowCapacity,
 }
 impl WindowError {
@@ -62,6 +63,7 @@ impl WindowError {
             Self::WrongOwner => "KELD-CORE-043",
             Self::PendingDestroyCapacity => "KELD-CORE-046",
             Self::SessionWindowCapacity => "KELD-CORE-047",
+            Self::PendingDestroySessionCapacity => "KELD-CORE-048",
         }
     }
 }
@@ -86,6 +88,9 @@ impl fmt::Display for WindowError {
             }
             Self::PendingDestroyCapacity => {
                 "this window has too many Destroy calls waiting for physical release; wait for Released or drop a timed-out call"
+            }
+            Self::PendingDestroySessionCapacity => {
+                "this Host session has reached its 1,024 outstanding Destroy-call limit across all windows; wait for native Released or retire the owning primary role before retrying"
             }
             Self::SessionWindowCapacity => {
                 "this Host session has reached its cumulative distinct-window admission limit; end the session to mint another identity"
@@ -230,10 +235,13 @@ struct Entry {
 /// One physical native release can be delayed indefinitely. Do not permit an
 /// authenticated primary to retain arbitrarily many distinct deferred reply
 /// correlations for that one window. This is a new Host-owned admission budget
-/// (not gh527's abandoned-Worker limit or the Auth call budget). 64 pending
-/// calls need under 2 KiB of plain metadata per window and bound the linear
-/// correlation check to a small, deterministic cost during a stalled release.
+/// (not gh527's abandoned-Worker limit or the Auth call budget). Sixty-four
+/// pending calls bound the per-window correlation scan; the independent
+/// session-wide limit below bounds aggregate retained Destroy correlations.
 pub(super) const MAX_PENDING_DESTROYS_PER_WINDOW: usize = 64;
+/// Bound retained Destroy correlations across every window in one Host session.
+/// This is independent of the cumulative distinct-window identity proposal below.
+pub(super) const MAX_PENDING_DESTROYS_PER_SESSION: usize = 1_024;
 /// GH1149 review-only candidate: distinct Host identities over one session,
 /// including failed and destroyed Create attempts. It is NOT a reviewed heap
 /// byte budget or a stand-in for GH1142 source/callback/alias qualification.
@@ -257,6 +265,7 @@ pub(super) struct WindowRegistry {
     last_id: u32,
     last_incarnation: u64,
     entries: BTreeMap<u32, Entry>,
+    pending_destroy_calls: usize,
     deferred_last_window: bool,
     destroyed_fact_drops: u64,
 }
@@ -268,6 +277,7 @@ impl WindowRegistry {
             last_id: 0,
             last_incarnation: 0,
             entries: BTreeMap::new(),
+            pending_destroy_calls: 0,
             deferred_last_window: false,
             destroyed_fact_drops: 0,
         }
@@ -669,14 +679,32 @@ impl WindowRegistry {
         correlation: CorrelationId,
         mut abandoned: impl FnMut(AbandonedClose),
     ) -> Result<CloseOutcome, WindowError> {
-        let entry = self.admitted_entry(owner, window)?;
-        // Refuse before abandoning an existing close, enqueuing a correlation,
-        // or sending an additional UI command. Prior admitted calls retain
-        // their eventual correlated replies; this fresh call receives a typed
-        // nonterminal ERR over the same authenticated writer.
+        self.require_ready()?;
+        let entry = self
+            .entries
+            .get(&window.id.0)
+            .filter(|entry| entry.window == window && !matches!(entry.phase, Phase::Destroyed(_)))
+            .ok_or(WindowError::StaleWindow)?;
+        if !entry.owner_live || entry.owner != owner {
+            return Err(WindowError::WrongOwner);
+        }
+        // Both budgets are checked against read-only state before mutating the
+        // entry, abandoning a pending close, appending a correlation, or
+        // issuing the one physical teardown. Preserve the per-window refusal
+        // precedence; the session ceiling is a separate aggregate budget.
         if entry.destroy_calls.len() >= MAX_PENDING_DESTROYS_PER_WINDOW {
             return Err(WindowError::PendingDestroyCapacity);
         }
+        if self.pending_destroy_calls >= MAX_PENDING_DESTROYS_PER_SESSION {
+            return Err(WindowError::PendingDestroySessionCapacity);
+        }
+
+        let entry = self
+            .entries
+            .get_mut(&window.id.0)
+            .filter(|entry| entry.window == window && !matches!(entry.phase, Phase::Destroyed(_)))
+            .ok_or(WindowError::StaleWindow)?;
+        entry.adoptable = false;
         let native = match entry.phase {
             Phase::Open(native) => Some(native),
             Phase::ClosePending(native, close_seq) => {
@@ -689,6 +717,7 @@ impl WindowRegistry {
         entry
             .destroy_calls
             .push(PendingWindowCall { owner, correlation });
+        self.pending_destroy_calls += 1;
         if let Some(native) = native {
             entry.phase = Phase::Closing(Some(native));
             Ok(CloseOutcome::Teardown(Teardown {
@@ -727,6 +756,17 @@ impl WindowRegistry {
         let dropped_facts = entry.dropped;
         entry.dropped = 0;
         let destroy_calls = std::mem::take(&mut entry.destroy_calls);
+        let accounting_ok = self.pending_destroy_calls >= destroy_calls.len();
+        debug_assert!(
+            accounting_ok,
+            "native release retires only retained Destroy correlations"
+        );
+        self.pending_destroy_calls = if accounting_ok {
+            self.pending_destroy_calls - destroy_calls.len()
+        } else {
+            // An internal accounting fault must never reopen admission.
+            MAX_PENDING_DESTROYS_PER_SESSION
+        };
         let fact = if entry.created && entry.owner_live {
             Some(OwnedWindowEvent {
                 owner: entry.owner,
@@ -779,6 +819,7 @@ impl WindowRegistry {
         mut abandoned: impl FnMut(AbandonedClose),
     ) {
         let mut affected = false;
+        let mut retired_destroy_calls = 0usize;
         for entry in self
             .entries
             .values_mut()
@@ -787,6 +828,7 @@ impl WindowRegistry {
             affected = true;
             entry.owner_live = false;
             entry.adoptable = false;
+            retired_destroy_calls += entry.destroy_calls.len();
             entry.destroy_calls.clear();
             match entry.phase {
                 Phase::Opening(_) => entry.phase = Phase::Closing(None),
@@ -800,6 +842,17 @@ impl WindowRegistry {
                 _ => {}
             }
         }
+        let accounting_ok = self.pending_destroy_calls >= retired_destroy_calls;
+        debug_assert!(
+            accounting_ok,
+            "role loss retires only retained Destroy correlations"
+        );
+        self.pending_destroy_calls = if accounting_ok {
+            self.pending_destroy_calls - retired_destroy_calls
+        } else {
+            // Preserve a fail-closed session budget if the invariant is broken.
+            MAX_PENDING_DESTROYS_PER_SESSION
+        };
         if affected {
             self.deferred_last_window = false;
         }
