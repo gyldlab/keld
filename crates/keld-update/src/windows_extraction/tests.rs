@@ -658,4 +658,17 @@ fn real_lpac_role_cannot_mutate_released_protected_stage() {
         &File::open(stage_path.join("tree/nest/one")).expect("protected file"),
     )
     .expect("file ACL unchanged");
+
+    // Explicitly verify physical cleanup instead of relying on TempDir's
+    // implicit Drop, which cannot report a failed Windows directory removal.
+    drop(stage_dir);
+    let fixture_path = fixture.temp.path().to_owned();
+    fixture
+        .temp
+        .close()
+        .expect("remove the per-user LPAC fixture after handle release");
+    assert!(
+        !fixture_path.exists(),
+        "LPAC fixture directory remains after successful cleanup"
+    );
 }
