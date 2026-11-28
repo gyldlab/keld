@@ -124,7 +124,12 @@ Candidate for owner review:
 
 1. Existing Host-owned native readiness events and their Core publication path. The owner must show where a sample can be attributed without changing Ready behavior.
 
-The existing app-link is NOT a W08 receiver candidate. Its approved contract carries endpoint plus possession secret. Its Host router serves echo and lifecycle traffic. KEL-72 lifecycle exposes Ready, LastWindowClosed, and Quit. No approved contract defines a W08 diagnostic payload or independent W08 consumer. MUST NOT repurpose lifecycle frames, add diagnostic payloads to lifecycle events, or infer W08 delivery from echo. Source: `docs/architecture/02-ipc.md:43-49,72-87,169-178,314-331@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+The existing app-link is NOT a W08 receiver candidate. Its contract carries endpoint and possession secret.
+Its Host router serves echo and lifecycle traffic. KEL-72 exposes Ready, LastWindowClosed, and Quit.
+No approved contract defines a W08 diagnostic payload. No independent W08 consumer is defined.
+MUST NOT repurpose lifecycle frames. MUST NOT add diagnostic payloads to lifecycle events.
+MUST NOT infer W08 delivery from echo.
+Source: `docs/architecture/02-ipc.md:43-49,72-87,169-178,314-331@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
 
 If native readiness cannot provide independent receipt and consumption, record NO-REUSE. A new receiver then requires a separate approved transport and wire contract. This draft does not select or authorize that contract.
 
@@ -176,17 +181,33 @@ No wall-clock conversion, guessed offset, unmeasured calibration, or fresh timer
 
 The accepted P1 ceilings are 64 retained slots, 66 emitted frames, 887 serialized bytes, and at most 66 observation opportunities. They apply together to one attempt. They are not independent allowances that a producer may spend separately.
 
-Before approval, the source owner MUST define one combined worst-case ledger. It MUST enumerate every record kind, observation, receiver receipt, consumer receipt, and terminal frame. It MUST state which retained objects consume slots, which serialized outputs consume frames, and how every byte is counted. The 887-byte ceiling applies to the aggregate serialized evidence for one attempt, including all headers and terminal records. No uncounted side buffer or second terminal path is permitted.
+Before approval, the source owner MUST define one combined worst-case ledger.
+It MUST enumerate every record kind, observation, receiver receipt, consumer receipt, and terminal frame.
+It MUST state which retained objects consume slots. It MUST state which serialized outputs consume frames.
+It MUST define how every byte is counted. The 887-byte ceiling applies to all serialized evidence for one attempt.
+It includes headers and terminal records. No uncounted side buffer or second terminal path is permitted.
 
-Each observation admission MUST reserve all required slot, frame, byte, and opportunity capacity atomically. A record is refused when any one aggregate ceiling would be exceeded. A partial reservation MUST be rolled back without an observation. Terminal output consumes the same frame and byte budget. If terminal output cannot fit, evidence remains incomplete. It MUST NOT exceed a ceiling to report exhaustion.
+Each observation admission MUST reserve all required resources atomically.
+These resources are slots, frames, bytes, and opportunities.
+A record is refused when any aggregate ceiling would be exceeded.
+A partial reservation MUST roll back without an observation. Terminal output consumes the same frame and byte budget.
+If terminal output cannot fit, evidence remains incomplete. It MUST NOT exceed a ceiling to report exhaustion.
 
-The owner MUST provide a worst-case composition that accounts for all 66 opportunities, the retained-slot ceiling, all emitted frames, and the complete 887-byte encoding. The composition MUST demonstrate the maximum combination and remaining headroom, if any. The current P1 summary does not provide this accounting. The exact per-kind encoding and slot ownership remain UNKNOWN until the source owner records them. No new cap or additional allowance is inferred here.
+The owner MUST provide a worst-case composition for all resources.
+It MUST include 66 opportunities, retained slots, all frames, and all encoded bytes.
+The composition MUST demonstrate maximum combined use and remaining headroom, if any.
+The current P1 summary lacks this accounting. Per-kind encoding and slot ownership remain UNKNOWN.
+The source owner must record them. No new cap or allowance is inferred here.
 
 The owner MUST measure the existing cold scheduling cadence on the exact supported Windows build. The measurement must bind the source commit, Host image, schedule, sample count, and raw observations. A synthetic clock or a model cannot qualify the Windows cadence.
 
 Sampling MUST use the selected existing cold scheduling opportunity. It MUST NOT add a timer, poll loop, catch-up, retry, or wait on the product path. It MUST stop on the earliest original cutoff, termination, revocation, refusal, or aggregate budget exhaustion.
 
-Required combined-boundary tests MUST exhaust each resource alone and in combination. They MUST cover a terminal frame at the frame ceiling, aggregate bytes at 887 and 888, the final retained slot combined with the final opportunity, and one additional record that would cross two or more ceilings. They MUST prove atomic refusal and no hidden reservation. They MUST prove terminal output never exceeds the aggregate frame or byte ceiling. A missing worst-case composition or any unclear accounting keeps this draft unapproved.
+Required combined-boundary tests MUST exhaust each resource alone and in combination.
+Tests MUST combine the final retained slot and final opportunity. Tests MUST combine the frame ceiling with terminal output.
+Tests MUST combine 887 and 888 aggregate bytes with terminal output. Tests MUST add one record that crosses two ceilings.
+Tests MUST prove atomic refusal and no hidden reservation. Tests MUST prove terminal output stays within frame and byte ceilings.
+Missing composition or unclear accounting keeps this draft unapproved.
 
 ### D-5: Keep Guard authorization and transport unchanged
 
