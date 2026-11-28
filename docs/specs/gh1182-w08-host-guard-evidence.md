@@ -78,7 +78,7 @@ Non-goals:
   Overflow or truncation marks evidence incomplete. It cannot extend the attempt.
 - **Negative control:**
   - **Single fault:** Omit terminal cost from the applicable frame or owner-selected byte accounting.
-  - **At-risk precondition:** One attempt approaches its final slot, frame, byte, and opportunity limits.
+  - **At-risk precondition:** The attempt approaches its slot, frame, opportunity, or owner-selected byte limit.
   - **Expected RED:** The verifier rejects the over-budget composition. No observation or terminal record exceeds any aggregate ceiling.
 
 ### AC-5: Mismatch, duplication, lateness, and reordering never produce a pass
@@ -281,8 +281,10 @@ Required controls include:
 - Wrong run, attempt, Host image, selected Bun executable, runtime digest, runtime version, interface, and generation, each changed alone.
 - Different clock domains, stale mapping, mapping error that overlaps cutoff, missing cutoff owner, and evidence after cutoff, termination, revocation, or refusal.
 - Missing receiver, missing consumer, delayed receiver, duplicate sequence, and out-of-order sequence.
-- Zero, 64, 65 retained slots; 66 and 67 aggregate frames; 887 and 888 aggregate bytes; 66 and 67 opportunities.
-- Combined exhaustion of slots, frames, bytes, and opportunities, including terminal frames and worst-case composition.
+- Zero, 64, and 65 retained slots. Test 66 and 67 frames and opportunities.
+- Test 887 and 888 bytes at the owner-selected accounting scope. Include terminal bytes when that scope requires them.
+- Combined exhaustion of slots, frames, opportunities, and the owner-selected byte scope.
+- Include terminal frames and bytes when required by the selected accounting scope.
 - Receiver loss and diagnostic overflow while the normal product lifecycle continues unchanged.
 - A second run using the same source but a new attempt and generation; no cross-run correlation is accepted.
 
@@ -311,7 +313,7 @@ Required controls include:
 
 ## 9. Perf impact
 
-No product performance change is proposed. The diagnostic keeps 66 opportunities, 64 retained slots, 66 frames, and the 887-byte limit. The owners must define its byte-accounting scope and measure cold cadence and overhead before approval.
+No product performance change is proposed. The diagnostic keeps 66 opportunities, 64 retained slots, 66 frames, and the 887-byte limit. Its byte scope remains an owner decision. The owners must measure cold cadence and overhead before approval.
 
 ## 10. Open questions, blockers & unknowns
 
@@ -360,7 +362,7 @@ The existing authenticated app-link and KEL-72 lifecycle path do not satisfy thi
 
 - **Status:** open
 - **Owner:** KEL-96 Host source owner and future receiver owner
-- **Impact:** Individual ceilings do not prove the combined worst case. A terminal frame or aggregate record could exceed the total budget.
+- **Impact:** Individual ceilings do not prove the combined worst case. A terminal frame or record could be omitted from applicable accounting.
 - **Check:** Publish the per-kind slot, frame, and opportunity ledger. Define the 887-byte accounting scope and its included bytes. Prove atomic admission at combined boundaries. Include terminal frames and all terminal bytes required by that scope.
 
 ### U-1: Actual source, receiver, consumer, and schedule
