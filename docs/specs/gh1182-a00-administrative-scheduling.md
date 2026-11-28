@@ -17,14 +17,18 @@ Do not credit V3, A24, final CI, or any of the ten authentic workflows.
 - FACT: The [N7 council handoff](https://github.com/gyldlab/keld/issues/1182#issuecomment-7153099684) says “It keeps two separate predicates:” (retrieved 2026-11-27). These are baseline eligibility and launch admissibility, not policy approval.
 - FACT: The [historical evidence search](https://github.com/gyldlab/keld/issues/1182#issuecomment-7227592989) records “N2 normal authorized old-logon lifecycle and N3 correlated terminal/new identity evidence” (retrieved 2026-11-27). It also records the retained council revision’s N5 ordering.
   The retained `round2-kel53-revision.md` SHA-256 is `36aec1c8de5ee3cf8a8f27cb243a8cbb8d341b31635f050ecea78f3b49229c0a`. These are program predicates, not numbered clauses in KEL-53.
-- FACT: KEL-96 §4.4 and T4 retain Host startup and lifecycle ownership. Its exact-object dev-stage sentinel remains unchanged (lines 543–554).
-- FACT: KEL-135 §4, Windows dev-ephemeral rules, retains exclusive leases and marker-validated Host scavenging (lines 457–470).
-- FACT: KEL-102 §4, Guard-before-handler boundary and Lifecycle and reload, retains authenticated dispatch, quiescing, and revocation.
-- FACT: KEL-53 §4, Machine-UAC owner-loss retirement, requires independent writer exclusion and exact logon retirement (lines 1243–1284). This proposal does not apply to an activation or update.
-- FACT: GH-1188 §4, A10/A24 and D8, retains normal browser release evidence. GH-1187 retains actual Windows profile and Job custody. GH-1183 retains native workflow evidence.
+- FACT: KEL-96 retains Host startup and lifecycle ownership. See §4.4 `docs/specs/kel96-no-flag-host-boot.md:360@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and T4 `docs/specs/kel96-no-flag-host-boot.md:651@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+  Its exact-object dev-stage sentinel remains unchanged: `docs/specs/kel96-no-flag-host-boot.md:543@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+- FACT: KEL-135 retains exclusive leases and marker-validated Host scavenging. See `docs/specs/kel135-persistent-profile-identity.md:457@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+- FACT: KEL-102 retains authenticated dispatch, quiescing, and revocation. See `docs/specs/kel102-host-guard-enforcement.md:522@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and `docs/specs/kel102-host-guard-enforcement.md:578@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+- FACT: KEL-53 Machine-UAC owner-loss retirement requires independent writer exclusion and exact logon retirement. See `docs/specs/kel53-full-package-activation.md:1243@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+  The pinned clause identifies exact-content approval as pending. It governs MachineUacDirect. This proposal does not apply to an activation or update.
+- FACT: GH-1188 retains normal browser release evidence. See A10 `docs/specs/gh1188-windows-window-adapter.md:955@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`, A24 `docs/specs/gh1188-windows-window-adapter.md:969@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and D8 `docs/specs/gh1188-windows-window-adapter.md:1044@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a`.
+- FACT: Open tracker [GH-1187](https://github.com/gyldlab/keld/issues/1187) requires “actual Windows primary-role explicit profile admission” and descendant custody (retrieved 2026-11-28).
+- FACT: Open tracker [GH-1183](https://github.com/gyldlab/keld/issues/1183) states “Native OS acceptance remains **BLOCKED** until a verified Windows operator runs it.” (retrieved 2026-11-28). These tracker requirements are not approved specifications.
 - FACT: GH-499 owns the B2 identity check. The [exact Host identity review packet](https://github.com/gyldlab/keld/issues/499#issuecomment-7210114330) says “A qualified new Host image needs a reviewed identity binding followed by rebuilt CLI and native qualification.” (retrieved 2026-11-27).
 - FACT: The [P6 physical preflight](https://github.com/gyldlab/keld/issues/1182#issuecomment-7226623191) pins the reviewed combined driver and replay evidence. It says “These checks establish present empty-state and byte custody, not N2/N3 lifecycle acceptance.” (retrieved 2026-11-27). It does not admit launch.
-- FACT: MAINTAINERS.md lines 20–28 and the spec template lines 3–9 require independent review and human sign-off.
+- FACT: `MAINTAINERS.md:20@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and `docs/agents/spec-template.md:3@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` require independent review and human sign-off.
 
 ## 3. Acceptance criteria
 
@@ -123,9 +127,10 @@ Do not change KEL-53 activation or KEL-135 profile recovery.
 
 ### T-1: Review and approve the exact specification candidate
 
-- **Blocked by:** none
+- **Blocked by:** B-3
 - Reconcile the complete retained N1–N7 text. Obtain independent architecture and Guard dispositions on the final candidate.
 - Before formal approval, run Section 7 controls only on a nonlaunching surface approved by the existing admission owner. Record the reviewed head, evidence digest and authorized human approval.
+- Use fixtures to test the D-2 rules. Verify the actual D-2 evidence in T-2 after T-1.
 
 ### T-2: Disposition the baseline and hand off to P6
 
@@ -159,6 +164,10 @@ Record the exact head, test-surface authority, fixture identity, at-risk precond
 - **n:** One original V3 failure and one administrative recovery.
 - **Environment:** Ramani K10. Evidence binds the original attempt; the draft Pin governs repository clause references.
 - **Limits:** Does not prove ordinary logon retirement, historical Host exit, a current exclusive slot, or final acceptance.
+  FACT: The [archive search](https://github.com/gyldlab/keld/issues/1182#issuecomment-7227592989) records the original logon as “still present” (retrieved 2026-11-28).
+  FACT: The same search records a boot observation difference of approximately two seconds. The difference remains unreconciled. Historical exit codes remain unknown.
+  FACT: The [N7 disposition](https://github.com/gyldlab/keld/issues/1182#issuecomment-7229381087) states “No actual admission test or startup launch was authorized by these readbacks.” (retrieved 2026-11-28).
+  The historical replay and offline model do not qualify the actual nonlaunching surface or Section 7 controls.
 
 ## 8. Review gates triggered
 
@@ -176,11 +185,18 @@ None. Scheduling evidence only.
 - **Status:** open
 - **Owner:** Authorized human KELD specification owner and independent maintainers.
 - **Impact:** This draft grants no N7 eligibility and no P6 launch.
-- **Check:** Record independent dispositions, acceptance evidence and formal approval bound to the reviewed head.
+- **Check:** Close B-3. Record independent dispositions, Section 7 acceptance evidence and formal approval bound to the reviewed head.
 
 ### B-2: Baseline and independent launch checks
 
 - **Status:** open
 - **Owner:** Existing P6 owner, with the W08, B2 and K10 slot owners.
 - **Impact:** Current evidence does not prove all D-2 facts or admit execution.
-- **Check:** Verify D-2 and each D-3 gate. Preserve the ordinary acceptance contract.
+- **Check:** Reconcile the boot observation difference in E-1. Verify D-2 after T-1. Verify each D-3 gate. Preserve the ordinary acceptance contract.
+
+### B-3: Actual nonlaunching test surface
+
+- **Status:** open
+- **Owner:** Existing P6 admission owner and independent witness.
+- **Impact:** T-1 cannot complete. The actual test surface and witness remain unqualified. See E-1.
+- **Check:** Record the existing admission owner's approved nonlaunching surface and independent witness. If unavailable, retain HOLD and route a separate test design for owner approval.
