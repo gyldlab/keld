@@ -74,10 +74,10 @@ Non-goals:
   Missing, ambiguous, expired, or out-of-error-bound mapping makes evidence UNKNOWN.
   It stops at the earliest original cutoff, attempt termination, revocation, refusal, or budget exhaustion.
   At most 66 opportunities are allowed, including the initial sample.
-  The limits remain 64 slots, 66 frames, and 887 bytes. Every observation and terminal record counts toward its applicable ceiling.
+  The limits remain 64 retained slots, 66 frames, 887 bytes, and at most 66 opportunities. The 887-byte accounting scope remains UNKNOWN. No byte-budget pass is valid until its owner defines that scope.
   Overflow or truncation marks evidence incomplete. It cannot extend the attempt.
 - **Negative control:**
-  - **Single fault:** Exclude the terminal frame or terminal bytes from combined admission accounting.
+  - **Single fault:** Omit terminal cost from the applicable frame or owner-selected byte accounting.
   - **At-risk precondition:** One attempt approaches its final slot, frame, byte, and opportunity limits.
   - **Expected RED:** The verifier rejects the over-budget composition. No observation or terminal record exceeds any aggregate ceiling.
 
@@ -190,19 +190,19 @@ No wall-clock conversion, guessed offset, unmeasured calibration, or fresh timer
 
 ### D-4: Preserve combined bounded observation and existing scheduling
 
-The accepted P1 ceilings are 64 retained slots, 66 emitted frames, 887 serialized bytes, and at most 66 observation opportunities. They apply together to one attempt. They are not independent allowances that a producer may spend separately.
+The accepted P1 limits are 64 retained slots, 66 emitted frames, 887 bytes, and at most 66 observation opportunities. The slot, frame, and opportunity limits apply together to one attempt. The 887-byte scope remains unselected. These limits are not independent allowances.
 
 Before approval, the source owner MUST define one combined worst-case ledger.
 It MUST enumerate every record kind, observation, receiver receipt, consumer receipt, and terminal frame.
 It MUST state which retained objects consume slots. It MUST state which serialized outputs consume frames.
-It MUST define how every byte is counted. The 887-byte ceiling applies to all serialized evidence for one attempt.
-It includes headers and terminal records. No uncounted side buffer or second terminal path is permitted.
+It MUST define the exact byte-accounting scope for the 887-byte ceiling. It MUST identify all bytes included in that scope. This draft does not select per-record, per-frame, or per-attempt accounting. Terminal bytes follow the selected scope. No uncounted side buffer or second terminal path is permitted.
 
-Each observation admission MUST reserve all required resources atomically.
-These resources are slots, frames, bytes, and opportunities.
-A record is refused when any aggregate ceiling would be exceeded.
-A partial reservation MUST roll back without an observation. Terminal output consumes the same frame and byte budget.
-If terminal output cannot fit, evidence remains incomplete. It MUST NOT exceed a ceiling to report exhaustion.
+Each observation admission MUST reserve all applicable resources atomically.
+These resources are retained slots, frames, opportunities, and bytes at the selected accounting scope.
+A record is refused when any applicable limit would be exceeded.
+A partial reservation MUST roll back without an observation. Terminal output consumes a frame.
+Terminal bytes count under the owner-selected byte scope. If a limit cannot fit, evidence remains incomplete.
+It MUST NOT exceed a limit to report exhaustion. No byte-scope choice is inferred here.
 
 The owner MUST provide a worst-case composition for all resources.
 It MUST include 66 opportunities, retained slots, all frames, and all encoded bytes.
@@ -216,8 +216,10 @@ Sampling MUST use the selected existing cold scheduling opportunity. It MUST NOT
 
 Required combined-boundary tests MUST exhaust each resource alone and in combination.
 Tests MUST combine the final retained slot and final opportunity. Tests MUST combine the frame ceiling with terminal output.
-Tests MUST combine 887 and 888 aggregate bytes with terminal output. Tests MUST add one record that crosses two ceilings.
-Tests MUST prove atomic refusal and no hidden reservation. Tests MUST prove terminal output stays within frame and byte ceilings.
+Tests MUST exercise 887 and 888 bytes at the owner-selected byte scope.
+Tests MUST combine byte-boundary cases with the applicable final slot, frame, and opportunity states.
+Terminal frames MUST count toward the 66-frame limit. Terminal bytes MUST follow the selected byte scope.
+Tests MUST add one record that crosses two applicable limits. Tests MUST prove atomic refusal and no hidden reservation.
 Missing composition or unclear accounting keeps this draft unapproved.
 
 ### D-5: Keep Guard authorization and transport unchanged
@@ -344,7 +346,7 @@ The existing authenticated app-link and KEL-72 lifecycle path do not satisfy thi
 
 - **Status:** open
 - **Owner:** KEL-96 Host owner and future receiver owner
-- **Impact:** The numeric limits cannot be implemented or verified without exact accounting and measured schedule evidence.
+- **Impact:** The slot, frame, and opportunity limits need combined accounting. The 887-byte scope also needs an owner decision. Measured schedule evidence remains required.
 - **Check:** Define slot, frame, and byte accounting from the reviewed P1 packet. Measure the existing cold cadence on the exact supported Windows build.
 
 ### B-5: Runtime identity and clock-domain proof are incomplete
@@ -359,7 +361,7 @@ The existing authenticated app-link and KEL-72 lifecycle path do not satisfy thi
 - **Status:** open
 - **Owner:** KEL-96 Host source owner and future receiver owner
 - **Impact:** Individual ceilings do not prove the combined worst case. A terminal frame or aggregate record could exceed the total budget.
-- **Check:** Publish the complete per-kind slot, frame, opportunity, and aggregate-byte ledger. Prove atomic admission and refusal at every combined boundary, including terminal output.
+- **Check:** Publish the per-kind slot, frame, and opportunity ledger. Define the 887-byte accounting scope and its included bytes. Prove atomic admission at combined boundaries. Include terminal frames and all terminal bytes required by that scope.
 
 ### U-1: Actual source, receiver, consumer, and schedule
 
