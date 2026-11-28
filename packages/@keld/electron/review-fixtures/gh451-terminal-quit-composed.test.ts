@@ -897,18 +897,23 @@ test("composed: a no-send Status never re-reports prior failure custody", async 
     { operation: "status", original },
   ]);
   expect(f.api.statusError).toBe(status);
-  expect(f.late).toEqual([
-    { error: status, custody: { phase: "status", original, generation } },
-  ]);
+  expect(f.late).toHaveLength(1);
+  expect(f.late[0]!.error).toBe(status);
+  expect(f.late[0]!.custody).toEqual({ phase: "status", original, generation });
   f.ledger.proveNoLate(held);
   const next = f.lose();
   expect(await f.coordinator.reconcile()).toBe("unknown");
-  expect(f.late.map(({ error }) => error)).toEqual([status, next]);
+  expect(f.late).toHaveLength(2);
+  expect(f.late[0]!.error).toBe(status);
+  expect(f.late[1]!.error).toBe(next);
   expect(f.sent).toHaveLength(3);
   f.ledger.proveNoLate(f.ledger.status!);
   f.lose(next); // A new dispatch may reject with the same object.
   expect(await f.coordinator.reconcile()).toBe("unknown");
-  expect(f.late.map(({ error }) => error)).toEqual([status, next, next]);
+  expect(f.late).toHaveLength(3);
+  expect(f.late[0]!.error).toBe(status);
+  expect(f.late[1]!.error).toBe(next);
+  expect(f.late[2]!.error).toBe(next);
   expect(f.sent).toHaveLength(4);
 });
 

@@ -122,9 +122,13 @@ test("D2: exact late close error after veto and fresh attempt stays with origina
   const late = Error("KELD-IPC-007: original close reply failed");
   x.closes[1]!.reply.reject(late);
   await turn();
-  expect(x.late).toEqual([
-    { error: late, custody: { phase: "close", window: w1, generation: g } },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(late);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "close",
+    window: w1,
+    generation: g,
+  });
   expect(x.coordinator.quit()).toBe(retry);
   expect(await p).toBeUndefined();
   x.closes[2]!.dispatched(5n);
@@ -289,9 +293,13 @@ test("AC11: lost Cancel reports exact late error, rejects queued retry; Status c
   const error = Error("Cancel ACK lost");
   x.cancels[0]!.reply.resolve({ kind: "unknown", original, error });
   await expect(queued).rejects.toBe(error);
-  expect(x.late).toEqual([
-    { error, custody: { phase: "cancel", original, generation: g } },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "cancel",
+    original,
+    generation: g,
+  });
   const recovery = x.coordinator.reconcile();
   x.statuses[0]!.reply.resolve({ original, disposition: { kind: "canceled" } });
   expect(await recovery).toBe("vetoed");
@@ -330,9 +338,13 @@ test("AC11: lost Commit Status acceptance keeps known commitment despite local f
   });
   expect(await recovery).toBe("committed");
   expect(x.coordinator.disposition).toBe("committed");
-  expect(x.late).toEqual([
-    { error: fence, custody: { phase: "commit", original, generation: g } },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(fence);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "commit",
+    original,
+    generation: g,
+  });
   expect(await x.coordinator.requestQuit()).toBe("committed");
   expect(x.trace).toEqual([
     "before",
@@ -498,9 +510,12 @@ test("AC11: Status loss and generic refusal keep original custody, then exact re
   const first = x.coordinator.reconcile();
   x.statuses[0]!.reply.reject(statusError);
   expect(await first).toBe("unknown");
-  expect(x.late[0]).toEqual({
-    error: statusError,
-    custody: { phase: "status", original, generation: g },
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(statusError);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "status",
+    original,
+    generation: g,
   });
   const second = x.coordinator.reconcile();
   x.statuses[1]!.reply.resolve({ original, disposition: { kind: "refused" } });
@@ -586,7 +601,8 @@ test("AC11: Accepted with completed fence does not wait for consume or reentry",
   await x.prepared(0);
   x.commits[0]!.reply.resolve("accepted");
   expect(await p).toBeUndefined();
-  expect(x.late.map((item) => item.error)).toEqual([error]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
   expect(x.coordinator.disposition).toBe("committed");
   expect(await x.coordinator.reconcile()).toBe("committed");
   expect(x.trace).toEqual(["before", "prepare", "will", "commit"]);

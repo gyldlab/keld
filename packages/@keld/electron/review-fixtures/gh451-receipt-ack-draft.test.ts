@@ -117,15 +117,21 @@ test("AC11: recovered typed noncommit reports once independently of receipt rele
     disposition: { kind: "invalidated", error },
   });
   expect(await recovery).toBe("unknown");
-  const reports = [
-    { error, custody: { phase: "prepare" as const, original, generation: 1n } },
-  ];
-  expect(x.late).toEqual(reports);
+  const expectExactReport = () => {
+    expect(x.late).toHaveLength(1);
+    expect(x.late[0]!.error).toBe(error);
+    expect(x.late[0]!.custody).toEqual({
+      phase: "prepare",
+      original,
+      generation: 1n,
+    });
+  };
+  expectExactReport();
   expect(await x.coordinator.reconcile()).toBe("unknown");
-  expect(x.late).toEqual(reports);
+  expectExactReport();
   ready = true;
   expect(await x.coordinator.reconcile()).toBe("retained");
-  expect(x.late).toEqual(reports);
+  expectExactReport();
   await expect(publicQuit).rejects.toBe(lost);
   expect(x.statuses).toHaveLength(1);
   expect(x.prepares).toHaveLength(1);
@@ -175,9 +181,13 @@ test("AC11: recovered typed Invalidated survives retirement during receipt consu
   });
   expect(await recovery).toBe("unknown");
   await turn();
-  expect(x.late).toEqual([
-    { error, custody: { phase: "prepare", original, generation: g } },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "prepare",
+    original,
+    generation: g,
+  });
   await expect(publicQuit).rejects.toBe(lost);
   expect(await x.coordinator.reconcile()).toBe("unknown");
   expect(x.statuses).toHaveLength(1);
@@ -206,12 +216,13 @@ test("AC11: direct typed Retained reporter retirement skips stale consumption", 
   await turn();
 
   expect(consumes).toBe(0);
-  expect(x.late).toEqual([
-    {
-      error,
-      custody: { phase: "prepare", original: undefined, generation: g },
-    },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "prepare",
+    original: undefined,
+    generation: g,
+  });
   expect(x.coordinator.disposition).toBe("unknown");
   expect(await x.coordinator.reconcile()).toBe("unknown");
   expect(x.coordinator.quit()).toBe(publicQuit);
@@ -243,9 +254,13 @@ test("AC11: recovered typed Invalidated reporter retirement skips stale consumpt
   expect(await recovery).toBe("unknown");
   await turn();
   expect(consumes).toBe(0);
-  expect(x.late).toEqual([
-    { error, custody: { phase: "prepare", original, generation: g } },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "prepare",
+    original,
+    generation: g,
+  });
   await expect(publicQuit).rejects.toBe(lost);
   expect(x.statuses).toHaveLength(1);
 });
@@ -275,9 +290,13 @@ test("AC11: recovered typed Invalidated selection loss skips stale consumption",
   expect(await recovery).toBe("unknown");
   expect(consumes).toBe(0);
   expect(x.coordinator.heldDisposition?.kind).toBe("invalidated");
-  expect(x.late).toEqual([
-    { error, custody: { phase: "prepare", original, generation: g } },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "prepare",
+    original,
+    generation: g,
+  });
   expect(await x.coordinator.reconcile()).toBe("unknown");
   expect(x.statuses).toHaveLength(1);
   await expect(publicQuit).rejects.toBe(lost);
@@ -324,12 +343,13 @@ test("AC11: late typed refusal preserves the actual cause after retirement", asy
   const error = new Error("exact typed refusal");
   x.prepares[0]!.resolve({ kind: "refused", error });
   await turn();
-  expect(x.late).toEqual([
-    {
-      error,
-      custody: { phase: "prepare", original: undefined, generation: 1n },
-    },
-  ]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
+  expect(x.late[0]!.custody).toEqual({
+    phase: "prepare",
+    original: undefined,
+    generation: 1n,
+  });
   expect(x.coordinator.quit()).toBe(publicQuit);
   expect(await x.coordinator.reconcile()).toBe("unknown");
   expect(x.trace).toEqual(["before", "prepare"]);
@@ -362,7 +382,8 @@ test("AC11: a throwing terminal acknowledgement accessor cannot strand settlemen
   x.commits[0]!.reply.resolve("accepted");
   await turn();
   expect(x.coordinator.disposition).toBe("committed");
-  expect(x.late.map((item) => item.error)).toEqual([error]);
+  expect(x.late).toHaveLength(1);
+  expect(x.late[0]!.error).toBe(error);
   expect(lookups).toBe(1);
   expect(await publicQuit).toBeUndefined();
   expect(x.coordinator.quit()).toBe(publicQuit);
