@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1182
 - Owner: GYLDLAB (KELD maintainers)
-- Updated: 2026-11-27
+- Updated: 2026-11-28
 - Pin: 2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a
 
 ## 1. Goal & non-goals
@@ -98,6 +98,9 @@ Do not repeat recovery, sign out an active logon, change audit settings, or reco
 ### D-3: Separate startup admission
 
 Require a qualified W08 native Host-to-Guard delivery witness and the B2 matched Host, CLI and provider identity.
+Verify that W08 covers the exact B2-approved runtime bytes and the selected Host-to-Guard interface identity.
+Keep the W08 qualification run identity in its own witness. Give A00 a fresh run identity.
+Refuse admission before spending the key if the evidence binding is missing, unknown or mismatched.
 Verify exact source, binary and driver bytes. Follow original preflight and fresh seal rules.
 Under the same exclusive Ramani K10 lease, P6 must reverify all live D-2 custody and namespace facts before sealing.
 The verified exclusions and lease must remain valid through spawn. No transfer or slot change is allowed after the final checks.
@@ -139,7 +142,13 @@ The positive admission fixture must reach the decision boundary without launch. 
 For AC-1 also test wrong machine, wrong boot/logon, reused PID, surviving owner, wrong namespace, and changed source hash.
 For AC-1 also test stale delayed writers on the same logon, recovery replay, fabricated exit, verifier/operator overlap and missing approval.
 For AC-2 test administrative credit to V3, A24, N2 and N5 separately.
-For AC-3 separately drop W08, B2, exact preflight and seal. Test valid second seals against the same recovery, in parallel and after restart.
+For AC-3 separately drop W08, B2, exact preflight and seal.
+Use a qualified W08 witness and valid B2 evidence with matching runtime and interface identities.
+Use distinct W08 and A00 run identities. Verify that the matched evidence reaches the admission decision boundary.
+Keep all other D-3 checks valid. Change only the evidence binding in each negative case.
+Test an absent binding, a witness for different runtime bytes, and a witness for a different interface separately.
+Verify refusal before the key is spent. Verify zero real spawns for the matched case and each negative case.
+Test valid second seals against the same recovery, in parallel and after restart.
 A changed target or caller label must not grant another spend. Verify refusal for a target mismatch and a spent decision on repeat use of the approved target.
 Lose custody after seal or lose exclusivity between spend and spawn. A crash or failed spawn after spend must not permit reuse.
 Record the exact head, test-surface authority, fixture identity, at-risk precondition, decision before dispatch, zero-spawn witness and cleanup. Synthetic tests cannot qualify Windows.
