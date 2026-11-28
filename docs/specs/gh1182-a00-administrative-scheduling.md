@@ -166,6 +166,12 @@ Record the exact head, test-surface authority, fixture identity, at-risk precond
 - **Limits:** Does not prove ordinary logon retirement, historical Host exit, a current exclusive slot, or final acceptance.
   FACT: The [archive search](https://github.com/gyldlab/keld/issues/1182#issuecomment-7227592989) records the original logon as “still present” (retrieved 2026-11-28).
   FACT: The same search records a boot observation difference of approximately two seconds. The difference remains unreconciled. Historical exit codes remain unknown.
+  FACT: The [fresh D-2 readback](https://github.com/gyldlab/keld/issues/1182#issuecomment-7235993733) again observes logon `1060514` with its original start time and boot. Logon `1060445` is also present (retrieved 2026-11-28).
+  The readback receipt SHA-256 is `d19fa66c5bd609a69e332e310d64cfe8b8d6392602a36bf320aaa324a7e1f40d`.
+  The active original logon leaves ordinary N2/N3 retirement unproved. Its presence alone does not exclude the proposed same-logon N7 route.
+  That route still requires independent D-2 proof of predecessor process/HWND retirement and old-authority exclusion under items 3–5. It also requires all remaining D-2 facts.
+  The fresh readback does not establish those facts or a current exclusive slot.
+  The same readback's ACL result covers `LOCALAPPDATA` and its parent only. It does not establish a fixture-child ACL, fixture lifetime or cleanup. It supplies no N7 admission evidence.
   FACT: The [N7 disposition](https://github.com/gyldlab/keld/issues/1182#issuecomment-7229381087) states “No actual admission test or startup launch was authorized by these readbacks.” (retrieved 2026-11-28).
   The historical replay and offline model do not qualify the actual nonlaunching surface or Section 7 controls.
 
