@@ -37,7 +37,7 @@ selection, deadline changes, Windows or Linux parity, signing or release.
   ownership. `docs/architecture/05-webview-and-native.md:302` retains registry ownership.
   `docs/architecture/02-ipc.md:397@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` and `docs/architecture/03-security.md:8@2c17ea7d8479ce1fef7c2ff51ecf82a214966f8a` retain wire and authority boundaries.
 
-The proposed amendment changes the conditional admission order, not these owners. GH-451 and GH-523 remain drafts. This document does not approve them.
+FACT: GH-451 and GH-523 remain drafts. This amendment changes only the proposed conditional admission order. It does not approve those drafts.
 
 ## 3. Acceptance criteria
 
@@ -100,9 +100,9 @@ After registry census becomes empty, withhold only the physical-release observat
 Remove only the destruction-complete check. The test goes RED if Prepare succeeds without that observation.
 Verify a genuine successor adopts its Open survivor without a new build.
 Reject the retired role's token after adoption and after the registry later becomes empty.
-Test the final generation check separately in a nonshipping owner-level fixture.
-Keep all other final-cut predicates valid. Compare matching and stale generations.
-Remove only the generation check. The test goes RED if the stale generation passes.
+Test the final generation check separately. Remove only that check. The stale generation must go RED.
+After terminal reservation, attempt Create, CreateWithPreload, and successor provisioning separately. Refuse each before native build or authority minting.
+Remove only the terminal admission fence. The test goes RED if any post-reservation admission starts.
 
 ### AC-3: Owed filesystem replies precede reservation
 
@@ -202,7 +202,7 @@ After settlement, verify each eligible reservation order independently in both c
 Separately from failed cleanup, withhold exact acceptance after final reservation.
 Remove only winner retention on delivery failure. The test goes RED on winner erasure or a second terminal effect.
 The intact control preserves cause and code and runs one tail. Missing acknowledgement is not proof of noncommit.
-With the exact writer and prerequisites available, reuse the [IPC Accepted-before-EOF witness](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L321-L347).
+With the exact writer and prerequisites available, use the [planned IPC Accepted-before-EOF check](https://github.com/gyldlab/keld/blob/6a8607e52f9c0e8a8d4b757ffb047d97f1cf12f3/docs/engineering/gh451-conditional-quit-ipc-amendment.md#L321-L347).
 Withhold terminal Consume and Status. Observe one existing cleanup tail complete without either confirmation.
 Add only a success-path wait for either confirmation. The bounded owner-level tail oracle must go RED.
 Hold terminal retirement after consumption and no-late proof. Omit only the retirement requirement. The test goes RED on early release. Prove exact retirement without Consume in a separate control.
@@ -394,7 +394,7 @@ behavior. Preserve the legacy baseline.
 Implement conditional Prepare, Cancel, shared drain and one reservation in the
 existing owner. Run AC-1 through AC-7 against real authenticated fixture paths.
 Keep native enablement and the independent Exit API outside this task.
-Run the approved GH-451 Q-3 transport tests before enabling conditional calls.
+Before shipping, close GH-451 Q-1, GH-451 Q-3, and GH-451 Q-4. Run the approved GH-451 Q-3 transport tests.
 
 ### T-3: Qualify the native terminal path
 
@@ -409,7 +409,7 @@ a prerequisite for the reversible design decision.
 | Criteria | Planned witness |
 |---|---|
 | AC-1 | Exact facade veto, Save retry, post-Prepare Cancel and retained receipt with each missing proof, and B-3 surviving-Prepare recovery |
-| AC-2 | Same-role failed Create/CreateWithPreload, all four live-state refusals, Released/Destroyed gate, successor adoption and isolated generation check |
+| AC-2 | Failed Create/CreateWithPreload, four live-state refusals, Released/Destroyed gate, successor adoption, generation and post-reservation admission fences |
 | AC-3 | Authenticated FS Reply and Err, held lease and independent lease-only control |
 | AC-4 | Independent viable-drain, failed-writer retirement and failure-accounting controls, exact error custody and successful Reply/Err |
 | AC-5 | Separate held-reply and held-lease races, both reservation orders in each, code-only control, queued reader contender and one tail |
@@ -446,11 +446,11 @@ fixtures. Do not claim a faster shutdown from a model.
 - **Status:** open
 - **Owner:** KEL-96 lifecycle owner with GH-451 and GH-531 owners.
 - **Impact:** T-2 cannot change shipping lifecycle behavior.
-- **Check:** Review and approve this exact amendment blob. Record its precedence
-  for the qualified conditional path. Include the GH-531 criterion 32 exception
-  for qualified bound and positively selected but unbound default intent.
-  Preserve the legacy and unselected write-before-return rule.
-  Keep the original approved KEL-96 and GH-531 text intact.
+- **Check:** Approve this exact amendment blob and close GH-451 Q-4 with the GH-531 owner.
+  Record precedence for qualified conditional default intent and the GH-531 criterion 32 exception.
+  Apply it to qualified bound and positively selected but unbound default intent.
+  Preserve legacy and unselected write-before-return behavior.
+  Keep the approved KEL-96 and GH-531 text intact.
 
 ### B-2: Shared terminal and drain custody
 
@@ -466,11 +466,11 @@ fixtures. Do not claim a faster shutdown from a model.
 - **Status:** open
 - **Owner:** GH-451 API and IPC owners.
 - **Impact:** No shipping conditional calls or receipt reclamation.
-- **Check:** Approve GH-451 Q-3 schema, exact consumption proof and retirement policy.
-  Agree with the lifecycle owner on the recovery contract for surviving Prepare.
-  A proved local pre-send refusal of Cancel or Commit proves only that the refused call did not execute.
+- **Check:** Close GH-451 Q-1 and GH-451 Q-3 with API and IPC owners.
+  Approve exact error mapping, schema, consumption proof, retirement policy, and surviving-Prepare recovery.
+  A proved local pre-send refusal proves only that the refused Cancel or Commit did not execute.
   Keep the original preparation in custody until the approved contract settles it.
-  Do not replay the refused call or start a fresh attempt based only on the pre-send proof.
+  Do not replay the refused call or start a fresh attempt from pre-send proof alone.
   Do not synthesize a receipt or require automatic retry.
 
   After valid Prepare, force local pre-send refusal of Cancel and Commit in separate checks.
