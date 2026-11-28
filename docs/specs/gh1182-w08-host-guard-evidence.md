@@ -77,10 +77,6 @@ Non-goals:
   The limits remain 64 slots, 66 frames, and 887 bytes. Every observation and terminal record counts toward its applicable ceiling.
   Overflow or truncation marks evidence incomplete. It cannot extend the attempt.
 - **Negative control:**
-  - **Single fault:** Change the receiver timestamp epoch or allow one observation after the original cutoff.
-  - **At-risk precondition:** Source and generation match, and the record is otherwise valid.
-  - **Expected RED:** The verifier refuses the incomparable or late record. Evidence becomes UNKNOWN. The product cutoff remains unchanged.
-- **Negative control:**
   - **Single fault:** Exclude the terminal frame or terminal bytes from combined admission accounting.
   - **At-risk precondition:** One attempt approaches its final slot, frame, byte, and opportunity limits.
   - **Expected RED:** The verifier rejects the over-budget composition. No observation or terminal record exceeds any aggregate ceiling.
@@ -116,6 +112,16 @@ Non-goals:
   - **Single fault:** Swap only the selected Bun executable or its measured digest between otherwise matching attempts.
   - **At-risk precondition:** Host, attempt, run, interface, and generation identities match.
   - **Expected RED:** The verifier rejects the runtime mismatch. It cannot accept child-reported version text as a substitute.
+### AC-8: All stages use a comparable monotonic clock
+
+- **Given:** The Host attempt owner provides the selected monotonic clock and original cutoff.
+- **When:** Producer, receiver, and consumer evidence is correlated.
+- **Then:** Every timestamp identifies its clock domain and epoch. Every cutoff uses the same domain and epoch. A different domain requires a bounded, measured mapping to the attempt domain. The mapping includes its identity, validity interval, and maximum error. Uncertain ordering makes evidence UNKNOWN. No wall clock, guessed offset, or new timer can qualify a record.
+- **Negative control:**
+  - **Single fault:** Change only the receiver clock epoch or invalidate its mapping.
+  - **At-risk precondition:** All record identities match and the source timestamp precedes cutoff.
+  - **Expected RED:** The verifier refuses incomparable timestamps. A record that may be late under mapping error is UNKNOWN.
+
 ## 4. Design
 
 ### D-1: Keep the source seam unselected until the Host owner proves it
