@@ -107,7 +107,7 @@ Non-goals:
 - **Given:** B2 has selected and identified the supervised Bun executable for this attempt.
 - **When:** The Host producer creates an observation and the receiver verifies its attempt tuple.
 - **Then:** The tuple carries the exact runtime identity supplied by B2. It includes the canonical selected executable identity, measured executable digest, and pinned runtime version. The existing Host supervisor binds these facts to the spawned child and generation. Child-reported version text alone is not proof.
-- **Then:** W08 consumes B2's runtime evidence. W08 does not create a signature, publisher, trust pin, or new authenticity claim. Missing or ambiguous B2 identity makes the attempt UNKNOWN and blocks adoption.
+  W08 consumes B2's runtime evidence. W08 does not create a signature, publisher, trust pin, or new authenticity claim. Missing or ambiguous B2 identity makes the attempt UNKNOWN and blocks adoption.
 - **Negative control:**
   - **Single fault:** Swap only the selected Bun executable or its measured digest between otherwise matching attempts.
   - **At-risk precondition:** Host, attempt, run, interface, and generation identities match.
