@@ -55,8 +55,8 @@ Do not credit V3, A24, final CI, or any of the ten authentic workflows.
 - **Then:** D-3's independent gates must all pass under the same exclusive slot. Otherwise no diagnostic launches.
 - **Negative control:**
   - **Single fault:** Omit the exclusive slot check.
-  - **At-risk precondition:** W08, B2, exact preflight and the fresh seal otherwise pass.
-  - **Expected RED:** The test detects launch during a conflicting owner slot.
+  - **At-risk precondition:** Use a valid baseline and unspent key. W08, B2, exact preflight and a fresh seal otherwise pass.
+  - **Expected RED:** The nonlaunching test observes an allowed admission decision during a conflicting slot. An independent witness verifies zero real spawns.
 
 ## 4. Design
 
@@ -101,7 +101,8 @@ Require a qualified W08 native Host-to-Guard delivery witness and the B2 matched
 Verify exact source, binary and driver bytes. Follow original preflight and fresh seal rules.
 Under the same exclusive Ramani K10 lease, P6 must reverify all live D-2 custody and namespace facts before sealing.
 The verified exclusions and lease must remain valid through spawn. No transfer or slot change is allowed after the final checks.
-Bind one durable admission key to the failed attempt, verified recovery, machine and target. New seals do not change that key.
+Use one durable, canonical admission key for the verified recovery of the original failed attempt on the verified machine. Every request for that recovery shares one admission budget.
+Bind the single approved diagnostic target to the immutable record. Refuse an unknown or changed target or identity without allocating another key. New seals and caller labels cannot change the key.
 The existing admission owner must atomically spend the key and seal before spawn. Serialize parallel attempts. Preserve spent state across restart.
 A fresh seal cannot unspend the key after abort, crash or spawn failure. Do not auto-retry or issue a substitute key.
 A mismatch, unknown, owner conflict, lost lease, stale evidence or spent key refuses launch.
@@ -121,7 +122,7 @@ Do not change KEL-53 activation or KEL-135 profile recovery.
 
 - **Blocked by:** none
 - Reconcile the complete retained N1–N7 text. Obtain independent architecture and Guard dispositions on the final candidate.
-- Run the acceptance controls before formal approval. Record the reviewed head, evidence digest and authorized human approval.
+- Before formal approval, run Section 7 controls only on a nonlaunching surface approved by the existing admission owner. Record the reviewed head, evidence digest and authorized human approval.
 
 ### T-2: Disposition the baseline and hand off to P6
 
@@ -132,12 +133,16 @@ Do not change KEL-53 activation or KEL-135 profile recovery.
 ## 7. Test plan & evidence
 
 Exercise AC-1 through AC-3 with one fault per case. Include a positive fixture for each path.
+Use only the existing admission owner's approved nonlaunching surface and isolated disposable state. Observe its actual custody checks and durable spend logic.
+Keep real spawn unavailable through a test-harness fence independent of admission logic in every case. Use an independent witness to record the admission decision and verify zero real spawns.
+The positive admission fixture must reach the decision boundary without launch. No fixture grants real authority or credit. If the surface or witness is unavailable, keep T-1 and operational admission on HOLD.
 For AC-1 also test wrong machine, wrong boot/logon, reused PID, surviving owner, wrong namespace, and changed source hash.
 For AC-1 also test stale delayed writers on the same logon, recovery replay, fabricated exit, verifier/operator overlap and missing approval.
 For AC-2 test administrative credit to V3, A24, N2 and N5 separately.
 For AC-3 separately drop W08, B2, exact preflight and seal. Test valid second seals against the same recovery, in parallel and after restart.
+A changed target or caller label must not grant another spend. Verify refusal for a target mismatch and a spent decision on repeat use of the approved target.
 Lose custody after seal or lose exclusivity between spend and spawn. A crash or failed spawn after spend must not permit reuse.
-The exact head must record each expected refusal and its at-risk precondition. Synthetic tests cannot qualify Windows.
+Record the exact head, test-surface authority, fixture identity, at-risk precondition, decision before dispatch, zero-spawn witness and cleanup. Synthetic tests cannot qualify Windows.
 
 ### E-1: Existing recovery evidence
 
