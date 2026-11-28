@@ -1,0 +1,53 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-ipc-v1",
+  "corpus_sha256": "sha256:282d00f056f816be22dca6e707f13bc8d47a0679d75abe9ecc4e8b30b45c5720",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "ipc-main.on",
+      "oracle_id": "electron-v44.4.5.ipc-main.on"
+    },
+    {
+      "operation_id": "ipc-main.once",
+      "oracle_id": "electron-v44.4.5.ipc-main.once"
+    },
+    {
+      "operation_id": "ipc-main.remove-listener",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-listener"
+    },
+    {
+      "operation_id": "ipc-main.event-emitter",
+      "oracle_id": "electron-v44.4.5.ipc-main.event-emitter"
+    },
+    {
+      "operation_id": "ipc-main.off.removes-listener",
+      "oracle_id": "electron-v44.4.5.ipc-main.off"
+    },
+    {
+      "operation_id": "ipc-main.remove-all-listeners",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-all-listeners"
+    },
+    {
+      "operation_id": "ipc-main.add-listener.alias",
+      "oracle_id": "electron-v44.4.5.ipc-main.add-listener"
+    },
+    {
+      "operation_id": "ipc-main.handle.registers",
+      "oracle_id": "electron-v44.4.5.ipc-main.handle.registers"
+    },
+    {
+      "operation_id": "ipc-main.handle.invoked",
+      "oracle_id": "electron-v44.4.5.ipc-main.handle.invoked"
+    },
+    {
+      "operation_id": "ipc-main.handle-once",
+      "oracle_id": "electron-v44.4.5.ipc-main.handle-once"
+    },
+    {
+      "operation_id": "ipc-main.remove-handler",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-handler"
+    }
+  ]
+}
